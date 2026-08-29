@@ -16,6 +16,7 @@ include(CTest)
 include(CheckCXXSourceCompiles)
 include(FetchContent)
 include(GNUInstallDirs)
+find_package(Threads REQUIRED)
 
 option(XVRAM_BUILD_TESTS "Build xVRAM tests" ${BUILD_TESTING})
 option(XVRAM_FETCH_CUDA_HEADERS
@@ -286,9 +287,36 @@ add_executable(xvram-probe src/probe/main.cpp)
 target_link_libraries(xvram-probe PRIVATE xvram_probe_lib)
 xvram_enable_warnings(xvram-probe)
 
-install(TARGETS xvram-probe RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_library(
+  xvram_vmm_poc STATIC
+  src/vmm_poc/executor.cpp
+  src/vmm_poc/outcome.cpp
+  src/vmm_poc/report_json.cpp
+  src/vmm_poc/report_text.cpp
+  src/vmm_poc/worker_controller.cpp
+  src/vmm_poc/worker_protocol.cpp
+  src/vmm_poc/workload.cpp)
+target_compile_features(xvram_vmm_poc PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_vmm_poc
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
+         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_vmm_poc SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(xvram_vmm_poc PRIVATE xvram_probe_lib Threads::Threads)
+xvram_enable_warnings(xvram_vmm_poc)
+
+add_executable(xvram-vmm-poc src/vmm_poc/main.cpp)
+target_link_libraries(xvram-vmm-poc PRIVATE xvram_vmm_poc)
+target_include_directories(xvram-vmm-poc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram-vmm-poc SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+xvram_enable_warnings(xvram-vmm-poc)
+
+install(TARGETS xvram-probe xvram-vmm-poc RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
+              schemas/vmm-poc-report-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 if(XVRAM_BUILD_TESTS)
