@@ -1,17 +1,18 @@
 # Roadmap
 
-## Phase 0: capability and transport probe
+## Phase 0: capability and transport probe — complete
 
 - Runtime-load the CUDA Driver API.
 - Enumerate devices and relevant attributes.
 - Query device/host/NUMA VMM granularities only when capability-gated.
 - Match CUDA LUIDs to DXGI adapters and report process memory budgets.
 - Measure pinned H2D, D2H, and full-duplex transport safely.
-- Add copy/compute overlap measurement with a versioned synthetic kernel module.
+- Measure copy/compute overlap with a versioned, hash-identified synthetic PTX module.
 - Emit human-readable and versioned JSON reports.
 
-Exit criterion: the RTX 3070 development machine produces a complete, repeatable report,
-the synthetic overlap measurement is stable, and the no-driver path is covered in CI.
+Exit criterion reached: the RTX 3070 development machine produces a complete, repeatable
+report, the synthetic compute and transfer outputs are verified, overlap is measured in
+both directions, and the no-driver path is covered in Windows/Linux CI.
 
 ## Phase 1: explicit VMM proof of concept
 

@@ -1,7 +1,9 @@
 # Capability report schema
 
 `xvram-probe` emits UTF-8 JSON described by
-[`schemas/capability-report-v1.schema.json`](../schemas/capability-report-v1.schema.json).
+[`schemas/capability-report-v2.schema.json`](../schemas/capability-report-v2.schema.json).
+The frozen v1 schema remains available for reports produced before the overlap benchmark
+was added.
 
 The top-level `schema_version` is an integer major version. Consumers must reject an
 unknown major version. Additive fields require a schema update and consumer review;
@@ -13,7 +15,15 @@ Machine-readable quantities are raw units:
 - CUDA clock attributes are kHz as returned by the Driver API;
 - transfer rates are GiB/s in the current pre-release benchmark object;
 - every transfer result includes the selected CUDA device ordinal;
+- overlap timings are median milliseconds, and the embedded PTX source is identified by
+  a module version and SHA-256;
 - unavailable observations are `null`, not the strings `N/A` or `unsupported`.
+
+For each H2D and D2H overlap direction, `serial_ms` is compute-only plus copy-only time,
+`ideal_ms` is their larger value, and `concurrent_ms` is the measured shared makespan.
+`speedup` is `serial_ms / concurrent_ms`. `overlap_efficiency` is the hidden fraction of
+the shorter operation; 1.0 is ideal, 0.0 means no overlap, a negative value indicates
+contention, and small values above 1.0 may occur from measurement noise.
 
 On Windows, `driver_model` is the current NVML mode. The `tcc` report value corresponds
 to NVML's legacy `NVML_DRIVER_WDM` enum; `pending_driver_model` is the post-reboot target

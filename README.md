@@ -38,7 +38,7 @@ Every range a kernel may touch must be made resident before launch. Operations l
 than the resident budget therefore require library-aware tiling, graph transformation,
 or later PTX instrumentation.
 
-## Current milestone: Phase 0
+## Phase 0 foundation
 
 `xvram-probe` discovers the facts that later policy must use instead of hard-coding a
 specific GPU or driver:
@@ -54,6 +54,7 @@ specific GPU or driver:
 - NVIDIA display-driver and WDDM/TCC/MCDM model observations through NVML;
 - CUDA LUID to DXGI adapter matching on Windows;
 - WDDM local/non-local process budget and usage;
+- a calibrated copy/compute overlap benchmark using a hash-identified embedded PTX module;
 - host memory and operating-system information.
 
 The probe loads the system CUDA Driver API and NVML dynamically. Building does not
@@ -98,6 +99,7 @@ Run the probe:
 ```powershell
 build\dev\Debug\xvram-probe.exe
 build\dev\Debug\xvram-probe.exe --json report.xvram-report.json
+build\dev\Debug\xvram-probe.exe --overlap --json overlap.xvram-report.json
 build\vs\Debug\xvram-probe.exe
 build\vs\Debug\xvram-probe.exe --json report.xvram-report.json
 ```
@@ -117,6 +119,11 @@ For an offline build, install CUDA 13.x and NVML development headers (or set
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
 Use `xvram-probe --help` for the complete CLI contract.
+
+`--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
+independent H2D and D2H batches to a similar duration, then reports their concurrent
+makespan, speedup, and overlap efficiency. `--require-overlap` exits with code 22 unless
+the compute result, copied bytes, and cleanup all pass.
 
 Default reports redact UUID, LUID, and PCI bus identifiers, but still describe exact
 hardware, software, memory, and live budget information. They are sanitized rather than

@@ -10,3 +10,5 @@ project intends to use semantic versioning once its public API is established.
 ### Added
 
 - Initial Windows-first architecture and Phase 0 capability-probe scaffold.
+- Versioned schema v2 with a calibrated, correctness-checked H2D/D2H copy-and-compute
+  overlap benchmark backed by a hash-identified embedded PTX module.

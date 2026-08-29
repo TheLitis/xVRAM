@@ -45,3 +45,7 @@ injectable dispatch and RAII-owned quarantine before it manages application memo
 
 No benchmark result is accepted unless correctness validation for the same configuration
 passes first.
+
+The overlap benchmark hashes its embedded PTX source, checks the synthetic kernel's first
+output word against the same unsigned recurrence on the CPU, verifies the complete copy
+buffer, and requires successful resource cleanup before reporting `completed`.
