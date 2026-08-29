@@ -1,0 +1,44 @@
+name: Bug report
+description: Report incorrect probe or runtime behavior.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Probe reports are sanitized, not anonymous. Review exact OS/driver/hardware and
+        memory-budget fields before posting. Never use --include-identifiers in an issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest repeatable command or code sample.
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: xVRAM revision
+      placeholder: Git commit or release version
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Sanitized environment
+      description: GPU model, Windows build, NVIDIA driver, and CUDA Driver API version.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Sanitized capability report
+      description: Optionally paste reviewed default JSON without --include-identifiers.
+      render: json
