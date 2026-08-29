@@ -1,0 +1,14 @@
+#pragma once
+
+#include <cstdint>
+#include <string_view>
+
+namespace xvram::vmm_poc {
+
+inline constexpr std::uint32_t vmm_transform_module_version =
+    @XVRAM_VMM_TRANSFORM_MODULE_VERSION@;
+inline constexpr std::string_view vmm_transform_module_sha256 =
+    "@XVRAM_VMM_TRANSFORM_SHA256@";
+inline constexpr std::string_view vmm_transform_ptx = R"xvramptx(@XVRAM_VMM_TRANSFORM_PTX@)xvramptx";
+
+} // namespace xvram::vmm_poc

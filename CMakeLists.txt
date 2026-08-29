@@ -142,6 +142,14 @@ file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cuda/synthetic_overlap_v1.
 configure_file(cmake/synthetic_overlap_ptx.hpp.in
                generated/xvram/synthetic_overlap_ptx.hpp @ONLY)
 
+set(XVRAM_VMM_TRANSFORM_MODULE_VERSION 1)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/vmm_poc/vmm_transform_v1.ptx"
+     XVRAM_VMM_TRANSFORM_PTX)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/vmm_poc/vmm_transform_v1.ptx"
+     XVRAM_VMM_TRANSFORM_SHA256)
+configure_file(cmake/vmm_transform_ptx.hpp.in
+               generated/xvram/vmm_transform_ptx.hpp @ONLY)
+
 find_path(
   XVRAM_NVML_INCLUDE_DIR
   NAMES nvml.h
