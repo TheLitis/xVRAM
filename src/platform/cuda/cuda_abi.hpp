@@ -133,6 +133,7 @@ using StreamWaitEvent = CUresult(CUDAAPI*)(CUstream, CUevent, unsigned int);
 using EventCreate = CUresult(CUDAAPI*)(CUevent*, unsigned int);
 using EventDestroy = CUresult(CUDAAPI*)(CUevent);
 using EventRecord = CUresult(CUDAAPI*)(CUevent, CUstream);
+using EventQuery = CUresult(CUDAAPI*)(CUevent);
 using EventSynchronize = CUresult(CUDAAPI*)(CUevent);
 using EventElapsedTime = CUresult(CUDAAPI*)(float*, CUevent, CUevent);
 using ModuleLoadData = CUresult(CUDAAPI*)(CUmodule*, const void*);

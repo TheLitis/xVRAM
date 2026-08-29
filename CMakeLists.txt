@@ -229,7 +229,7 @@ message(STATUS "Using NVML headers: ${XVRAM_NVML_INCLUDE_DIR}")
 
 function(xvram_enable_warnings target)
   if(MSVC)
-    target_compile_options(${target} PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8)
+    target_compile_options(${target} PRIVATE /W4 /EHsc /permissive- /Zc:__cplusplus /utf-8)
     if(XVRAM_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
     endif()
@@ -246,6 +246,7 @@ add_library(
   xvram_probe_lib STATIC
   src/base/json_writer.cpp
   src/base/size_parser.cpp
+  src/platform/cuda/cuda_api.cpp
   src/platform/cuda/cuda_driver.cpp
   src/platform/dynamic_library.cpp
   src/platform/nvml/nvml.cpp

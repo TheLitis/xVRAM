@@ -47,81 +47,23 @@ using probe::DiagnosticLevel;
 } // namespace
 
 bool Driver::load(std::vector<Diagnostic>& diagnostics) {
-  if (load_attempted_) {
-    return loaded_;
-  }
-  load_attempted_ = true;
-
-#ifdef _WIN32
-  loaded_ = library_.open_system({"nvcuda.dll"});
-#else
-  loaded_ = library_.open_system({"libcuda.so.1", "libcuda.so"});
-#endif
-  if (!loaded_) {
+  const CudaApi::LoadResult load_result = api_.load();
+  if (load_result.attempted_now && load_result.status == CudaApi::LoadStatus::library_unavailable) {
     diagnostics.push_back({DiagnosticLevel::warning, "cuda", "load_driver",
-                           "CUDA Driver API library was not loaded: " + library_.error(),
+                           "CUDA Driver API library was not loaded: " + api_.error(),
                            std::nullopt});
-    return false;
-  }
-
-  const bool required =
-      resolve(init_, {"cuInit"}) && resolve(driver_get_version_, {"cuDriverGetVersion"}) &&
-      resolve(device_get_count_, {"cuDeviceGetCount"}) && resolve(device_get_, {"cuDeviceGet"}) &&
-      resolve(device_get_name_, {"cuDeviceGetName"}) &&
-      resolve(device_total_memory_, {"cuDeviceTotalMem_v2"}) &&
-      resolve(device_get_attribute_, {"cuDeviceGetAttribute"});
-
-  resolve(get_error_name_, {"cuGetErrorName"});
-  resolve(get_error_string_, {"cuGetErrorString"});
-  resolve(device_get_uuid_, {"cuDeviceGetUuid_v2", "cuDeviceGetUuid"});
-  resolve(device_get_luid_, {"cuDeviceGetLuid"});
-  resolve(device_get_pci_bus_id_, {"cuDeviceGetPCIBusId"});
-  resolve(mem_get_allocation_granularity_, {"cuMemGetAllocationGranularity"});
-  resolve(context_get_current_, {"cuCtxGetCurrent"});
-  resolve(context_set_current_, {"cuCtxSetCurrent"});
-  resolve(context_create_, {"cuCtxCreate_v2"});
-  resolve(context_destroy_, {"cuCtxDestroy_v2"});
-  resolve(mem_get_info_, {"cuMemGetInfo_v2"});
-  resolve(mem_address_reserve_, {"cuMemAddressReserve"});
-  resolve(mem_address_free_, {"cuMemAddressFree"});
-  resolve(mem_create_, {"cuMemCreate"});
-  resolve(mem_release_, {"cuMemRelease"});
-  resolve(mem_map_, {"cuMemMap"});
-  resolve(mem_unmap_, {"cuMemUnmap"});
-  resolve(mem_set_access_, {"cuMemSetAccess"});
-  resolve(mem_alloc_, {"cuMemAlloc_v2"});
-  resolve(mem_free_, {"cuMemFree_v2"});
-  resolve(mem_host_alloc_, {"cuMemHostAlloc"});
-  resolve(mem_free_host_, {"cuMemFreeHost"});
-  resolve(memcpy_h2d_async_, {"cuMemcpyHtoDAsync_v2"});
-  resolve(memcpy_d2h_async_, {"cuMemcpyDtoHAsync_v2"});
-  resolve(stream_create_, {"cuStreamCreate"});
-  // These legacy exports are retained only where the official signatures are ABI-identical.
-  resolve(stream_destroy_, {"cuStreamDestroy_v2", "cuStreamDestroy"});
-  resolve(stream_synchronize_, {"cuStreamSynchronize"});
-  resolve(stream_wait_event_, {"cuStreamWaitEvent"});
-  resolve(event_create_, {"cuEventCreate"});
-  resolve(event_destroy_, {"cuEventDestroy_v2", "cuEventDestroy"});
-  resolve(event_record_, {"cuEventRecord"});
-  resolve(event_synchronize_, {"cuEventSynchronize"});
-  resolve(event_elapsed_time_, {"cuEventElapsedTime_v2", "cuEventElapsedTime"});
-  resolve(module_load_data_, {"cuModuleLoadData"});
-  resolve(module_get_function_, {"cuModuleGetFunction"});
-  resolve(module_unload_, {"cuModuleUnload"});
-  resolve(launch_kernel_, {"cuLaunchKernel"});
-
-  if (!required) {
+  } else if (load_result.attempted_now &&
+             load_result.status == CudaApi::LoadStatus::baseline_symbols_missing) {
     diagnostics.push_back({DiagnosticLevel::error, "cuda", "resolve_symbols",
                            "The CUDA driver is missing one or more baseline symbols",
                            std::nullopt});
-    loaded_ = false;
   }
-  return loaded_;
+  return load_result.status == CudaApi::LoadStatus::loaded;
 }
 
 std::string Driver::result_name(const abi::Result result) const {
   const char* name = nullptr;
-  if (get_error_name_ != nullptr && get_error_name_(result, &name) == abi::success &&
+  if (api_.get_error_name_ != nullptr && api_.get_error_name_(result, &name) == abi::success &&
       name != nullptr) {
     return name;
   }
@@ -130,8 +72,8 @@ std::string Driver::result_name(const abi::Result result) const {
 
 std::string Driver::result_message(const abi::Result result) const {
   const char* message = nullptr;
-  if (get_error_string_ != nullptr && get_error_string_(result, &message) == abi::success &&
-      message != nullptr) {
+  if (api_.get_error_string_ != nullptr &&
+      api_.get_error_string_(result, &message) == abi::success && message != nullptr) {
     return message;
   }
   return result_name(result);
@@ -142,10 +84,10 @@ std::optional<int> Driver::query_attribute(const abi::Device device,
                                            const std::string_view report_key,
                                            std::vector<Diagnostic>& diagnostics) const {
   int value = 0;
-  if (device_get_attribute_ == nullptr) {
+  if (api_.device_get_attribute_ == nullptr) {
     return std::nullopt;
   }
-  const abi::Result result = device_get_attribute_(&value, attribute, device);
+  const abi::Result result = api_.device_get_attribute_(&value, attribute, device);
   if (result != abi::success) {
     diagnostics.push_back({DiagnosticLevel::info, "cuda",
                            "cuDeviceGetAttribute(" + std::string(report_key) + ")",
@@ -157,19 +99,19 @@ std::optional<int> Driver::query_attribute(const abi::Device device,
 
 std::optional<std::uint64_t> Driver::query_free_memory(const abi::Device device,
                                                        std::vector<Diagnostic>& diagnostics) const {
-  if (context_create_ == nullptr || context_destroy_ == nullptr ||
-      context_get_current_ == nullptr || context_set_current_ == nullptr ||
-      mem_get_info_ == nullptr) {
+  if (api_.context_create_ == nullptr || api_.context_destroy_ == nullptr ||
+      api_.context_get_current_ == nullptr || api_.context_set_current_ == nullptr ||
+      api_.mem_get_info_ == nullptr) {
     return std::nullopt;
   }
 
   abi::Context previous = nullptr;
-  abi::Result result = context_get_current_(&previous);
+  abi::Result result = api_.context_get_current_(&previous);
   if (result != abi::success) {
     return std::nullopt;
   }
   abi::Context context = nullptr;
-  result = context_create_(&context, CU_CTX_SCHED_AUTO, device);
+  result = api_.context_create_(&context, CU_CTX_SCHED_AUTO, device);
   if (result != abi::success) {
     diagnostics.push_back(
         {DiagnosticLevel::warning, "cuda", "cuCtxCreate", result_message(result), result});
@@ -178,9 +120,9 @@ std::optional<std::uint64_t> Driver::query_free_memory(const abi::Device device,
 
   std::size_t free_bytes = 0;
   std::size_t total_bytes = 0;
-  result = mem_get_info_(&free_bytes, &total_bytes);
-  const abi::Result destroy_result = context_destroy_(context);
-  const abi::Result restore_result = context_set_current_(previous);
+  result = api_.mem_get_info_(&free_bytes, &total_bytes);
+  const abi::Result destroy_result = api_.context_destroy_(context);
+  const abi::Result restore_result = api_.context_set_current_(previous);
   if (destroy_result != abi::success || restore_result != abi::success) {
     const abi::Result cleanup_result =
         destroy_result != abi::success ? destroy_result : restore_result;
@@ -200,7 +142,7 @@ probe::GranularityInfo Driver::query_granularity(const CUmemLocationType locatio
                                                  const std::string_view report_key,
                                                  std::vector<Diagnostic>& diagnostics) const {
   probe::GranularityInfo info;
-  if (mem_get_allocation_granularity_ == nullptr) {
+  if (api_.mem_get_allocation_granularity_ == nullptr) {
     info.error = "cuMemGetAllocationGranularity is not exported";
     return info;
   }
@@ -212,7 +154,7 @@ probe::GranularityInfo Driver::query_granularity(const CUmemLocationType locatio
 
   std::size_t value = 0;
   abi::Result result =
-      mem_get_allocation_granularity_(&value, &properties, abi::granularity_minimum);
+      api_.mem_get_allocation_granularity_(&value, &properties, abi::granularity_minimum);
   if (result == abi::success) {
     info.minimum_bytes = static_cast<std::uint64_t>(value);
   } else {
@@ -223,7 +165,7 @@ probe::GranularityInfo Driver::query_granularity(const CUmemLocationType locatio
   }
 
   value = 0;
-  result = mem_get_allocation_granularity_(&value, &properties, abi::granularity_recommended);
+  result = api_.mem_get_allocation_granularity_(&value, &properties, abi::granularity_recommended);
   if (result == abi::success) {
     info.recommended_bytes = static_cast<std::uint64_t>(value);
   } else {
@@ -245,13 +187,15 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   smoke.status = "failed";
   smoke.allocation_bytes = allocation_bytes;
 
-  if (context_create_ == nullptr || context_destroy_ == nullptr ||
-      context_get_current_ == nullptr || context_set_current_ == nullptr ||
-      mem_address_reserve_ == nullptr || mem_address_free_ == nullptr || mem_create_ == nullptr ||
-      mem_release_ == nullptr || mem_map_ == nullptr || mem_unmap_ == nullptr ||
-      mem_set_access_ == nullptr || mem_host_alloc_ == nullptr || mem_free_host_ == nullptr ||
-      memcpy_h2d_async_ == nullptr || memcpy_d2h_async_ == nullptr || stream_create_ == nullptr ||
-      stream_destroy_ == nullptr || stream_synchronize_ == nullptr) {
+  if (api_.context_create_ == nullptr || api_.context_destroy_ == nullptr ||
+      api_.context_get_current_ == nullptr || api_.context_set_current_ == nullptr ||
+      api_.mem_address_reserve_ == nullptr || api_.mem_address_free_ == nullptr ||
+      api_.mem_create_ == nullptr || api_.mem_release_ == nullptr || api_.mem_map_ == nullptr ||
+      api_.mem_unmap_ == nullptr || api_.mem_set_access_ == nullptr ||
+      api_.mem_host_alloc_ == nullptr || api_.mem_free_host_ == nullptr ||
+      api_.memcpy_h2d_async_ == nullptr || api_.memcpy_d2h_async_ == nullptr ||
+      api_.stream_create_ == nullptr || api_.stream_destroy_ == nullptr ||
+      api_.stream_synchronize_ == nullptr) {
     smoke.message = "The CUDA driver is missing one or more VMM smoke-test entry points";
     return smoke;
   }
@@ -275,10 +219,10 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   bool previous_captured = false;
   bool stream_synchronization_failed = false;
 
-  abi::Result result = context_get_current_(&previous);
+  abi::Result result = api_.context_get_current_(&previous);
   if (result == abi::success) {
     previous_captured = true;
-    result = context_create_(&context, CU_CTX_SCHED_AUTO, device);
+    result = api_.context_create_(&context, CU_CTX_SCHED_AUTO, device);
   }
 
   const auto cleanup = [&]() -> bool {
@@ -294,7 +238,7 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
     };
 
     if (stream != nullptr) {
-      const abi::Result synchronize_result = stream_synchronize_(stream);
+      const abi::Result synchronize_result = api_.stream_synchronize_(stream);
       if (synchronize_result != abi::success) {
         stream_synchronization_failed = true;
       }
@@ -302,7 +246,7 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
     }
 
     if (mapped) {
-      if (record_cleanup_error("cuMemUnmap(cleanup)", mem_unmap_(mapped_address, bytes))) {
+      if (record_cleanup_error("cuMemUnmap(cleanup)", api_.mem_unmap_(mapped_address, bytes))) {
         mapped = false;
       }
     }
@@ -310,35 +254,35 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
     // The mapping retains the allocation until it can be unmapped, so never lose our handle merely
     // because cuMemUnmap failed.
     if (handle_created) {
-      if (record_cleanup_error("cuMemRelease(cleanup)", mem_release_(handle))) {
+      if (record_cleanup_error("cuMemRelease(cleanup)", api_.mem_release_(handle))) {
         handle_created = false;
       }
     }
     if (reservation_created && !mapped) {
       if (record_cleanup_error("cuMemAddressFree(cleanup)",
-                               mem_address_free_(reservation, bytes * 2))) {
+                               api_.mem_address_free_(reservation, bytes * 2))) {
         reservation_created = false;
       }
     }
     if (stream != nullptr) {
-      if (record_cleanup_error("cuStreamDestroy(cleanup)", stream_destroy_(stream))) {
+      if (record_cleanup_error("cuStreamDestroy(cleanup)", api_.stream_destroy_(stream))) {
         stream = nullptr;
       }
     }
     if (destination != nullptr) {
-      if (record_cleanup_error("cuMemFreeHost(destination)", mem_free_host_(destination))) {
+      if (record_cleanup_error("cuMemFreeHost(destination)", api_.mem_free_host_(destination))) {
         destination = nullptr;
       }
     }
     if (source != nullptr) {
-      if (record_cleanup_error("cuMemFreeHost(source)", mem_free_host_(source))) {
+      if (record_cleanup_error("cuMemFreeHost(source)", api_.mem_free_host_(source))) {
         source = nullptr;
       }
     }
 
     bool context_destroyed = context == nullptr;
     if (context != nullptr) {
-      if (record_cleanup_error("cuCtxDestroy(cleanup)", context_destroy_(context))) {
+      if (record_cleanup_error("cuCtxDestroy(cleanup)", api_.context_destroy_(context))) {
         context = nullptr;
         context_destroyed = true;
       }
@@ -368,7 +312,7 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
       complete = false;
     }
     if (previous_captured) {
-      record_cleanup_error("cuCtxSetCurrent(restore)", context_set_current_(previous));
+      record_cleanup_error("cuCtxSetCurrent(restore)", api_.context_set_current_(previous));
     }
     if (!complete || stream_synchronization_failed) {
       active_cuda_poisoned_ = true;
@@ -395,13 +339,13 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   properties.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   properties.location.id = ordinal;
 
-  result = mem_address_reserve_(&reservation, bytes * 2, 0, 0, 0);
+  result = api_.mem_address_reserve_(&reservation, bytes * 2, 0, 0, 0);
   if (result != abi::success) {
     fail("cuMemAddressReserve", result);
     return smoke;
   }
   reservation_created = true;
-  result = mem_create_(&handle, bytes, &properties, 0);
+  result = api_.mem_create_(&handle, bytes, &properties, 0);
   if (result != abi::success) {
     fail("cuMemCreate", result);
     return smoke;
@@ -409,7 +353,7 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   handle_created = true;
 
   mapped_address = reservation;
-  result = mem_map_(mapped_address, bytes, 0, handle, 0);
+  result = api_.mem_map_(mapped_address, bytes, 0, handle, 0);
   if (result != abi::success) {
     fail("cuMemMap(first)", result);
     return smoke;
@@ -420,10 +364,10 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   access.location.id = ordinal;
   access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  if ((result = mem_set_access_(mapped_address, bytes, &access, 1)) != abi::success ||
-      (result = mem_host_alloc_(&source, bytes, 0)) != abi::success ||
-      (result = mem_host_alloc_(&destination, bytes, 0)) != abi::success ||
-      (result = stream_create_(&stream, CU_STREAM_NON_BLOCKING)) != abi::success) {
+  if ((result = api_.mem_set_access_(mapped_address, bytes, &access, 1)) != abi::success ||
+      (result = api_.mem_host_alloc_(&source, bytes, 0)) != abi::success ||
+      (result = api_.mem_host_alloc_(&destination, bytes, 0)) != abi::success ||
+      (result = api_.stream_create_(&stream, CU_STREAM_NON_BLOCKING)) != abi::success) {
     fail("prepare_first_mapping", result);
     return smoke;
   }
@@ -435,12 +379,13 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   }
   std::memset(destination, 0, bytes);
 
-  if ((result = memcpy_h2d_async_(mapped_address, source, bytes, stream)) != abi::success ||
-      (result = memcpy_d2h_async_(destination, mapped_address, bytes, stream)) != abi::success) {
+  if ((result = api_.memcpy_h2d_async_(mapped_address, source, bytes, stream)) != abi::success ||
+      (result = api_.memcpy_d2h_async_(destination, mapped_address, bytes, stream)) !=
+          abi::success) {
     fail("copy_first_mapping", result);
     return smoke;
   }
-  result = stream_synchronize_(stream);
+  result = api_.stream_synchronize_(stream);
   if (result != abi::success) {
     stream_synchronization_failed = true;
     fail("cuStreamSynchronize(first_mapping)", result);
@@ -455,17 +400,17 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
     return smoke;
   }
 
-  result = mem_unmap_(mapped_address, bytes);
+  result = api_.mem_unmap_(mapped_address, bytes);
   if (result != abi::success) {
     fail("cuMemUnmap(first)", result);
     return smoke;
   }
   mapped = false;
   mapped_address = reservation + static_cast<abi::DevicePointer>(bytes);
-  result = mem_map_(mapped_address, bytes, 0, handle, 0);
+  result = api_.mem_map_(mapped_address, bytes, 0, handle, 0);
   if (result == abi::success) {
     mapped = true;
-    result = mem_set_access_(mapped_address, bytes, &access, 1);
+    result = api_.mem_set_access_(mapped_address, bytes, &access, 1);
   }
   if (result != abi::success) {
     fail("map_second_address", result);
@@ -473,11 +418,12 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
   }
 
   std::memset(destination_bytes, 0, bytes);
-  if ((result = memcpy_d2h_async_(destination, mapped_address, bytes, stream)) != abi::success) {
+  if ((result = api_.memcpy_d2h_async_(destination, mapped_address, bytes, stream)) !=
+      abi::success) {
     fail("copy_second_mapping", result);
     return smoke;
   }
-  result = stream_synchronize_(stream);
+  result = api_.stream_synchronize_(stream);
   if (result != abi::success) {
     stream_synchronization_failed = true;
     fail("cuStreamSynchronize(second_mapping)", result);
@@ -505,12 +451,12 @@ probe::VmmSmokeResult Driver::smoke_test_vmm(const abi::Device device, const std
 void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnostics,
                      const probe::ProbeOptions& options) {
   report.library_loaded = load(diagnostics);
-  report.library_name = library_.loaded_name();
+  report.library_name = api_.loaded_name();
   if (!report.library_loaded) {
     return;
   }
 
-  const abi::Result initialization = init_(0);
+  const abi::Result initialization = api_.init_(0);
   report.initialization_code = initialization;
   report.initialization_name = result_name(initialization);
   report.initialization_message = result_message(initialization);
@@ -521,7 +467,7 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
   }
 
   int raw_driver_version = 0;
-  const abi::Result version_result = driver_get_version_(&raw_driver_version);
+  const abi::Result version_result = api_.driver_get_version_(&raw_driver_version);
   if (version_result == abi::success) {
     report.driver_version = probe::DriverVersion{raw_driver_version, raw_driver_version / 1000,
                                                  (raw_driver_version % 1000) / 10};
@@ -531,7 +477,7 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
   }
 
   int device_count = 0;
-  const abi::Result count_result = device_get_count_(&device_count);
+  const abi::Result count_result = api_.device_get_count_(&device_count);
   if (count_result != abi::success) {
     diagnostics.push_back({DiagnosticLevel::error, "cuda", "cuDeviceGetCount",
                            result_message(count_result), count_result});
@@ -597,7 +543,7 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
 
     const std::size_t device_diagnostics_begin = diagnostics.size();
     abi::Device device = 0;
-    const abi::Result get_result = device_get_(&device, ordinal);
+    const abi::Result get_result = api_.device_get_(&device, ordinal);
     if (get_result != abi::success) {
       diagnostics.push_back({DiagnosticLevel::warning, "cuda", "cuDeviceGet",
                              result_message(get_result), get_result, ordinal});
@@ -608,7 +554,7 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
     output.ordinal = ordinal;
     std::array<char, 256> name{};
     const abi::Result name_result =
-        device_get_name_(name.data(), static_cast<int>(name.size()), device);
+        api_.device_get_name_(name.data(), static_cast<int>(name.size()), device);
     if (name_result == abi::success) {
       output.name = name.data();
     } else {
@@ -618,7 +564,7 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
     }
 
     std::size_t total_memory = 0;
-    const abi::Result total_memory_result = device_total_memory_(&total_memory, device);
+    const abi::Result total_memory_result = api_.device_total_memory_(&total_memory, device);
     if (total_memory_result == abi::success) {
       output.total_memory_bytes = static_cast<std::uint64_t>(total_memory);
     } else {
@@ -626,9 +572,9 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
                              result_message(total_memory_result), total_memory_result});
     }
 
-    if (device_get_uuid_ != nullptr) {
+    if (api_.device_get_uuid_ != nullptr) {
       abi::Uuid uuid{};
-      const abi::Result uuid_result = device_get_uuid_(&uuid, device);
+      const abi::Result uuid_result = api_.device_get_uuid_(&uuid, device);
       if (uuid_result == abi::success) {
         if (options.include_stable_identifiers) {
           output.uuid = format_uuid(uuid);
@@ -643,11 +589,11 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
     const std::optional<int> tcc_driver =
         query_attribute(device, abi::attributes::tcc_driver, "tcc_driver", diagnostics);
 #ifdef _WIN32
-    if (tcc_driver.has_value() && *tcc_driver == 0 && device_get_luid_ != nullptr) {
+    if (tcc_driver.has_value() && *tcc_driver == 0 && api_.device_get_luid_ != nullptr) {
       platform::AdapterLuid luid{};
       unsigned int node_mask = 0;
       const abi::Result luid_result =
-          device_get_luid_(reinterpret_cast<char*>(luid.data()), &node_mask, device);
+          api_.device_get_luid_(reinterpret_cast<char*>(luid.data()), &node_mask, device);
       if (luid_result == abi::success) {
         output.node_mask = node_mask;
         const bool meaningful_luid = std::any_of(luid.begin(), luid.end(),
@@ -682,10 +628,10 @@ void Driver::collect(probe::CudaReport& report, std::vector<Diagnostic>& diagnos
     }
 #endif
 
-    if (device_get_pci_bus_id_ != nullptr) {
+    if (api_.device_get_pci_bus_id_ != nullptr) {
       std::array<char, 32> pci{};
       const abi::Result pci_result =
-          device_get_pci_bus_id_(pci.data(), static_cast<int>(pci.size()), device);
+          api_.device_get_pci_bus_id_(pci.data(), static_cast<int>(pci.size()), device);
       if (pci_result == abi::success) {
         output.pci_bus_id = pci.data();
       } else {
@@ -802,24 +748,25 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
     return measurement;
   }
 
-  if (!load(diagnostics) || init_(0) != abi::success) {
+  if (!load(diagnostics) || api_.init_(0) != abi::success) {
     measurement.message = "CUDA driver is not available";
     return measurement;
   }
-  if (mem_alloc_ == nullptr || mem_free_ == nullptr || mem_host_alloc_ == nullptr ||
-      mem_free_host_ == nullptr || memcpy_h2d_async_ == nullptr || memcpy_d2h_async_ == nullptr ||
-      stream_create_ == nullptr || stream_destroy_ == nullptr || stream_synchronize_ == nullptr ||
-      event_create_ == nullptr || event_destroy_ == nullptr || event_record_ == nullptr ||
-      event_synchronize_ == nullptr || event_elapsed_time_ == nullptr ||
-      context_create_ == nullptr || context_destroy_ == nullptr ||
-      context_get_current_ == nullptr || context_set_current_ == nullptr ||
-      mem_get_info_ == nullptr) {
+  if (api_.mem_alloc_ == nullptr || api_.mem_free_ == nullptr || api_.mem_host_alloc_ == nullptr ||
+      api_.mem_free_host_ == nullptr || api_.memcpy_h2d_async_ == nullptr ||
+      api_.memcpy_d2h_async_ == nullptr || api_.stream_create_ == nullptr ||
+      api_.stream_destroy_ == nullptr || api_.stream_synchronize_ == nullptr ||
+      api_.event_create_ == nullptr || api_.event_destroy_ == nullptr ||
+      api_.event_record_ == nullptr || api_.event_synchronize_ == nullptr ||
+      api_.event_elapsed_time_ == nullptr || api_.context_create_ == nullptr ||
+      api_.context_destroy_ == nullptr || api_.context_get_current_ == nullptr ||
+      api_.context_set_current_ == nullptr || api_.mem_get_info_ == nullptr) {
     measurement.message = "CUDA driver is missing transfer benchmark entry points";
     return measurement;
   }
 
   abi::Device device = 0;
-  abi::Result result = device_get_(&device, ordinal);
+  abi::Result result = api_.device_get_(&device, ordinal);
   if (result != abi::success) {
     measurement.message = result_name(result) + ": " + result_message(result);
     return measurement;
@@ -827,8 +774,8 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
 
   abi::Context previous = nullptr;
   abi::Context context = nullptr;
-  if (context_get_current_(&previous) != abi::success ||
-      context_create_(&context, CU_CTX_SCHED_AUTO, device) != abi::success) {
+  if (api_.context_get_current_(&previous) != abi::success ||
+      api_.context_create_(&context, CU_CTX_SCHED_AUTO, device) != abi::success) {
     measurement.message = "Could not create an isolated CUDA benchmark context";
     return measurement;
   }
@@ -836,12 +783,12 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
   const auto cleanup_context = [&] {
     abi::Result destroy_result = abi::success;
     if (context != nullptr) {
-      destroy_result = context_destroy_(context);
+      destroy_result = api_.context_destroy_(context);
       if (destroy_result == abi::success) {
         context = nullptr;
       }
     }
-    const abi::Result restore_result = context_set_current_(previous);
+    const abi::Result restore_result = api_.context_set_current_(previous);
     if (destroy_result != abi::success || restore_result != abi::success) {
       const abi::Result cleanup_result =
           destroy_result != abi::success ? destroy_result : restore_result;
@@ -854,7 +801,7 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
 
   std::size_t free_bytes = 0;
   std::size_t total_bytes = 0;
-  result = mem_get_info_(&free_bytes, &total_bytes);
+  result = api_.mem_get_info_(&free_bytes, &total_bytes);
   if (result != abi::success) {
     cleanup_context();
     measurement.message = result_name(result) + ": " + result_message(result);
@@ -899,44 +846,44 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
     bool streams_idle = true;
     if (h2d_stream != nullptr) {
       streams_idle = record_cleanup_error("cuStreamSynchronize(h2d_cleanup)",
-                                          stream_synchronize_(h2d_stream)) &&
+                                          api_.stream_synchronize_(h2d_stream)) &&
                      streams_idle;
     }
     if (d2h_stream != nullptr) {
       streams_idle = record_cleanup_error("cuStreamSynchronize(d2h_cleanup)",
-                                          stream_synchronize_(d2h_stream)) &&
+                                          api_.stream_synchronize_(d2h_stream)) &&
                      streams_idle;
     }
 
     if (streams_idle) {
       if (stop_event != nullptr &&
-          record_cleanup_error("cuEventDestroy(stop)", event_destroy_(stop_event))) {
+          record_cleanup_error("cuEventDestroy(stop)", api_.event_destroy_(stop_event))) {
         stop_event = nullptr;
       }
       if (start_event != nullptr &&
-          record_cleanup_error("cuEventDestroy(start)", event_destroy_(start_event))) {
+          record_cleanup_error("cuEventDestroy(start)", api_.event_destroy_(start_event))) {
         start_event = nullptr;
       }
       if (d2h_stream != nullptr &&
-          record_cleanup_error("cuStreamDestroy(d2h)", stream_destroy_(d2h_stream))) {
+          record_cleanup_error("cuStreamDestroy(d2h)", api_.stream_destroy_(d2h_stream))) {
         d2h_stream = nullptr;
       }
       if (h2d_stream != nullptr &&
-          record_cleanup_error("cuStreamDestroy(h2d)", stream_destroy_(h2d_stream))) {
+          record_cleanup_error("cuStreamDestroy(h2d)", api_.stream_destroy_(h2d_stream))) {
         h2d_stream = nullptr;
       }
       if (host_b != nullptr &&
-          record_cleanup_error("cuMemFreeHost(host_b)", mem_free_host_(host_b))) {
+          record_cleanup_error("cuMemFreeHost(host_b)", api_.mem_free_host_(host_b))) {
         host_b = nullptr;
       }
       if (host_a != nullptr &&
-          record_cleanup_error("cuMemFreeHost(host_a)", mem_free_host_(host_a))) {
+          record_cleanup_error("cuMemFreeHost(host_a)", api_.mem_free_host_(host_a))) {
         host_a = nullptr;
       }
-      if (device_b != 0 && record_cleanup_error("cuMemFree(device_b)", mem_free_(device_b))) {
+      if (device_b != 0 && record_cleanup_error("cuMemFree(device_b)", api_.mem_free_(device_b))) {
         device_b = 0;
       }
-      if (device_a != 0 && record_cleanup_error("cuMemFree(device_a)", mem_free_(device_a))) {
+      if (device_a != 0 && record_cleanup_error("cuMemFree(device_a)", api_.mem_free_(device_a))) {
         device_a = 0;
       }
     }
@@ -951,12 +898,12 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
         d2h_stream = nullptr;
         device_a = 0;
         device_b = 0;
-        if (host_b != nullptr &&
-            record_cleanup_error("cuMemFreeHost(host_b_after_context)", mem_free_host_(host_b))) {
+        if (host_b != nullptr && record_cleanup_error("cuMemFreeHost(host_b_after_context)",
+                                                      api_.mem_free_host_(host_b))) {
           host_b = nullptr;
         }
-        if (host_a != nullptr &&
-            record_cleanup_error("cuMemFreeHost(host_a_after_context)", mem_free_host_(host_a))) {
+        if (host_a != nullptr && record_cleanup_error("cuMemFreeHost(host_a_after_context)",
+                                                      api_.mem_free_host_(host_a))) {
           host_a = nullptr;
         }
       }
@@ -977,14 +924,14 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
         {DiagnosticLevel::warning, "benchmark", operation, result_message(error), error});
   };
 
-  if ((result = mem_alloc_(&device_a, bytes)) != abi::success ||
-      (result = mem_alloc_(&device_b, bytes)) != abi::success ||
-      (result = mem_host_alloc_(&host_a, bytes, 0)) != abi::success ||
-      (result = mem_host_alloc_(&host_b, bytes, 0)) != abi::success ||
-      (result = stream_create_(&h2d_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
-      (result = stream_create_(&d2h_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
-      (result = event_create_(&start_event, 0U)) != abi::success ||
-      (result = event_create_(&stop_event, 0U)) != abi::success) {
+  if ((result = api_.mem_alloc_(&device_a, bytes)) != abi::success ||
+      (result = api_.mem_alloc_(&device_b, bytes)) != abi::success ||
+      (result = api_.mem_host_alloc_(&host_a, bytes, 0)) != abi::success ||
+      (result = api_.mem_host_alloc_(&host_b, bytes, 0)) != abi::success ||
+      (result = api_.stream_create_(&h2d_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = api_.stream_create_(&d2h_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = api_.event_create_(&start_event, 0U)) != abi::success ||
+      (result = api_.event_create_(&stop_event, 0U)) != abi::success) {
     fail("allocate_benchmark_resources", result);
     cleanup();
     return measurement;
@@ -993,30 +940,31 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
   std::memset(host_a, 0xA5, bytes);
   std::memset(host_b, 0, bytes);
 
-  if ((result = memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream)) != abi::success ||
-      (result = memcpy_h2d_async_(device_b, host_a, bytes, h2d_stream)) != abi::success ||
-      (result = stream_synchronize_(h2d_stream)) != abi::success) {
+  if ((result = api_.memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream)) != abi::success ||
+      (result = api_.memcpy_h2d_async_(device_b, host_a, bytes, h2d_stream)) != abi::success ||
+      (result = api_.stream_synchronize_(h2d_stream)) != abi::success) {
     fail("warm_up_transfers", result);
     cleanup();
     return measurement;
   }
 
   const auto measure_one_direction = [&](const bool host_to_device) -> std::optional<double> {
-    abi::Result call_result = event_record_(start_event, host_to_device ? h2d_stream : d2h_stream);
+    abi::Result call_result =
+        api_.event_record_(start_event, host_to_device ? h2d_stream : d2h_stream);
     for (std::uint32_t index = 0;
          call_result == abi::success && index < options.benchmark_iterations; ++index) {
-      call_result = host_to_device ? memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream)
-                                   : memcpy_d2h_async_(host_b, device_b, bytes, d2h_stream);
+      call_result = host_to_device ? api_.memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream)
+                                   : api_.memcpy_d2h_async_(host_b, device_b, bytes, d2h_stream);
     }
     if (call_result == abi::success) {
-      call_result = event_record_(stop_event, host_to_device ? h2d_stream : d2h_stream);
+      call_result = api_.event_record_(stop_event, host_to_device ? h2d_stream : d2h_stream);
     }
     if (call_result == abi::success) {
-      call_result = event_synchronize_(stop_event);
+      call_result = api_.event_synchronize_(stop_event);
     }
     float milliseconds = 0.0F;
     if (call_result == abi::success) {
-      call_result = event_elapsed_time_(&milliseconds, start_event, stop_event);
+      call_result = api_.event_elapsed_time_(&milliseconds, start_event, stop_event);
     }
     if (call_result != abi::success || milliseconds <= 0.0F) {
       return std::nullopt;
@@ -1034,23 +982,23 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
     return measurement;
   }
 
-  stream_synchronize_(h2d_stream);
-  stream_synchronize_(d2h_stream);
+  api_.stream_synchronize_(h2d_stream);
+  api_.stream_synchronize_(d2h_stream);
   const auto duplex_start = std::chrono::steady_clock::now();
   for (std::uint32_t index = 0; index < options.benchmark_iterations; ++index) {
-    result = memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream);
+    result = api_.memcpy_h2d_async_(device_a, host_a, bytes, h2d_stream);
     if (result == abi::success) {
-      result = memcpy_d2h_async_(host_b, device_b, bytes, d2h_stream);
+      result = api_.memcpy_d2h_async_(host_b, device_b, bytes, d2h_stream);
     }
     if (result != abi::success) {
       break;
     }
   }
   if (result == abi::success) {
-    result = stream_synchronize_(h2d_stream);
+    result = api_.stream_synchronize_(h2d_stream);
   }
   if (result == abi::success) {
-    result = stream_synchronize_(d2h_stream);
+    result = api_.stream_synchronize_(d2h_stream);
   }
   const auto duplex_stop = std::chrono::steady_clock::now();
   if (result != abi::success) {
@@ -1078,9 +1026,9 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
     return measurement;
   }
   std::memset(host_b, 0, bytes);
-  result = memcpy_d2h_async_(host_b, device_a, bytes, d2h_stream);
+  result = api_.memcpy_d2h_async_(host_b, device_a, bytes, d2h_stream);
   if (result == abi::success) {
-    result = stream_synchronize_(d2h_stream);
+    result = api_.stream_synchronize_(d2h_stream);
   }
   if (result != abi::success) {
     fail("verify_h2d_round_trip", result);
@@ -1127,26 +1075,28 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
     diagnose(DiagnosticLevel::error, "active_work_refused", *measurement.message);
     return measurement;
   }
-  if (!load(diagnostics) || init_(0) != abi::success) {
+  if (!load(diagnostics) || api_.init_(0) != abi::success) {
     measurement.message = "CUDA driver is not available";
     return measurement;
   }
-  if (mem_alloc_ == nullptr || mem_free_ == nullptr || mem_host_alloc_ == nullptr ||
-      mem_free_host_ == nullptr || memcpy_h2d_async_ == nullptr || memcpy_d2h_async_ == nullptr ||
-      stream_create_ == nullptr || stream_destroy_ == nullptr || stream_synchronize_ == nullptr ||
-      stream_wait_event_ == nullptr || event_create_ == nullptr || event_destroy_ == nullptr ||
-      event_record_ == nullptr || event_synchronize_ == nullptr || event_elapsed_time_ == nullptr ||
-      module_load_data_ == nullptr || module_get_function_ == nullptr ||
-      module_unload_ == nullptr || launch_kernel_ == nullptr || context_create_ == nullptr ||
-      context_destroy_ == nullptr || context_get_current_ == nullptr ||
-      context_set_current_ == nullptr || device_get_attribute_ == nullptr ||
-      mem_get_info_ == nullptr) {
+  if (api_.mem_alloc_ == nullptr || api_.mem_free_ == nullptr || api_.mem_host_alloc_ == nullptr ||
+      api_.mem_free_host_ == nullptr || api_.memcpy_h2d_async_ == nullptr ||
+      api_.memcpy_d2h_async_ == nullptr || api_.stream_create_ == nullptr ||
+      api_.stream_destroy_ == nullptr || api_.stream_synchronize_ == nullptr ||
+      api_.stream_wait_event_ == nullptr || api_.event_create_ == nullptr ||
+      api_.event_destroy_ == nullptr || api_.event_record_ == nullptr ||
+      api_.event_synchronize_ == nullptr || api_.event_elapsed_time_ == nullptr ||
+      api_.module_load_data_ == nullptr || api_.module_get_function_ == nullptr ||
+      api_.module_unload_ == nullptr || api_.launch_kernel_ == nullptr ||
+      api_.context_create_ == nullptr || api_.context_destroy_ == nullptr ||
+      api_.context_get_current_ == nullptr || api_.context_set_current_ == nullptr ||
+      api_.device_get_attribute_ == nullptr || api_.mem_get_info_ == nullptr) {
     measurement.message = "CUDA driver is missing overlap benchmark entry points";
     return measurement;
   }
 
   abi::Device device = 0;
-  abi::Result result = device_get_(&device, ordinal);
+  abi::Result result = api_.device_get_(&device, ordinal);
   if (result != abi::success) {
     measurement.message = result_name(result) + ": " + result_message(result);
     return measurement;
@@ -1155,12 +1105,12 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
   int multiprocessor_count = 0;
   int maximum_threads_per_block = 0;
   int warp_size = 0;
-  if ((result = device_get_attribute_(&multiprocessor_count, abi::attributes::multiprocessor_count,
-                                      device)) != abi::success ||
-      (result = device_get_attribute_(&maximum_threads_per_block,
-                                      abi::attributes::max_threads_per_block, device)) !=
+  if ((result = api_.device_get_attribute_(
+           &multiprocessor_count, abi::attributes::multiprocessor_count, device)) != abi::success ||
+      (result = api_.device_get_attribute_(&maximum_threads_per_block,
+                                           abi::attributes::max_threads_per_block, device)) !=
           abi::success ||
-      (result = device_get_attribute_(&warp_size, abi::attributes::warp_size, device)) !=
+      (result = api_.device_get_attribute_(&warp_size, abi::attributes::warp_size, device)) !=
           abi::success ||
       multiprocessor_count <= 0 || maximum_threads_per_block <= 0 || warp_size <= 0) {
     measurement.message = result == abi::success
@@ -1182,10 +1132,10 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
   abi::Context previous = nullptr;
   abi::Context context = nullptr;
   bool previous_captured = false;
-  result = context_get_current_(&previous);
+  result = api_.context_get_current_(&previous);
   if (result == abi::success) {
     previous_captured = true;
-    result = context_create_(&context, CU_CTX_SCHED_AUTO, device);
+    result = api_.context_create_(&context, CU_CTX_SCHED_AUTO, device);
   }
   if (result != abi::success) {
     measurement.message = previous_captured ? "Could not create an isolated overlap context"
@@ -1196,7 +1146,7 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
   const auto cleanup_context = [&]() {
     bool complete = true;
     if (context != nullptr) {
-      const abi::Result destroy_result = context_destroy_(context);
+      const abi::Result destroy_result = api_.context_destroy_(context);
       if (destroy_result == abi::success) {
         context = nullptr;
       } else {
@@ -1206,7 +1156,7 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
       }
     }
     if (previous_captured) {
-      const abi::Result restore_result = context_set_current_(previous);
+      const abi::Result restore_result = api_.context_set_current_(previous);
       if (restore_result != abi::success) {
         complete = false;
         diagnose(DiagnosticLevel::warning, "cuCtxSetCurrent(restore)",
@@ -1218,7 +1168,7 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
 
   std::size_t free_bytes = 0;
   std::size_t total_bytes = 0;
-  result = mem_get_info_(&free_bytes, &total_bytes);
+  result = api_.mem_get_info_(&free_bytes, &total_bytes);
   if (result != abi::success) {
     measurement.message = result_name(result) + ": " + result_message(result);
     measurement.cleanup_complete = cleanup_context();
@@ -1281,7 +1231,7 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
              std::pair{"cuStreamSynchronize(compute_cleanup)", compute_stream},
              std::pair{"cuStreamSynchronize(copy_cleanup)", copy_stream}}) {
       if (stream != nullptr) {
-        streams_idle = record_cleanup_error(name, stream_synchronize_(stream)) && streams_idle;
+        streams_idle = record_cleanup_error(name, api_.stream_synchronize_(stream)) && streams_idle;
       }
     }
 
@@ -1291,7 +1241,7 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
                std::pair{"cuEventDestroy(compute_done)", &compute_done_event},
                std::pair{"cuEventDestroy(stop)", &stop_event},
                std::pair{"cuEventDestroy(start)", &start_event}}) {
-        if (*event != nullptr && record_cleanup_error(name, event_destroy_(*event))) {
+        if (*event != nullptr && record_cleanup_error(name, api_.event_destroy_(*event))) {
           *event = nullptr;
         }
       }
@@ -1299,28 +1249,30 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
                std::pair{"cuStreamDestroy(copy)", &copy_stream},
                std::pair{"cuStreamDestroy(compute)", &compute_stream},
                std::pair{"cuStreamDestroy(control)", &control_stream}}) {
-        if (*stream != nullptr && record_cleanup_error(name, stream_destroy_(*stream))) {
+        if (*stream != nullptr && record_cleanup_error(name, api_.stream_destroy_(*stream))) {
           *stream = nullptr;
         }
       }
-      if (module != nullptr && record_cleanup_error("cuModuleUnload", module_unload_(module))) {
+      if (module != nullptr &&
+          record_cleanup_error("cuModuleUnload", api_.module_unload_(module))) {
         module = nullptr;
         function = nullptr;
       }
       if (compute_output != 0 &&
-          record_cleanup_error("cuMemFree(compute_output)", mem_free_(compute_output))) {
+          record_cleanup_error("cuMemFree(compute_output)", api_.mem_free_(compute_output))) {
         compute_output = 0;
       }
       if (transfer_buffer != 0 &&
-          record_cleanup_error("cuMemFree(transfer_buffer)", mem_free_(transfer_buffer))) {
+          record_cleanup_error("cuMemFree(transfer_buffer)", api_.mem_free_(transfer_buffer))) {
         transfer_buffer = 0;
       }
       if (host_destination != nullptr &&
-          record_cleanup_error("cuMemFreeHost(destination)", mem_free_host_(host_destination))) {
+          record_cleanup_error("cuMemFreeHost(destination)",
+                               api_.mem_free_host_(host_destination))) {
         host_destination = nullptr;
       }
       if (host_source != nullptr &&
-          record_cleanup_error("cuMemFreeHost(source)", mem_free_host_(host_source))) {
+          record_cleanup_error("cuMemFreeHost(source)", api_.mem_free_host_(host_source))) {
         host_source = nullptr;
       }
     }
@@ -1341,11 +1293,11 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
         compute_output = 0;
         if (host_destination != nullptr &&
             record_cleanup_error("cuMemFreeHost(destination_after_context)",
-                                 mem_free_host_(host_destination))) {
+                                 api_.mem_free_host_(host_destination))) {
           host_destination = nullptr;
         }
         if (host_source != nullptr && record_cleanup_error("cuMemFreeHost(source_after_context)",
-                                                           mem_free_host_(host_source))) {
+                                                           api_.mem_free_host_(host_source))) {
           host_source = nullptr;
         }
       }
@@ -1366,20 +1318,20 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
     diagnose(DiagnosticLevel::warning, operation, result_message(error), error);
   };
 
-  if ((result = mem_alloc_(&transfer_buffer, bytes)) != abi::success ||
-      (result = mem_alloc_(&compute_output, output_bytes)) != abi::success ||
-      (result = mem_host_alloc_(&host_source, bytes, 0)) != abi::success ||
-      (result = mem_host_alloc_(&host_destination, bytes, 0)) != abi::success ||
-      (result = stream_create_(&control_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
-      (result = stream_create_(&compute_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
-      (result = stream_create_(&copy_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
-      (result = event_create_(&start_event, 0U)) != abi::success ||
-      (result = event_create_(&stop_event, 0U)) != abi::success ||
-      (result = event_create_(&compute_done_event, 0U)) != abi::success ||
-      (result = event_create_(&copy_done_event, 0U)) != abi::success ||
-      (result = module_load_data_(&module, synthetic_overlap::ptx)) != abi::success ||
-      (result = module_get_function_(&function, module, synthetic_overlap::kernel_name.data())) !=
-          abi::success) {
+  if ((result = api_.mem_alloc_(&transfer_buffer, bytes)) != abi::success ||
+      (result = api_.mem_alloc_(&compute_output, output_bytes)) != abi::success ||
+      (result = api_.mem_host_alloc_(&host_source, bytes, 0)) != abi::success ||
+      (result = api_.mem_host_alloc_(&host_destination, bytes, 0)) != abi::success ||
+      (result = api_.stream_create_(&control_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = api_.stream_create_(&compute_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = api_.stream_create_(&copy_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = api_.event_create_(&start_event, 0U)) != abi::success ||
+      (result = api_.event_create_(&stop_event, 0U)) != abi::success ||
+      (result = api_.event_create_(&compute_done_event, 0U)) != abi::success ||
+      (result = api_.event_create_(&copy_done_event, 0U)) != abi::success ||
+      (result = api_.module_load_data_(&module, synthetic_overlap::ptx)) != abi::success ||
+      (result = api_.module_get_function_(&function, module,
+                                          synthetic_overlap::kernel_name.data())) != abi::success) {
     fail("prepare_overlap_resources", result);
     measurement.cleanup_complete = cleanup();
     return measurement;
@@ -1390,9 +1342,9 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
     source_bytes[index] = static_cast<std::uint8_t>((index * 29U + 0x5BU) & 0xFFU);
   }
   std::memset(host_destination, 0, bytes);
-  result = memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream);
+  result = api_.memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream);
   if (result == abi::success) {
-    result = stream_synchronize_(copy_stream);
+    result = api_.stream_synchronize_(copy_stream);
   }
   if (result != abi::success) {
     fail("initialize_transfer_buffer", result);
@@ -1405,25 +1357,25 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
     abi::DevicePointer output_argument = compute_output;
     std::uint32_t iteration_argument = iterations;
     void* parameters[] = {&output_argument, &iteration_argument};
-    return launch_kernel_(function, measurement.grid_blocks, 1U, 1U, measurement.block_threads, 1U,
-                          1U, 0U, stream, parameters, nullptr);
+    return api_.launch_kernel_(function, measurement.grid_blocks, 1U, 1U, measurement.block_threads,
+                               1U, 1U, 0U, stream, parameters, nullptr);
   };
 
   const auto timed_stream_sample = [&](const char* operation, const abi::Stream stream,
                                        auto&& enqueue) -> std::optional<double> {
-    abi::Result call_result = event_record_(start_event, stream);
+    abi::Result call_result = api_.event_record_(start_event, stream);
     if (call_result == abi::success) {
       call_result = enqueue();
     }
     if (call_result == abi::success) {
-      call_result = event_record_(stop_event, stream);
+      call_result = api_.event_record_(stop_event, stream);
     }
     if (call_result == abi::success) {
-      call_result = event_synchronize_(stop_event);
+      call_result = api_.event_synchronize_(stop_event);
     }
     float milliseconds = 0.0F;
     if (call_result == abi::success) {
-      call_result = event_elapsed_time_(&milliseconds, start_event, stop_event);
+      call_result = api_.event_elapsed_time_(&milliseconds, start_event, stop_event);
     }
     if (call_result != abi::success) {
       fail(operation, call_result);
@@ -1492,9 +1444,9 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
   }
 
   std::uint32_t observed = 0;
-  result = memcpy_d2h_async_(host_destination, compute_output, sizeof(observed), copy_stream);
+  result = api_.memcpy_d2h_async_(host_destination, compute_output, sizeof(observed), copy_stream);
   if (result == abi::success) {
-    result = stream_synchronize_(copy_stream);
+    result = api_.stream_synchronize_(copy_stream);
   }
   if (result != abi::success) {
     fail("read_compute_verification", result);
@@ -1524,8 +1476,9 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
                  ++index) {
               copy_result =
                   host_to_device
-                      ? memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
-                      : memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+                      ? api_.memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
+                      : api_.memcpy_d2h_async_(host_destination, transfer_buffer, bytes,
+                                               copy_stream);
             }
             return copy_result;
           });
@@ -1554,12 +1507,12 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
 
   const auto concurrent_sample = [&](const bool host_to_device, const std::uint32_t repetitions,
                                      const std::uint32_t sample_index) -> std::optional<double> {
-    abi::Result call_result = event_record_(start_event, control_stream);
+    abi::Result call_result = api_.event_record_(start_event, control_stream);
     if (call_result == abi::success) {
-      call_result = stream_wait_event_(compute_stream, start_event, 0U);
+      call_result = api_.stream_wait_event_(compute_stream, start_event, 0U);
     }
     if (call_result == abi::success) {
-      call_result = stream_wait_event_(copy_stream, start_event, 0U);
+      call_result = api_.stream_wait_event_(copy_stream, start_event, 0U);
     }
 
     const auto enqueue_compute = [&]() {
@@ -1567,18 +1520,18 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
         call_result = launch_compute(kernel_iterations, compute_stream);
       }
       if (call_result == abi::success) {
-        call_result = event_record_(compute_done_event, compute_stream);
+        call_result = api_.event_record_(compute_done_event, compute_stream);
       }
     };
     const auto enqueue_copy = [&]() {
       for (std::uint32_t index = 0; call_result == abi::success && index < repetitions; ++index) {
         call_result =
             host_to_device
-                ? memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
-                : memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+                ? api_.memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
+                : api_.memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
       }
       if (call_result == abi::success) {
-        call_result = event_record_(copy_done_event, copy_stream);
+        call_result = api_.event_record_(copy_done_event, copy_stream);
       }
     };
 
@@ -1590,20 +1543,20 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
       enqueue_compute();
     }
     if (call_result == abi::success) {
-      call_result = stream_wait_event_(control_stream, compute_done_event, 0U);
+      call_result = api_.stream_wait_event_(control_stream, compute_done_event, 0U);
     }
     if (call_result == abi::success) {
-      call_result = stream_wait_event_(control_stream, copy_done_event, 0U);
+      call_result = api_.stream_wait_event_(control_stream, copy_done_event, 0U);
     }
     if (call_result == abi::success) {
-      call_result = event_record_(stop_event, control_stream);
+      call_result = api_.event_record_(stop_event, control_stream);
     }
     if (call_result == abi::success) {
-      call_result = event_synchronize_(stop_event);
+      call_result = api_.event_synchronize_(stop_event);
     }
     float milliseconds = 0.0F;
     if (call_result == abi::success) {
-      call_result = event_elapsed_time_(&milliseconds, start_event, stop_event);
+      call_result = api_.event_elapsed_time_(&milliseconds, start_event, stop_event);
     }
     if (call_result != abi::success) {
       fail(host_to_device ? "measure_h2d_overlap" : "measure_d2h_overlap", call_result);
@@ -1645,9 +1598,9 @@ probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
   measurement.d2h = direction(d2h_repetitions, *d2h_copy_ms, *d2h_concurrent);
 
   std::memset(host_destination, 0, bytes);
-  result = memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+  result = api_.memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
   if (result == abi::success) {
-    result = stream_synchronize_(copy_stream);
+    result = api_.stream_synchronize_(copy_stream);
   }
   if (result != abi::success) {
     fail("verify_overlap_transfer", result);
