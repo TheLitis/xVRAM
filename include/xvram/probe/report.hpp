@@ -128,24 +128,59 @@ struct TransferMeasurement {
   std::optional<std::string> message;
 };
 
+struct OverlapDirectionMeasurement {
+  std::uint32_t copy_repetitions = 0;
+  std::optional<double> copy_only_ms;
+  std::optional<double> concurrent_ms;
+  std::optional<double> serial_ms;
+  std::optional<double> ideal_ms;
+  std::optional<double> speedup;
+  std::optional<double> overlap_efficiency;
+};
+
+struct OverlapMeasurement {
+  std::string status = "not_requested";
+  std::optional<std::int32_t> device_ordinal;
+  std::uint32_t module_version = 0;
+  std::string module_sha256;
+  std::uint64_t bytes_per_copy = 0;
+  std::uint32_t samples = 0;
+  std::uint32_t target_compute_ms = 0;
+  std::uint32_t grid_blocks = 0;
+  std::uint32_t block_threads = 0;
+  std::uint32_t kernel_iterations = 0;
+  std::optional<double> compute_only_ms;
+  std::optional<OverlapDirectionMeasurement> h2d;
+  std::optional<OverlapDirectionMeasurement> d2h;
+  std::optional<bool> compute_verified;
+  std::optional<bool> transfer_verified;
+  std::optional<bool> cleanup_complete;
+  std::optional<std::string> message;
+};
+
 struct ProbeReport {
-  std::uint32_t schema_version = 1;
+  std::uint32_t schema_version = 2;
   std::string report_type = "xvram.capability_probe";
   std::string generated_at_utc;
   BuildInfo build;
   SystemInfo system;
   CudaReport cuda;
   std::optional<TransferMeasurement> transfer_benchmark;
+  std::optional<OverlapMeasurement> overlap_benchmark;
   std::vector<Diagnostic> diagnostics;
 };
 
 struct ProbeOptions {
   std::optional<std::int32_t> device_ordinal;
   bool run_transfer_benchmark = false;
+  bool run_overlap_benchmark = false;
   bool run_vmm_smoke = true;
   bool include_stable_identifiers = false;
   std::uint64_t benchmark_bytes = 64ULL * 1024ULL * 1024ULL;
   std::uint32_t benchmark_iterations = 20;
+  std::uint64_t overlap_bytes = 64ULL * 1024ULL * 1024ULL;
+  std::uint32_t overlap_samples = 7;
+  std::uint32_t overlap_target_compute_ms = 40;
 };
 
 [[nodiscard]] ProbeReport collect(const ProbeOptions& options);

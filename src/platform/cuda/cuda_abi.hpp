@@ -15,6 +15,8 @@ using DevicePointer = CUdeviceptr;
 using Context = CUcontext;
 using Stream = CUstream;
 using Event = CUevent;
+using Module = CUmodule;
+using Function = CUfunction;
 using Uuid = CUuuid;
 using MemAllocationProp = CUmemAllocationProp;
 using GenericAllocationHandle = CUmemGenericAllocationHandle;
@@ -127,10 +129,17 @@ using MemcpyDtoHAsync = CUresult(CUDAAPI*)(void*, CUdeviceptr, std::size_t, CUst
 using StreamCreate = CUresult(CUDAAPI*)(CUstream*, unsigned int);
 using StreamDestroy = CUresult(CUDAAPI*)(CUstream);
 using StreamSynchronize = CUresult(CUDAAPI*)(CUstream);
+using StreamWaitEvent = CUresult(CUDAAPI*)(CUstream, CUevent, unsigned int);
 using EventCreate = CUresult(CUDAAPI*)(CUevent*, unsigned int);
 using EventDestroy = CUresult(CUDAAPI*)(CUevent);
 using EventRecord = CUresult(CUDAAPI*)(CUevent, CUstream);
 using EventSynchronize = CUresult(CUDAAPI*)(CUevent);
 using EventElapsedTime = CUresult(CUDAAPI*)(float*, CUevent, CUevent);
+using ModuleLoadData = CUresult(CUDAAPI*)(CUmodule*, const void*);
+using ModuleGetFunction = CUresult(CUDAAPI*)(CUfunction*, CUmodule, const char*);
+using ModuleUnload = CUresult(CUDAAPI*)(CUmodule);
+using LaunchKernel = CUresult(CUDAAPI*)(CUfunction, unsigned int, unsigned int, unsigned int,
+                                        unsigned int, unsigned int, unsigned int, unsigned int,
+                                        CUstream, void**, void**);
 
 } // namespace xvram::cuda::abi

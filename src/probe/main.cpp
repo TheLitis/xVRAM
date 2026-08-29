@@ -18,6 +18,7 @@ namespace {
 constexpr int exit_success = 0;
 constexpr int exit_requirement_not_met = 20;
 constexpr int exit_probe_failure = 21;
+constexpr int exit_overlap_requirement_not_met = 22;
 constexpr int exit_usage = 64;
 constexpr int exit_internal = 70;
 constexpr int exit_io = 74;
@@ -28,6 +29,7 @@ struct CliOptions {
   bool pretty_json = true;
   bool print_text = true;
   bool require_device_vmm = false;
+  bool require_overlap = false;
 };
 
 void print_help(std::ostream& output) {
@@ -45,14 +47,19 @@ Options:
   --benchmark                 Run bounded pinned H2D/D2H/full-duplex measurements
   --benchmark-bytes <size>    Bytes per direction (default: 64 MiB; range: 8-128 MiB)
   --benchmark-iterations <n>  Measured transfer iterations (default: 20; max: 1000)
+  --overlap                   Measure compute overlap with independent H2D and D2H copies
+  --overlap-bytes <size>      Bytes per copy (default: 64 MiB; range: 8-128 MiB)
+  --overlap-samples <n>       Median sample count (default: 7; range: 3-100)
+  --overlap-target-ms <n>     Calibrated compute duration (default: 40; range: 5-200)
   --include-identifiers       Include stable GPU UUID/LUID values in output
   --require-device-vmm        Exit 20 unless the selected device passes VMM map/remap
+  --require-overlap           Run overlap measurement; exit 22 unless it passes
   --version                   Print xVRAM version
   -h, --help                  Show this help
 
 The default collection is safe and bounded. It uses short-lived isolated CUDA contexts;
-it does not reset primary contexts or change driver settings. The benchmark runs only
-when explicitly requested.
+it does not reset primary contexts or change driver settings. Benchmarks run only when
+explicitly requested.
 )";
 }
 
@@ -121,6 +128,8 @@ when explicitly requested.
       options.probe.run_vmm_smoke = false;
     } else if (argument == "--benchmark") {
       options.probe.run_transfer_benchmark = true;
+    } else if (argument == "--overlap") {
+      options.probe.run_overlap_benchmark = true;
     } else if (argument == "--benchmark-bytes") {
       const auto value = value_after(index, argument);
       if (!value.has_value()) {
@@ -145,10 +154,47 @@ when explicitly requested.
         return std::nullopt;
       }
       options.probe.benchmark_iterations = iterations;
+    } else if (argument == "--overlap-bytes") {
+      const auto value = value_after(index, argument);
+      if (!value.has_value()) {
+        return std::nullopt;
+      }
+      const xvram::ParsedSize parsed = xvram::parse_size(*value);
+      constexpr std::uint64_t maximum = 128ULL * 1024ULL * 1024ULL;
+      constexpr std::uint64_t minimum = 8ULL * 1024ULL * 1024ULL;
+      if (!parsed || *parsed.bytes < minimum || *parsed.bytes > maximum) {
+        error = parsed ? "--overlap-bytes must be between 8 MiB and 128 MiB" : parsed.error;
+        return std::nullopt;
+      }
+      options.probe.overlap_bytes = *parsed.bytes;
+    } else if (argument == "--overlap-samples") {
+      const auto value = value_after(index, argument);
+      std::uint32_t samples = 0;
+      if (!value.has_value() || !parse_unsigned(*value, samples) || samples < 3 || samples > 100) {
+        if (error.empty()) {
+          error = "--overlap-samples must be between 3 and 100";
+        }
+        return std::nullopt;
+      }
+      options.probe.overlap_samples = samples;
+    } else if (argument == "--overlap-target-ms") {
+      const auto value = value_after(index, argument);
+      std::uint32_t target_ms = 0;
+      if (!value.has_value() || !parse_unsigned(*value, target_ms) || target_ms < 5 ||
+          target_ms > 200) {
+        if (error.empty()) {
+          error = "--overlap-target-ms must be between 5 and 200";
+        }
+        return std::nullopt;
+      }
+      options.probe.overlap_target_compute_ms = target_ms;
     } else if (argument == "--include-identifiers") {
       options.probe.include_stable_identifiers = true;
     } else if (argument == "--require-device-vmm") {
       options.require_device_vmm = true;
+    } else if (argument == "--require-overlap") {
+      options.require_overlap = true;
+      options.probe.run_overlap_benchmark = true;
     } else {
       error = "unknown argument: " + std::string(argument);
       return std::nullopt;
@@ -172,6 +218,14 @@ when explicitly requested.
     }
   }
   return false;
+}
+
+[[nodiscard]] bool has_required_overlap(const xvram::probe::ProbeReport& report) {
+  return report.overlap_benchmark.has_value() && report.overlap_benchmark->status == "completed" &&
+         report.overlap_benchmark->compute_verified.value_or(false) &&
+         report.overlap_benchmark->transfer_verified.value_or(false) &&
+         report.overlap_benchmark->cleanup_complete.value_or(false) &&
+         report.overlap_benchmark->h2d.has_value() && report.overlap_benchmark->d2h.has_value();
 }
 
 } // namespace
@@ -222,6 +276,9 @@ int main(const int argc, char** argv) {
     }
     if (options->require_device_vmm && !has_required_device_vmm(report)) {
       return exit_requirement_not_met;
+    }
+    if (options->require_overlap && !has_required_overlap(report)) {
+      return exit_overlap_requirement_not_met;
     }
     return exit_success;
   } catch (const std::exception& exception) {

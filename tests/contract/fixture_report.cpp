@@ -104,6 +104,43 @@ int main() {
 
   report.transfer_benchmark = TransferMeasurement{
       "completed", 0, 64ULL * 1024ULL * 1024ULL, 20, 12.0, 11.0, 15.0, "fixture benchmark"};
+
+  OverlapDirectionMeasurement h2d_overlap;
+  h2d_overlap.copy_repetitions = 8;
+  h2d_overlap.copy_only_ms = 40.0;
+  h2d_overlap.concurrent_ms = 43.0;
+  h2d_overlap.serial_ms = 80.0;
+  h2d_overlap.ideal_ms = 40.0;
+  h2d_overlap.speedup = 80.0 / 43.0;
+  h2d_overlap.overlap_efficiency = 0.925;
+
+  OverlapDirectionMeasurement d2h_overlap = h2d_overlap;
+  d2h_overlap.copy_repetitions = 7;
+  d2h_overlap.copy_only_ms = 39.0;
+  d2h_overlap.concurrent_ms = 44.0;
+  d2h_overlap.serial_ms = 79.0;
+  d2h_overlap.speedup = 79.0 / 44.0;
+  d2h_overlap.overlap_efficiency = 35.0 / 39.0;
+
+  OverlapMeasurement overlap;
+  overlap.status = "completed";
+  overlap.device_ordinal = 0;
+  overlap.module_version = 1;
+  overlap.module_sha256 = std::string(64, 'a');
+  overlap.bytes_per_copy = 64ULL * 1024ULL * 1024ULL;
+  overlap.samples = 7;
+  overlap.target_compute_ms = 40;
+  overlap.grid_blocks = 184;
+  overlap.block_threads = 256;
+  overlap.kernel_iterations = 1'000'000;
+  overlap.compute_only_ms = 40.0;
+  overlap.h2d = h2d_overlap;
+  overlap.d2h = d2h_overlap;
+  overlap.compute_verified = true;
+  overlap.transfer_verified = true;
+  overlap.cleanup_complete = true;
+  overlap.message = "fixture overlap benchmark";
+  report.overlap_benchmark = std::move(overlap);
   report.diagnostics.push_back(
       {DiagnosticLevel::info, "fixture", "generate", "synthetic report", 0});
 

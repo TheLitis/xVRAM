@@ -34,6 +34,10 @@ def main() -> int:
     assert fixture_report["cuda"]["devices"][0]["vmm_smoke"]["remap_copy_verified"] is True
     assert fixture_report["cuda"]["devices"][0]["dxgi"]["local"]["budget_bytes"] > 0
     assert fixture_report["transfer_benchmark"]["device_ordinal"] == 0
+    assert fixture_report["overlap_benchmark"]["status"] == "completed"
+    assert fixture_report["overlap_benchmark"]["compute_verified"] is True
+    assert fixture_report["overlap_benchmark"]["transfer_verified"] is True
+    assert fixture_report["overlap_benchmark"]["h2d"]["speedup"] > 1.0
 
     completed = subprocess.run(
         [executable, "--json", "-", "--no-text", "--compact-json", "--skip-vmm-smoke"],
@@ -54,7 +58,7 @@ def main() -> int:
             print(f"schema error at {location}: {validation_error.message}", file=sys.stderr)
         return 1
 
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["report_type"] == "xvram.capability_probe"
     assert report["build"]["version"]
     assert report["build"]["cuda_headers_version"] >= 13000
@@ -63,6 +67,7 @@ def main() -> int:
     assert isinstance(report["cuda"]["nvml_library_loaded"], bool)
     assert isinstance(report["cuda"]["devices"], list)
     assert isinstance(report["diagnostics"], list)
+    assert report["overlap_benchmark"] is None
     if not report["cuda"]["library_loaded"]:
         assert report["cuda"]["devices"] == []
         assert any(
@@ -92,6 +97,15 @@ def main() -> int:
         timeout=30,
     )
     assert invalid_device.returncode == 21
+
+    invalid_overlap = subprocess.run(
+        [executable, "--overlap-samples", "2"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert invalid_overlap.returncode == 64
 
     return 0
 

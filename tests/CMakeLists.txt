@@ -34,5 +34,5 @@ add_test(
   NAME xvram.probe.json-contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/probe_contract.py"
           "$<TARGET_FILE:xvram-probe>"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/capability-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/capability-report-v2.schema.json"
           "$<TARGET_FILE:xvram-report-fixture>")

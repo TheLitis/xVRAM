@@ -1,0 +1,538 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/TheLitis/xVRAM/main/schemas/capability-report-v2.schema.json",
+  "title": "xVRAM capability report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "generated_at_utc",
+    "build",
+    "system",
+    "cuda",
+    "transfer_benchmark",
+    "overlap_benchmark",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "report_type": { "const": "xvram.capability_probe" },
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "build": { "$ref": "#/$defs/build" },
+    "system": { "$ref": "#/$defs/system" },
+    "cuda": { "$ref": "#/$defs/cuda" },
+    "transfer_benchmark": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/transfer" }]
+    },
+    "overlap_benchmark": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/overlap" }]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "nullableInteger": { "type": ["integer", "null"] },
+    "nullableNonNegativeInteger": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "nullableNumber": { "type": ["number", "null"] },
+    "nullableNonNegativeNumber": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "nullableString": { "type": ["string", "null"] },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "git_commit",
+        "compiler",
+        "build_type",
+        "cuda_headers_version"
+      ],
+      "properties": {
+        "version": { "type": "string" },
+        "git_commit": { "type": "string" },
+        "compiler": { "type": "string" },
+        "build_type": { "type": "string" },
+        "cuda_headers_version": { "type": "integer", "minimum": 13000 }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_name",
+        "os_version",
+        "architecture",
+        "logical_processor_count",
+        "physical_memory_bytes",
+        "available_memory_bytes"
+      ],
+      "properties": {
+        "os_name": { "type": "string" },
+        "os_version": { "type": "string" },
+        "architecture": { "type": "string" },
+        "logical_processor_count": { "type": "integer", "minimum": 0 },
+        "physical_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "available_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "initialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "name", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/nullableInteger" },
+        "name": { "$ref": "#/$defs/nullableString" },
+        "message": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "driverVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw", "major", "minor"],
+      "properties": {
+        "raw": { "type": "integer", "minimum": 0 },
+        "major": { "type": "integer", "minimum": 0 },
+        "minor": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cuda": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "library_loaded",
+        "library_name",
+        "initialization",
+        "driver_api_version",
+        "nvml_library_loaded",
+        "display_driver_version",
+        "devices"
+      ],
+      "properties": {
+        "library_loaded": { "type": "boolean" },
+        "library_name": { "type": "string" },
+        "initialization": { "$ref": "#/$defs/initialization" },
+        "driver_api_version": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/driverVersion" }]
+        },
+        "nvml_library_loaded": { "type": "boolean" },
+        "display_driver_version": { "$ref": "#/$defs/nullableString" },
+        "devices": { "type": "array", "items": { "$ref": "#/$defs/device" } }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "name",
+        "uuid",
+        "luid",
+        "node_mask",
+        "pci_bus_id",
+        "driver_model",
+        "pending_driver_model",
+        "total_memory_bytes",
+        "free_memory_bytes",
+        "capabilities",
+        "attributes",
+        "allocation_granularity",
+        "vmm_smoke",
+        "dxgi"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string" },
+        "uuid": { "$ref": "#/$defs/nullableString" },
+        "luid": { "$ref": "#/$defs/nullableString" },
+        "node_mask": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pci_bus_id": { "$ref": "#/$defs/nullableString" },
+        "driver_model": {
+          "type": ["string", "null"],
+          "enum": ["wddm", "tcc", "mcdm", "unknown", null]
+        },
+        "pending_driver_model": {
+          "type": ["string", "null"],
+          "enum": ["wddm", "tcc", "mcdm", "unknown", null]
+        },
+        "total_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "free_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "can_map_host_memory",
+            "compute_preemption",
+            "concurrent_kernels",
+            "concurrent_managed_access",
+            "device_memory_pools",
+            "direct_managed_access_from_host",
+            "generic_compression",
+            "gpudirect_rdma",
+            "gpudirect_rdma_with_vmm",
+            "host_memory_pools",
+            "host_native_atomic",
+            "host_numa_memory_pools",
+            "host_numa_vmm",
+            "host_register",
+            "host_vmm",
+            "managed_memory",
+            "pageable_access_uses_host_page_tables",
+            "pageable_memory_access",
+            "same_host_registered_pointer",
+            "unified_addressing",
+            "virtual_memory_management",
+            "win32_kmt_shareable_handle",
+            "win32_shareable_handle"
+          ],
+          "properties": {
+            "can_map_host_memory": { "type": ["boolean", "null"] },
+            "compute_preemption": { "type": ["boolean", "null"] },
+            "concurrent_kernels": { "type": ["boolean", "null"] },
+            "concurrent_managed_access": { "type": ["boolean", "null"] },
+            "device_memory_pools": { "type": ["boolean", "null"] },
+            "direct_managed_access_from_host": { "type": ["boolean", "null"] },
+            "generic_compression": { "type": ["boolean", "null"] },
+            "gpudirect_rdma": { "type": ["boolean", "null"] },
+            "gpudirect_rdma_with_vmm": { "type": ["boolean", "null"] },
+            "host_memory_pools": { "type": ["boolean", "null"] },
+            "host_native_atomic": { "type": ["boolean", "null"] },
+            "host_numa_memory_pools": { "type": ["boolean", "null"] },
+            "host_numa_vmm": { "type": ["boolean", "null"] },
+            "host_register": { "type": ["boolean", "null"] },
+            "host_vmm": { "type": ["boolean", "null"] },
+            "managed_memory": { "type": ["boolean", "null"] },
+            "pageable_access_uses_host_page_tables": { "type": ["boolean", "null"] },
+            "pageable_memory_access": { "type": ["boolean", "null"] },
+            "same_host_registered_pointer": { "type": ["boolean", "null"] },
+            "unified_addressing": { "type": ["boolean", "null"] },
+            "virtual_memory_management": { "type": ["boolean", "null"] },
+            "win32_kmt_shareable_handle": { "type": ["boolean", "null"] },
+            "win32_shareable_handle": { "type": ["boolean", "null"] }
+          },
+          "additionalProperties": { "type": ["boolean", "null"] }
+        },
+        "attributes": {
+          "type": "object",
+          "required": [
+            "async_engine_count",
+            "clock_rate_khz",
+            "compute_capability_major",
+            "compute_capability_minor",
+            "compute_mode",
+            "host_numa_id",
+            "integrated",
+            "l2_cache_bytes",
+            "max_persisting_l2_cache_bytes",
+            "max_threads_per_block",
+            "memory_bus_width_bits",
+            "memory_clock_rate_khz",
+            "mempool_supported_handle_types",
+            "multiprocessor_count",
+            "tcc_driver",
+            "warp_size"
+          ],
+          "properties": {
+            "async_engine_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "clock_rate_khz": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "compute_capability_major": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "compute_capability_minor": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "compute_mode": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "host_numa_id": {
+              "type": ["integer", "null"],
+              "minimum": -1
+            },
+            "integrated": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "l2_cache_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "max_persisting_l2_cache_bytes": {
+              "$ref": "#/$defs/nullableNonNegativeInteger"
+            },
+            "max_threads_per_block": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "memory_bus_width_bits": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "memory_clock_rate_khz": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "mempool_supported_handle_types": {
+              "$ref": "#/$defs/nullableNonNegativeInteger"
+            },
+            "multiprocessor_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "pci_bus_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "pci_device_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "pci_domain_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "tcc_driver": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+            "warp_size": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+          },
+          "additionalProperties": { "type": ["integer", "null"] }
+        },
+        "allocation_granularity": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/granularity" }
+        },
+        "vmm_smoke": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/vmmSmoke" }]
+        },
+        "dxgi": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/dxgi" }]
+        }
+      }
+    },
+    "videoMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budget_bytes",
+        "current_usage_bytes",
+        "available_for_reservation_bytes",
+        "current_reservation_bytes"
+      ],
+      "properties": {
+        "budget_bytes": { "type": "integer", "minimum": 0 },
+        "current_usage_bytes": { "type": "integer", "minimum": 0 },
+        "available_for_reservation_bytes": { "type": "integer", "minimum": 0 },
+        "current_reservation_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "dxgi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "luid",
+        "node_index",
+        "dedicated_video_memory_bytes",
+        "dedicated_system_memory_bytes",
+        "shared_system_memory_bytes",
+        "software_adapter",
+        "local",
+        "non_local"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "luid": { "$ref": "#/$defs/nullableString" },
+        "node_index": { "type": "integer", "minimum": 0 },
+        "dedicated_video_memory_bytes": { "type": "integer", "minimum": 0 },
+        "dedicated_system_memory_bytes": { "type": "integer", "minimum": 0 },
+        "shared_system_memory_bytes": { "type": "integer", "minimum": 0 },
+        "software_adapter": { "type": "boolean" },
+        "local": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/videoMemory" }]
+        },
+        "non_local": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/videoMemory" }]
+        }
+      }
+    },
+    "granularity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_bytes", "recommended_bytes", "error"],
+      "properties": {
+        "minimum_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "recommended_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "error": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "vmmSmoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "allocation_bytes",
+        "initial_copy_verified",
+        "remap_copy_verified",
+        "cleanup_complete",
+        "message"
+      ],
+      "properties": {
+        "status": { "enum": ["not_requested", "skipped", "completed", "failed"] },
+        "allocation_bytes": { "type": "integer", "minimum": 0 },
+        "initial_copy_verified": { "type": ["boolean", "null"] },
+        "remap_copy_verified": { "type": ["boolean", "null"] },
+        "cleanup_complete": { "type": ["boolean", "null"] },
+        "message": { "$ref": "#/$defs/nullableString" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": {
+            "properties": {
+              "allocation_bytes": { "type": "integer", "minimum": 1 },
+              "initial_copy_verified": { "const": true },
+              "remap_copy_verified": { "const": true },
+              "cleanup_complete": { "const": true }
+            }
+          }
+        }
+      ]
+    },
+    "transfer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "device_ordinal",
+        "bytes_per_direction",
+        "iterations",
+        "h2d_gib_per_second",
+        "d2h_gib_per_second",
+        "full_duplex_aggregate_gib_per_second",
+        "message"
+      ],
+      "properties": {
+        "status": { "enum": ["not_requested", "skipped", "completed", "failed"] },
+        "device_ordinal": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "bytes_per_direction": { "type": "integer", "minimum": 0 },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "h2d_gib_per_second": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "d2h_gib_per_second": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "full_duplex_aggregate_gib_per_second": {
+          "$ref": "#/$defs/nullableNonNegativeNumber"
+        },
+        "message": { "$ref": "#/$defs/nullableString" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": {
+            "properties": {
+              "device_ordinal": { "type": "integer", "minimum": 0 },
+              "bytes_per_direction": { "type": "integer", "minimum": 1 },
+              "iterations": { "type": "integer", "minimum": 1 },
+              "h2d_gib_per_second": { "type": "number", "exclusiveMinimum": 0 },
+              "d2h_gib_per_second": { "type": "number", "exclusiveMinimum": 0 },
+              "full_duplex_aggregate_gib_per_second": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "overlapDirection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "copy_repetitions",
+        "copy_only_ms",
+        "concurrent_ms",
+        "serial_ms",
+        "ideal_ms",
+        "speedup",
+        "overlap_efficiency"
+      ],
+      "properties": {
+        "copy_repetitions": { "type": "integer", "minimum": 1 },
+        "copy_only_ms": { "type": "number", "exclusiveMinimum": 0 },
+        "concurrent_ms": { "type": "number", "exclusiveMinimum": 0 },
+        "serial_ms": { "type": "number", "exclusiveMinimum": 0 },
+        "ideal_ms": { "type": "number", "exclusiveMinimum": 0 },
+        "speedup": { "type": "number", "exclusiveMinimum": 0 },
+        "overlap_efficiency": { "type": "number" }
+      }
+    },
+    "overlap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "device_ordinal",
+        "module_version",
+        "module_sha256",
+        "bytes_per_copy",
+        "samples",
+        "target_compute_ms",
+        "grid_blocks",
+        "block_threads",
+        "kernel_iterations",
+        "compute_only_ms",
+        "h2d",
+        "d2h",
+        "compute_verified",
+        "transfer_verified",
+        "cleanup_complete",
+        "message"
+      ],
+      "properties": {
+        "status": { "enum": ["not_requested", "skipped", "completed", "failed"] },
+        "device_ordinal": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "module_version": { "type": "integer", "minimum": 0 },
+        "module_sha256": { "type": "string" },
+        "bytes_per_copy": { "type": "integer", "minimum": 0 },
+        "samples": { "type": "integer", "minimum": 0 },
+        "target_compute_ms": { "type": "integer", "minimum": 0 },
+        "grid_blocks": { "type": "integer", "minimum": 0 },
+        "block_threads": { "type": "integer", "minimum": 0 },
+        "kernel_iterations": { "type": "integer", "minimum": 0 },
+        "compute_only_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "h2d": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/overlapDirection" }]
+        },
+        "d2h": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/overlapDirection" }]
+        },
+        "compute_verified": { "type": ["boolean", "null"] },
+        "transfer_verified": { "type": ["boolean", "null"] },
+        "cleanup_complete": { "type": ["boolean", "null"] },
+        "message": { "$ref": "#/$defs/nullableString" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": {
+            "properties": {
+              "device_ordinal": { "type": "integer", "minimum": 0 },
+              "module_version": { "type": "integer", "minimum": 1 },
+              "module_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "bytes_per_copy": { "type": "integer", "minimum": 1 },
+              "samples": { "type": "integer", "minimum": 1 },
+              "target_compute_ms": { "type": "integer", "minimum": 1 },
+              "grid_blocks": { "type": "integer", "minimum": 1 },
+              "block_threads": { "type": "integer", "minimum": 1 },
+              "kernel_iterations": { "type": "integer", "minimum": 1 },
+              "compute_only_ms": { "type": "number", "exclusiveMinimum": 0 },
+              "h2d": { "$ref": "#/$defs/overlapDirection" },
+              "d2h": { "$ref": "#/$defs/overlapDirection" },
+              "compute_verified": { "const": true },
+              "transfer_verified": { "const": true },
+              "cleanup_complete": { "const": true }
+            }
+          }
+        }
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "component",
+        "operation",
+        "message",
+        "code",
+        "device_ordinal"
+      ],
+      "properties": {
+        "level": { "enum": ["info", "warning", "error"] },
+        "component": { "type": "string" },
+        "operation": { "type": "string" },
+        "message": { "type": "string" },
+        "code": { "$ref": "#/$defs/nullableInteger" },
+        "device_ordinal": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

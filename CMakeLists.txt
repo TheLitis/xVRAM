@@ -134,6 +134,14 @@ message(
 
 configure_file(cmake/version.hpp.in generated/xvram/version.hpp @ONLY)
 
+set(XVRAM_SYNTHETIC_OVERLAP_MODULE_VERSION 1)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cuda/synthetic_overlap_v1.ptx"
+     XVRAM_SYNTHETIC_OVERLAP_PTX)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cuda/synthetic_overlap_v1.ptx"
+     XVRAM_SYNTHETIC_OVERLAP_SHA256)
+configure_file(cmake/synthetic_overlap_ptx.hpp.in
+               generated/xvram/synthetic_overlap_ptx.hpp @ONLY)
+
 find_path(
   XVRAM_NVML_INCLUDE_DIR
   NAMES nvml.h
@@ -271,6 +279,7 @@ xvram_enable_warnings(xvram-probe)
 
 install(TARGETS xvram-probe RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES schemas/capability-report-v1.schema.json
+              schemas/capability-report-v2.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 if(XVRAM_BUILD_TESTS)

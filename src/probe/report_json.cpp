@@ -190,6 +190,72 @@ void write_transfer(JsonWriter& writer, const TransferMeasurement& measurement) 
   writer.end_object();
 }
 
+void write_overlap_direction(JsonWriter& writer, const OverlapDirectionMeasurement& direction) {
+  writer.begin_object();
+  writer.key("copy_repetitions");
+  writer.value(static_cast<std::uint64_t>(direction.copy_repetitions));
+  writer.key("copy_only_ms");
+  optional_value(writer, direction.copy_only_ms);
+  writer.key("concurrent_ms");
+  optional_value(writer, direction.concurrent_ms);
+  writer.key("serial_ms");
+  optional_value(writer, direction.serial_ms);
+  writer.key("ideal_ms");
+  optional_value(writer, direction.ideal_ms);
+  writer.key("speedup");
+  optional_value(writer, direction.speedup);
+  writer.key("overlap_efficiency");
+  optional_value(writer, direction.overlap_efficiency);
+  writer.end_object();
+}
+
+void write_overlap(JsonWriter& writer, const OverlapMeasurement& measurement) {
+  writer.begin_object();
+  writer.key("status");
+  writer.value(measurement.status);
+  writer.key("device_ordinal");
+  optional_value(writer, measurement.device_ordinal);
+  writer.key("module_version");
+  writer.value(static_cast<std::uint64_t>(measurement.module_version));
+  writer.key("module_sha256");
+  writer.value(measurement.module_sha256);
+  writer.key("bytes_per_copy");
+  writer.value(measurement.bytes_per_copy);
+  writer.key("samples");
+  writer.value(static_cast<std::uint64_t>(measurement.samples));
+  writer.key("target_compute_ms");
+  writer.value(static_cast<std::uint64_t>(measurement.target_compute_ms));
+  writer.key("grid_blocks");
+  writer.value(static_cast<std::uint64_t>(measurement.grid_blocks));
+  writer.key("block_threads");
+  writer.value(static_cast<std::uint64_t>(measurement.block_threads));
+  writer.key("kernel_iterations");
+  writer.value(static_cast<std::uint64_t>(measurement.kernel_iterations));
+  writer.key("compute_only_ms");
+  optional_value(writer, measurement.compute_only_ms);
+  writer.key("h2d");
+  if (measurement.h2d.has_value()) {
+    write_overlap_direction(writer, *measurement.h2d);
+  } else {
+    writer.null_value();
+  }
+  writer.key("d2h");
+  if (measurement.d2h.has_value()) {
+    write_overlap_direction(writer, *measurement.d2h);
+  } else {
+    writer.null_value();
+  }
+  writer.key("compute_verified");
+  optional_value(writer, measurement.compute_verified);
+  writer.key("transfer_verified");
+  optional_value(writer, measurement.transfer_verified);
+  writer.key("cleanup_complete");
+  optional_value(writer, measurement.cleanup_complete);
+  writer.key("message");
+  optional_value(writer, measurement.message);
+  writer.end_object();
+}
+
 } // namespace
 
 void write_json(const ProbeReport& report, std::ostream& output, const bool pretty) {
@@ -275,6 +341,13 @@ void write_json(const ProbeReport& report, std::ostream& output, const bool pret
   writer.key("transfer_benchmark");
   if (report.transfer_benchmark.has_value()) {
     write_transfer(writer, *report.transfer_benchmark);
+  } else {
+    writer.null_value();
+  }
+
+  writer.key("overlap_benchmark");
+  if (report.overlap_benchmark.has_value()) {
+    write_overlap(writer, *report.overlap_benchmark);
   } else {
     writer.null_value();
   }

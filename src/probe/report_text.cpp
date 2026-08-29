@@ -166,6 +166,55 @@ void write_text(const ProbeReport& report, std::ostream& output) {
     }
   }
 
+  if (report.overlap_benchmark.has_value()) {
+    const OverlapMeasurement& benchmark = *report.overlap_benchmark;
+    output << "\nCopy/compute overlap benchmark: " << benchmark.status << '\n';
+    if (benchmark.device_ordinal.has_value()) {
+      output << "  GPU ordinal:      " << *benchmark.device_ordinal << '\n';
+    }
+    if (benchmark.module_version != 0) {
+      output << "  Synthetic module: v" << benchmark.module_version;
+      if (!benchmark.module_sha256.empty()) {
+        output << " (SHA-256 " << benchmark.module_sha256.substr(0, 12) << "...)";
+      }
+      output << '\n';
+    }
+    if (benchmark.bytes_per_copy != 0) {
+      output << "  Bytes per copy:   " << format_bytes(benchmark.bytes_per_copy) << '\n';
+    }
+    if (benchmark.compute_only_ms.has_value()) {
+      output << "  Compute only:     " << std::fixed << std::setprecision(2)
+             << *benchmark.compute_only_ms << " ms\n";
+    }
+    const auto write_direction = [&](const char* label,
+                                     const std::optional<OverlapDirectionMeasurement>& value) {
+      if (!value.has_value()) {
+        return;
+      }
+      output << "  " << label << " batch:        " << value->copy_repetitions << " copies";
+      if (value->copy_only_ms.has_value()) {
+        output << ", copy " << std::fixed << std::setprecision(2) << *value->copy_only_ms << " ms";
+      }
+      if (value->concurrent_ms.has_value()) {
+        output << ", concurrent " << std::fixed << std::setprecision(2) << *value->concurrent_ms
+               << " ms";
+      }
+      if (value->speedup.has_value()) {
+        output << ", speedup " << std::fixed << std::setprecision(2) << *value->speedup << 'x';
+      }
+      if (value->overlap_efficiency.has_value()) {
+        output << ", efficiency " << std::fixed << std::setprecision(1)
+               << *value->overlap_efficiency * 100.0 << '%';
+      }
+      output << '\n';
+    };
+    write_direction("H2D", benchmark.h2d);
+    write_direction("D2H", benchmark.d2h);
+    if (benchmark.message.has_value()) {
+      output << "  " << *benchmark.message << '\n';
+    }
+  }
+
   if (!report.diagnostics.empty()) {
     output << "\nDiagnostics:\n";
     for (const Diagnostic& diagnostic : report.diagnostics) {

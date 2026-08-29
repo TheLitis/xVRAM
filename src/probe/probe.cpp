@@ -10,6 +10,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace xvram::probe {
 namespace {
@@ -95,6 +96,27 @@ ProbeReport collect(const ProbeOptions& options) {
       const std::size_t benchmark_diagnostics_begin = report.diagnostics.size();
       report.transfer_benchmark = driver.benchmark_transfers(report.cuda.devices.front().ordinal,
                                                              options, report.diagnostics);
+      for (std::size_t index = benchmark_diagnostics_begin; index < report.diagnostics.size();
+           ++index) {
+        if (!report.diagnostics[index].device_ordinal.has_value()) {
+          report.diagnostics[index].device_ordinal = report.cuda.devices.front().ordinal;
+        }
+      }
+    }
+  }
+
+  if (options.run_overlap_benchmark) {
+    if (report.cuda.devices.empty()) {
+      OverlapMeasurement skipped;
+      skipped.status = "skipped";
+      skipped.samples = options.overlap_samples;
+      skipped.target_compute_ms = options.overlap_target_compute_ms;
+      skipped.message = "No selected CUDA device is available";
+      report.overlap_benchmark = std::move(skipped);
+    } else {
+      const std::size_t benchmark_diagnostics_begin = report.diagnostics.size();
+      report.overlap_benchmark = driver.benchmark_overlap(report.cuda.devices.front().ordinal,
+                                                          options, report.diagnostics);
       for (std::size_t index = benchmark_diagnostics_begin; index < report.diagnostics.size();
            ++index) {
         if (!report.diagnostics[index].device_ordinal.has_value()) {

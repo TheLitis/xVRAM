@@ -1,11 +1,13 @@
 #include "platform/cuda/cuda_driver.hpp"
 
 #include "platform/dxgi_memory.hpp"
+#include "xvram/synthetic_overlap_ptx.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <limits>
@@ -97,11 +99,16 @@ bool Driver::load(std::vector<Diagnostic>& diagnostics) {
   // These legacy exports are retained only where the official signatures are ABI-identical.
   resolve(stream_destroy_, {"cuStreamDestroy_v2", "cuStreamDestroy"});
   resolve(stream_synchronize_, {"cuStreamSynchronize"});
+  resolve(stream_wait_event_, {"cuStreamWaitEvent"});
   resolve(event_create_, {"cuEventCreate"});
   resolve(event_destroy_, {"cuEventDestroy_v2", "cuEventDestroy"});
   resolve(event_record_, {"cuEventRecord"});
   resolve(event_synchronize_, {"cuEventSynchronize"});
   resolve(event_elapsed_time_, {"cuEventElapsedTime_v2", "cuEventElapsedTime"});
+  resolve(module_load_data_, {"cuModuleLoadData"});
+  resolve(module_get_function_, {"cuModuleGetFunction"});
+  resolve(module_unload_, {"cuModuleUnload"});
+  resolve(launch_kernel_, {"cuLaunchKernel"});
 
   if (!required) {
     diagnostics.push_back({DiagnosticLevel::error, "cuda", "resolve_symbols",
@@ -1092,6 +1099,577 @@ probe::TransferMeasurement Driver::benchmark_transfers(const std::int32_t ordina
     measurement.status = "failed";
     measurement.message = "Transfer completed, but CUDA benchmark context cleanup failed";
   }
+  return measurement;
+}
+
+probe::OverlapMeasurement Driver::benchmark_overlap(const std::int32_t ordinal,
+                                                    const probe::ProbeOptions& options,
+                                                    std::vector<Diagnostic>& diagnostics) {
+  probe::OverlapMeasurement measurement;
+  measurement.status = "failed";
+  measurement.device_ordinal = ordinal;
+  measurement.module_version = synthetic_overlap::module_version;
+  measurement.module_sha256 = std::string(synthetic_overlap::module_sha256);
+  measurement.samples = options.overlap_samples;
+  measurement.target_compute_ms = options.overlap_target_compute_ms;
+
+  const auto diagnose = [&](const DiagnosticLevel level, const char* operation,
+                            const std::string& message,
+                            const std::optional<abi::Result> code = std::nullopt) {
+    diagnostics.push_back({level, "overlap", operation, message,
+                           code.has_value()
+                               ? std::optional<std::int64_t>(static_cast<std::int64_t>(*code))
+                               : std::nullopt});
+  };
+
+  if (active_cuda_poisoned_) {
+    measurement.message = "Overlap benchmark refused because earlier active CUDA cleanup failed";
+    diagnose(DiagnosticLevel::error, "active_work_refused", *measurement.message);
+    return measurement;
+  }
+  if (!load(diagnostics) || init_(0) != abi::success) {
+    measurement.message = "CUDA driver is not available";
+    return measurement;
+  }
+  if (mem_alloc_ == nullptr || mem_free_ == nullptr || mem_host_alloc_ == nullptr ||
+      mem_free_host_ == nullptr || memcpy_h2d_async_ == nullptr || memcpy_d2h_async_ == nullptr ||
+      stream_create_ == nullptr || stream_destroy_ == nullptr || stream_synchronize_ == nullptr ||
+      stream_wait_event_ == nullptr || event_create_ == nullptr || event_destroy_ == nullptr ||
+      event_record_ == nullptr || event_synchronize_ == nullptr || event_elapsed_time_ == nullptr ||
+      module_load_data_ == nullptr || module_get_function_ == nullptr ||
+      module_unload_ == nullptr || launch_kernel_ == nullptr || context_create_ == nullptr ||
+      context_destroy_ == nullptr || context_get_current_ == nullptr ||
+      context_set_current_ == nullptr || device_get_attribute_ == nullptr ||
+      mem_get_info_ == nullptr) {
+    measurement.message = "CUDA driver is missing overlap benchmark entry points";
+    return measurement;
+  }
+
+  abi::Device device = 0;
+  abi::Result result = device_get_(&device, ordinal);
+  if (result != abi::success) {
+    measurement.message = result_name(result) + ": " + result_message(result);
+    return measurement;
+  }
+
+  int multiprocessor_count = 0;
+  int maximum_threads_per_block = 0;
+  int warp_size = 0;
+  if ((result = device_get_attribute_(&multiprocessor_count, abi::attributes::multiprocessor_count,
+                                      device)) != abi::success ||
+      (result = device_get_attribute_(&maximum_threads_per_block,
+                                      abi::attributes::max_threads_per_block, device)) !=
+          abi::success ||
+      (result = device_get_attribute_(&warp_size, abi::attributes::warp_size, device)) !=
+          abi::success ||
+      multiprocessor_count <= 0 || maximum_threads_per_block <= 0 || warp_size <= 0) {
+    measurement.message = result == abi::success
+                              ? "Invalid CUDA launch limits for the overlap workload"
+                              : result_name(result) + ": " + result_message(result);
+    return measurement;
+  }
+
+  const int bounded_threads = std::min(maximum_threads_per_block, 256);
+  const int rounded_threads = (bounded_threads / warp_size) * warp_size;
+  if (rounded_threads <= 0 ||
+      multiprocessor_count > static_cast<int>(std::numeric_limits<std::uint32_t>::max() / 4U)) {
+    measurement.message = "CUDA launch geometry cannot be represented safely";
+    return measurement;
+  }
+  measurement.block_threads = static_cast<std::uint32_t>(rounded_threads);
+  measurement.grid_blocks = static_cast<std::uint32_t>(multiprocessor_count) * 4U;
+
+  abi::Context previous = nullptr;
+  abi::Context context = nullptr;
+  bool previous_captured = false;
+  result = context_get_current_(&previous);
+  if (result == abi::success) {
+    previous_captured = true;
+    result = context_create_(&context, CU_CTX_SCHED_AUTO, device);
+  }
+  if (result != abi::success) {
+    measurement.message = previous_captured ? "Could not create an isolated overlap context"
+                                            : "Could not capture the current CUDA context";
+    return measurement;
+  }
+
+  const auto cleanup_context = [&]() {
+    bool complete = true;
+    if (context != nullptr) {
+      const abi::Result destroy_result = context_destroy_(context);
+      if (destroy_result == abi::success) {
+        context = nullptr;
+      } else {
+        complete = false;
+        diagnose(DiagnosticLevel::warning, "cuCtxDestroy(cleanup)", result_message(destroy_result),
+                 destroy_result);
+      }
+    }
+    if (previous_captured) {
+      const abi::Result restore_result = context_set_current_(previous);
+      if (restore_result != abi::success) {
+        complete = false;
+        diagnose(DiagnosticLevel::warning, "cuCtxSetCurrent(restore)",
+                 result_message(restore_result), restore_result);
+      }
+    }
+    return complete;
+  };
+
+  std::size_t free_bytes = 0;
+  std::size_t total_bytes = 0;
+  result = mem_get_info_(&free_bytes, &total_bytes);
+  if (result != abi::success) {
+    measurement.message = result_name(result) + ": " + result_message(result);
+    measurement.cleanup_complete = cleanup_context();
+    return measurement;
+  }
+
+  const std::uint64_t thread_count =
+      static_cast<std::uint64_t>(measurement.grid_blocks) * measurement.block_threads;
+  if (thread_count > std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t)) {
+    measurement.message = "Synthetic output allocation exceeds the host size type";
+    measurement.cleanup_complete = cleanup_context();
+    return measurement;
+  }
+  const std::size_t output_bytes = static_cast<std::size_t>(thread_count) * sizeof(std::uint32_t);
+  constexpr std::uint64_t minimum_overlap_bytes = 8ULL * 1024ULL * 1024ULL;
+  constexpr std::uint64_t device_headroom_bytes = 32ULL * 1024ULL * 1024ULL;
+  const std::uint64_t free64 = static_cast<std::uint64_t>(free_bytes);
+  const std::uint64_t reserved = static_cast<std::uint64_t>(output_bytes) + device_headroom_bytes;
+  const std::uint64_t safe_device_limit = free64 > reserved ? (free64 - reserved) / 4ULL : 0ULL;
+  const std::uint64_t requested = std::min(
+      options.overlap_bytes, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()));
+  const std::uint64_t bytes64 = std::min(requested, safe_device_limit);
+  if (bytes64 < minimum_overlap_bytes) {
+    measurement.status = "skipped";
+    measurement.message = "Insufficient free VRAM for a safe overlap benchmark";
+    measurement.cleanup_complete = cleanup_context();
+    return measurement;
+  }
+  const std::size_t bytes = static_cast<std::size_t>(bytes64);
+  measurement.bytes_per_copy = bytes64;
+
+  abi::DevicePointer transfer_buffer = 0;
+  abi::DevicePointer compute_output = 0;
+  void* host_source = nullptr;
+  void* host_destination = nullptr;
+  abi::Stream control_stream = nullptr;
+  abi::Stream compute_stream = nullptr;
+  abi::Stream copy_stream = nullptr;
+  abi::Event start_event = nullptr;
+  abi::Event stop_event = nullptr;
+  abi::Event compute_done_event = nullptr;
+  abi::Event copy_done_event = nullptr;
+  abi::Module module = nullptr;
+  abi::Function function = nullptr;
+
+  const auto cleanup = [&]() {
+    bool complete = true;
+    const auto record_cleanup_error = [&](const char* operation, const abi::Result error) {
+      if (error == abi::success) {
+        return true;
+      }
+      complete = false;
+      diagnose(DiagnosticLevel::warning, operation, result_message(error), error);
+      return false;
+    };
+
+    bool streams_idle = true;
+    for (const auto& [name, stream] : std::array<std::pair<const char*, abi::Stream>, 3>{
+             std::pair{"cuStreamSynchronize(control_cleanup)", control_stream},
+             std::pair{"cuStreamSynchronize(compute_cleanup)", compute_stream},
+             std::pair{"cuStreamSynchronize(copy_cleanup)", copy_stream}}) {
+      if (stream != nullptr) {
+        streams_idle = record_cleanup_error(name, stream_synchronize_(stream)) && streams_idle;
+      }
+    }
+
+    if (streams_idle) {
+      for (auto& [name, event] : std::array<std::pair<const char*, abi::Event*>, 4>{
+               std::pair{"cuEventDestroy(copy_done)", &copy_done_event},
+               std::pair{"cuEventDestroy(compute_done)", &compute_done_event},
+               std::pair{"cuEventDestroy(stop)", &stop_event},
+               std::pair{"cuEventDestroy(start)", &start_event}}) {
+        if (*event != nullptr && record_cleanup_error(name, event_destroy_(*event))) {
+          *event = nullptr;
+        }
+      }
+      for (auto& [name, stream] : std::array<std::pair<const char*, abi::Stream*>, 3>{
+               std::pair{"cuStreamDestroy(copy)", &copy_stream},
+               std::pair{"cuStreamDestroy(compute)", &compute_stream},
+               std::pair{"cuStreamDestroy(control)", &control_stream}}) {
+        if (*stream != nullptr && record_cleanup_error(name, stream_destroy_(*stream))) {
+          *stream = nullptr;
+        }
+      }
+      if (module != nullptr && record_cleanup_error("cuModuleUnload", module_unload_(module))) {
+        module = nullptr;
+        function = nullptr;
+      }
+      if (compute_output != 0 &&
+          record_cleanup_error("cuMemFree(compute_output)", mem_free_(compute_output))) {
+        compute_output = 0;
+      }
+      if (transfer_buffer != 0 &&
+          record_cleanup_error("cuMemFree(transfer_buffer)", mem_free_(transfer_buffer))) {
+        transfer_buffer = 0;
+      }
+      if (host_destination != nullptr &&
+          record_cleanup_error("cuMemFreeHost(destination)", mem_free_host_(host_destination))) {
+        host_destination = nullptr;
+      }
+      if (host_source != nullptr &&
+          record_cleanup_error("cuMemFreeHost(source)", mem_free_host_(host_source))) {
+        host_source = nullptr;
+      }
+    }
+
+    complete = cleanup_context() && complete;
+    if (!streams_idle) {
+      if (context == nullptr) {
+        control_stream = nullptr;
+        compute_stream = nullptr;
+        copy_stream = nullptr;
+        start_event = nullptr;
+        stop_event = nullptr;
+        compute_done_event = nullptr;
+        copy_done_event = nullptr;
+        module = nullptr;
+        function = nullptr;
+        transfer_buffer = 0;
+        compute_output = 0;
+        if (host_destination != nullptr &&
+            record_cleanup_error("cuMemFreeHost(destination_after_context)",
+                                 mem_free_host_(host_destination))) {
+          host_destination = nullptr;
+        }
+        if (host_source != nullptr && record_cleanup_error("cuMemFreeHost(source_after_context)",
+                                                           mem_free_host_(host_source))) {
+          host_source = nullptr;
+        }
+      }
+      diagnose(DiagnosticLevel::warning, "cleanup_after_stream_error",
+               "The isolated overlap context was destroyed before releasing context-owned "
+               "resources because stream synchronization failed");
+      complete = false;
+    }
+    if (!complete) {
+      active_cuda_poisoned_ = true;
+    }
+    return complete;
+  };
+
+  const auto fail = [&](const char* operation, const abi::Result error) {
+    measurement.message =
+        std::string(operation) + ": " + result_name(error) + ": " + result_message(error);
+    diagnose(DiagnosticLevel::warning, operation, result_message(error), error);
+  };
+
+  if ((result = mem_alloc_(&transfer_buffer, bytes)) != abi::success ||
+      (result = mem_alloc_(&compute_output, output_bytes)) != abi::success ||
+      (result = mem_host_alloc_(&host_source, bytes, 0)) != abi::success ||
+      (result = mem_host_alloc_(&host_destination, bytes, 0)) != abi::success ||
+      (result = stream_create_(&control_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = stream_create_(&compute_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = stream_create_(&copy_stream, CU_STREAM_NON_BLOCKING)) != abi::success ||
+      (result = event_create_(&start_event, 0U)) != abi::success ||
+      (result = event_create_(&stop_event, 0U)) != abi::success ||
+      (result = event_create_(&compute_done_event, 0U)) != abi::success ||
+      (result = event_create_(&copy_done_event, 0U)) != abi::success ||
+      (result = module_load_data_(&module, synthetic_overlap::ptx)) != abi::success ||
+      (result = module_get_function_(&function, module, synthetic_overlap::kernel_name.data())) !=
+          abi::success) {
+    fail("prepare_overlap_resources", result);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  auto* source_bytes = static_cast<std::uint8_t*>(host_source);
+  for (std::size_t index = 0; index < bytes; ++index) {
+    source_bytes[index] = static_cast<std::uint8_t>((index * 29U + 0x5BU) & 0xFFU);
+  }
+  std::memset(host_destination, 0, bytes);
+  result = memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream);
+  if (result == abi::success) {
+    result = stream_synchronize_(copy_stream);
+  }
+  if (result != abi::success) {
+    fail("initialize_transfer_buffer", result);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  const auto launch_compute = [&](const std::uint32_t iterations,
+                                  const abi::Stream stream) -> abi::Result {
+    abi::DevicePointer output_argument = compute_output;
+    std::uint32_t iteration_argument = iterations;
+    void* parameters[] = {&output_argument, &iteration_argument};
+    return launch_kernel_(function, measurement.grid_blocks, 1U, 1U, measurement.block_threads, 1U,
+                          1U, 0U, stream, parameters, nullptr);
+  };
+
+  const auto timed_stream_sample = [&](const char* operation, const abi::Stream stream,
+                                       auto&& enqueue) -> std::optional<double> {
+    abi::Result call_result = event_record_(start_event, stream);
+    if (call_result == abi::success) {
+      call_result = enqueue();
+    }
+    if (call_result == abi::success) {
+      call_result = event_record_(stop_event, stream);
+    }
+    if (call_result == abi::success) {
+      call_result = event_synchronize_(stop_event);
+    }
+    float milliseconds = 0.0F;
+    if (call_result == abi::success) {
+      call_result = event_elapsed_time_(&milliseconds, start_event, stop_event);
+    }
+    if (call_result != abi::success) {
+      fail(operation, call_result);
+      return std::nullopt;
+    }
+    if (!(milliseconds > 0.0F) || !std::isfinite(milliseconds)) {
+      measurement.message = std::string(operation) + " produced a non-positive timing";
+      diagnose(DiagnosticLevel::error, operation, *measurement.message);
+      return std::nullopt;
+    }
+    return static_cast<double>(milliseconds);
+  };
+
+  const auto median_samples = [&](auto&& sample) -> std::optional<double> {
+    std::vector<double> values;
+    values.reserve(options.overlap_samples);
+    for (std::uint32_t index = 0; index < options.overlap_samples; ++index) {
+      const std::optional<double> value = sample(index);
+      if (!value.has_value()) {
+        return std::nullopt;
+      }
+      values.push_back(*value);
+    }
+    std::sort(values.begin(), values.end());
+    const std::size_t middle = values.size() / 2U;
+    if ((values.size() & 1U) != 0U) {
+      return values[middle];
+    }
+    return (values[middle - 1U] + values[middle]) / 2.0;
+  };
+
+  constexpr std::uint32_t minimum_kernel_iterations = 256U;
+  constexpr std::uint32_t maximum_kernel_iterations = 50'000'000U;
+  std::uint32_t kernel_iterations = 16'384U;
+  for (std::uint32_t attempt = 0; attempt < 8U; ++attempt) {
+    const std::optional<double> elapsed =
+        timed_stream_sample("calibrate_compute", compute_stream,
+                            [&] { return launch_compute(kernel_iterations, compute_stream); });
+    if (!elapsed.has_value()) {
+      measurement.cleanup_complete = cleanup();
+      return measurement;
+    }
+    const double target = static_cast<double>(options.overlap_target_compute_ms);
+    if (*elapsed >= target * 0.85 && *elapsed <= target * 1.15) {
+      break;
+    }
+    const double scale = std::clamp(target / *elapsed, 0.25, 8.0);
+    const double scaled = static_cast<double>(kernel_iterations) * scale;
+    const auto next = static_cast<std::uint32_t>(
+        std::clamp(std::llround(scaled), static_cast<long long>(minimum_kernel_iterations),
+                   static_cast<long long>(maximum_kernel_iterations)));
+    if (next == kernel_iterations) {
+      break;
+    }
+    kernel_iterations = next;
+  }
+  measurement.kernel_iterations = kernel_iterations;
+
+  measurement.compute_only_ms = median_samples([&](const std::uint32_t) {
+    return timed_stream_sample("measure_compute", compute_stream,
+                               [&] { return launch_compute(kernel_iterations, compute_stream); });
+  });
+  if (!measurement.compute_only_ms.has_value()) {
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  std::uint32_t observed = 0;
+  result = memcpy_d2h_async_(host_destination, compute_output, sizeof(observed), copy_stream);
+  if (result == abi::success) {
+    result = stream_synchronize_(copy_stream);
+  }
+  if (result != abi::success) {
+    fail("read_compute_verification", result);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+  std::memcpy(&observed, host_destination, sizeof(observed));
+  std::uint32_t expected = 0x9E3779B9U;
+  for (std::uint32_t index = 0; index < kernel_iterations; ++index) {
+    expected = expected * 1'664'525U + 1'013'904'223U;
+  }
+  measurement.compute_verified = observed == expected;
+  if (!*measurement.compute_verified) {
+    measurement.message = "Synthetic compute result verification failed";
+    diagnose(DiagnosticLevel::error, "verify_compute", *measurement.message);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  const auto measure_copy = [&](const bool host_to_device,
+                                const std::uint32_t repetitions) -> std::optional<double> {
+    return median_samples([&](const std::uint32_t) {
+      return timed_stream_sample(
+          host_to_device ? "measure_h2d" : "measure_d2h", copy_stream, [&]() -> abi::Result {
+            abi::Result copy_result = abi::success;
+            for (std::uint32_t index = 0; copy_result == abi::success && index < repetitions;
+                 ++index) {
+              copy_result =
+                  host_to_device
+                      ? memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
+                      : memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+            }
+            return copy_result;
+          });
+    });
+  };
+
+  const std::optional<double> h2d_single = measure_copy(true, 1U);
+  const std::optional<double> d2h_single = measure_copy(false, 1U);
+  if (!h2d_single.has_value() || !d2h_single.has_value()) {
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+  const auto balanced_repetitions = [&](const double single_copy_ms) {
+    const double ratio = *measurement.compute_only_ms / single_copy_ms;
+    return static_cast<std::uint32_t>(
+        std::clamp(std::llround(ratio), 1LL, static_cast<long long>(64U)));
+  };
+  const std::uint32_t h2d_repetitions = balanced_repetitions(*h2d_single);
+  const std::uint32_t d2h_repetitions = balanced_repetitions(*d2h_single);
+  const std::optional<double> h2d_copy_ms = measure_copy(true, h2d_repetitions);
+  const std::optional<double> d2h_copy_ms = measure_copy(false, d2h_repetitions);
+  if (!h2d_copy_ms.has_value() || !d2h_copy_ms.has_value()) {
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  const auto concurrent_sample = [&](const bool host_to_device, const std::uint32_t repetitions,
+                                     const std::uint32_t sample_index) -> std::optional<double> {
+    abi::Result call_result = event_record_(start_event, control_stream);
+    if (call_result == abi::success) {
+      call_result = stream_wait_event_(compute_stream, start_event, 0U);
+    }
+    if (call_result == abi::success) {
+      call_result = stream_wait_event_(copy_stream, start_event, 0U);
+    }
+
+    const auto enqueue_compute = [&]() {
+      if (call_result == abi::success) {
+        call_result = launch_compute(kernel_iterations, compute_stream);
+      }
+      if (call_result == abi::success) {
+        call_result = event_record_(compute_done_event, compute_stream);
+      }
+    };
+    const auto enqueue_copy = [&]() {
+      for (std::uint32_t index = 0; call_result == abi::success && index < repetitions; ++index) {
+        call_result =
+            host_to_device
+                ? memcpy_h2d_async_(transfer_buffer, host_source, bytes, copy_stream)
+                : memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+      }
+      if (call_result == abi::success) {
+        call_result = event_record_(copy_done_event, copy_stream);
+      }
+    };
+
+    if ((sample_index & 1U) == 0U) {
+      enqueue_compute();
+      enqueue_copy();
+    } else {
+      enqueue_copy();
+      enqueue_compute();
+    }
+    if (call_result == abi::success) {
+      call_result = stream_wait_event_(control_stream, compute_done_event, 0U);
+    }
+    if (call_result == abi::success) {
+      call_result = stream_wait_event_(control_stream, copy_done_event, 0U);
+    }
+    if (call_result == abi::success) {
+      call_result = event_record_(stop_event, control_stream);
+    }
+    if (call_result == abi::success) {
+      call_result = event_synchronize_(stop_event);
+    }
+    float milliseconds = 0.0F;
+    if (call_result == abi::success) {
+      call_result = event_elapsed_time_(&milliseconds, start_event, stop_event);
+    }
+    if (call_result != abi::success) {
+      fail(host_to_device ? "measure_h2d_overlap" : "measure_d2h_overlap", call_result);
+      return std::nullopt;
+    }
+    if (!(milliseconds > 0.0F) || !std::isfinite(milliseconds)) {
+      measurement.message = "Concurrent overlap timing was not positive";
+      diagnose(DiagnosticLevel::error,
+               host_to_device ? "measure_h2d_overlap" : "measure_d2h_overlap",
+               *measurement.message);
+      return std::nullopt;
+    }
+    return static_cast<double>(milliseconds);
+  };
+
+  const std::optional<double> h2d_concurrent = median_samples(
+      [&](const std::uint32_t index) { return concurrent_sample(true, h2d_repetitions, index); });
+  const std::optional<double> d2h_concurrent = median_samples(
+      [&](const std::uint32_t index) { return concurrent_sample(false, d2h_repetitions, index); });
+  if (!h2d_concurrent.has_value() || !d2h_concurrent.has_value()) {
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  const auto direction = [&](const std::uint32_t repetitions, const double copy_only_ms,
+                             const double concurrent_ms) {
+    probe::OverlapDirectionMeasurement output;
+    output.copy_repetitions = repetitions;
+    output.copy_only_ms = copy_only_ms;
+    output.concurrent_ms = concurrent_ms;
+    output.serial_ms = *measurement.compute_only_ms + copy_only_ms;
+    output.ideal_ms = std::max(*measurement.compute_only_ms, copy_only_ms);
+    output.speedup = *output.serial_ms / concurrent_ms;
+    const double overlap_window = std::min(*measurement.compute_only_ms, copy_only_ms);
+    output.overlap_efficiency = (*output.serial_ms - concurrent_ms) / overlap_window;
+    return output;
+  };
+  measurement.h2d = direction(h2d_repetitions, *h2d_copy_ms, *h2d_concurrent);
+  measurement.d2h = direction(d2h_repetitions, *d2h_copy_ms, *d2h_concurrent);
+
+  std::memset(host_destination, 0, bytes);
+  result = memcpy_d2h_async_(host_destination, transfer_buffer, bytes, copy_stream);
+  if (result == abi::success) {
+    result = stream_synchronize_(copy_stream);
+  }
+  if (result != abi::success) {
+    fail("verify_overlap_transfer", result);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+  measurement.transfer_verified = std::memcmp(host_source, host_destination, bytes) == 0;
+  if (!*measurement.transfer_verified) {
+    measurement.message = "Overlap transfer data verification failed";
+    diagnose(DiagnosticLevel::error, "verify_overlap_transfer", *measurement.message);
+    measurement.cleanup_complete = cleanup();
+    return measurement;
+  }
+
+  measurement.cleanup_complete = cleanup();
+  if (!*measurement.cleanup_complete) {
+    measurement.message = "Overlap measurement completed, but cleanup reported an error";
+    return measurement;
+  }
+  measurement.status = "completed";
+  measurement.message = "Calibrated synthetic compute overlapped with independent H2D and D2H "
+                        "transfer batches";
   return measurement;
 }
 

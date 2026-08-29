@@ -21,6 +21,9 @@ public:
   [[nodiscard]] probe::TransferMeasurement
   benchmark_transfers(std::int32_t ordinal, const probe::ProbeOptions& options,
                       std::vector<probe::Diagnostic>& diagnostics);
+  [[nodiscard]] probe::OverlapMeasurement
+  benchmark_overlap(std::int32_t ordinal, const probe::ProbeOptions& options,
+                    std::vector<probe::Diagnostic>& diagnostics);
 
 private:
   template <typename Function>
@@ -95,11 +98,16 @@ private:
   abi::StreamCreate stream_create_ = nullptr;
   abi::StreamDestroy stream_destroy_ = nullptr;
   abi::StreamSynchronize stream_synchronize_ = nullptr;
+  abi::StreamWaitEvent stream_wait_event_ = nullptr;
   abi::EventCreate event_create_ = nullptr;
   abi::EventDestroy event_destroy_ = nullptr;
   abi::EventRecord event_record_ = nullptr;
   abi::EventSynchronize event_synchronize_ = nullptr;
   abi::EventElapsedTime event_elapsed_time_ = nullptr;
+  abi::ModuleLoadData module_load_data_ = nullptr;
+  abi::ModuleGetFunction module_get_function_ = nullptr;
+  abi::ModuleUnload module_unload_ = nullptr;
+  abi::LaunchKernel launch_kernel_ = nullptr;
   std::vector<QuarantinedVmmState> quarantined_vmm_;
   bool active_cuda_poisoned_ = false;
   bool load_attempted_ = false;
