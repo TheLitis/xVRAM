@@ -1,0 +1,13 @@
+BasedOnStyle: LLVM
+AccessModifierOffset: -2
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Attach
+ColumnLimit: 100
+ConstructorInitializerIndentWidth: 4
+DerivePointerAlignment: false
+IndentWidth: 2
+PointerAlignment: Left
+SortIncludes: CaseSensitive
+Standard: c++20
+TabWidth: 2
+UseTab: Never
