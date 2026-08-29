@@ -78,5 +78,8 @@ does not imply that a particular GeForce implements every location or memory-poo
 - Explicit working-set transactions for known libraries.
 - Conservative allocation-level transactions for generic interception.
 
-The first public executable, `xvram-probe`, validates the backend assumptions and report
-contract before the allocator and residency engine are introduced.
+`xvram-probe` validates backend capabilities and transport assumptions.
+`xvram-vmm-poc` is the next deliberately narrow boundary: an isolated controller and
+worker prove stable-address VMM reuse with pageable backing and a fixed FIFO schedule.
+The PoC's internal executor library is not a public SDK ABI and must not be confused
+with the Phase 2 allocator or residency manager.

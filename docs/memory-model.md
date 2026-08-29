@@ -47,3 +47,10 @@ optimization and cannot weaken the conservative boundary rule.
 Logical addresses are reserved for the lifetime promised to the integration layer.
 Physical handles may change underneath that reservation. Consumers must not launch work
 against an address without participating in the working-set transaction.
+
+Phase 1 demonstrates this invariant with a padded CUDA VA reservation whose aligned
+logical base remains fixed. Every logical tile therefore keeps the address
+`logical_base + tile_offset`. Each slot carries a reusable physical handle between
+those tile addresses, reapplies access rights after every mapping, executes, copies
+back, waits for the completion event, and unmaps the full chunk. The final partial
+chunk changes only the valid copy and kernel byte count, never the mapped range.

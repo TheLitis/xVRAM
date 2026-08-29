@@ -27,11 +27,16 @@ error requiring tiling. It must not rely on an unrecoverable GPU access fault.
 - Cleanup is best effort after device loss, but no later work is accepted.
 - The capability probe treats unsupported features as findings, not fatal errors.
 
-The Phase 0 probe also releases a VMM allocation handle even if its mapping cannot be
-removed, as permitted by the CUDA Driver API. Any unresolved mapping or address
-reservation is quarantined for the remaining driver lifetime and all later active CUDA
-work is refused. The long-lived runtime must replace this probe-specific guard with
-injectable dispatch and RAII-owned quarantine before it manages application memory.
+The Phase 0 probe releases a VMM allocation handle even if its mapping cannot be
+removed, as permitted by the CUDA Driver API, and quarantines any unresolved mapping or
+reservation for the remaining driver lifetime.
+
+The Phase 1 PoC adds an injectable Driver API dispatch, an explicit cleanup ledger, and
+process isolation. It never unmaps or reuses a slot until its generation's completion
+event reports success. If an unmap fails, the handle is still released but the original
+reservation is deliberately retained; the worker exits as the quarantine boundary.
+The controller kills and reaps a crashed or stalled worker without changing global CUDA,
+TDR, or NVIDIA configuration.
 
 ## Validation strategy
 
@@ -49,3 +54,8 @@ passes first.
 The overlap benchmark hashes its embedded PTX source, checks the synthetic kernel's first
 output word against the same unsigned recurrence on the CPU, verifies the complete copy
 buffer, and requires successful resource cleanup before reporting `completed`.
+
+The VMM proof hashes its versioned PTX module, verifies every returned tile, repeats a
+complete CPU comparison after each requested mode, and requires matching 128-bit
+digests, event-safe remap counts, stable addresses, real handle reuse, and a fully true
+cleanup ledger before reporting `completed`.

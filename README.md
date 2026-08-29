@@ -10,8 +10,9 @@ virtual addresses, asynchronous transfers, explicit working-set declarations,
 WDDM-aware budgeting, cache policy, and framework hints.
 
 > [!WARNING]
-> xVRAM is at the hardware-probing stage. It does not yet extend an application's VRAM
-> and must not be used for production workloads.
+> xVRAM has an explicit VMM oversubscription proof, but not yet a general allocator or
+> residency cache. It does not transparently extend an application's VRAM and must not
+> be used for production workloads.
 
 ## Memory model
 
@@ -63,6 +64,23 @@ NVIDIA's platform-specific CUDA 13.3 redistributable header archives and verifie
 SHA-256 hashes. Running without an NVIDIA driver still produces a valid diagnostic
 report rather than a loader crash.
 
+## Phase 1 explicit VMM proof
+
+`xvram-vmm-poc` processes a deterministic logical `uint32` array that is strictly
+larger than total VRAM. The complete array remains in pageable RAM while one reference
+slot or two pipelined VMM slots are repeatedly mapped at stable CUDA virtual addresses.
+Only the bounded slots and their staging buffers are resident or pinned.
+
+Every tile is checked against the CPU before write-back, both modes receive identical
+input, and a second full-array verification produces matching 128-bit digests. Remapping
+is permitted only after a successful completion-event query. A controller isolates the
+CUDA worker, enforces progress and total deadlines, and emits a strict
+`xvram.vmm_poc` v1 report even when it must terminate the worker.
+
+This is a fixed FIFO proof, not the Phase 2 residency cache. See the
+[VMM proof guide](docs/vmm-poc.md) for its safety model, CLI, report contract, and exit
+codes.
+
 ## Build
 
 Requirements:
@@ -113,12 +131,23 @@ ctest --preset dev
 ./build/dev/xvram-probe --json report.xvram-report.json
 ```
 
+Run the Phase 1 proof on a VMM-capable CUDA device:
+
+```powershell
+build\vs\Release\xvram-vmm-poc.exe --json vmm-poc.json
+build\vs\Release\xvram-vmm-poc.exe --logical-size 12GiB --mode both --json acceptance.json
+```
+
+```bash
+./build/dev/xvram-vmm-poc --json vmm-poc.json
+```
+
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
-Use `xvram-probe --help` for the complete CLI contract.
+Use `xvram-probe --help` and `xvram-vmm-poc --help` for the complete CLI contracts.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -140,8 +169,8 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
-[correctness rules](docs/correctness.md), and [roadmap](docs/roadmap.md) for the design
-contract.
+[correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md), and
+[roadmap](docs/roadmap.md) for the design contract.
 
 ## Performance expectations
 

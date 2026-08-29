@@ -14,13 +14,21 @@ Exit criterion reached: the RTX 3070 development machine produces a complete, re
 report, the synthetic compute and transfer outputs are verified, overlap is measured in
 both directions, and the no-driver path is covered in Windows/Linux CI.
 
-## Phase 1: explicit VMM proof of concept
+## Phase 1: explicit VMM proof of concept — complete
 
 - Reserve a logical address range larger than VRAM.
 - Reuse physical VRAM chunks under stable virtual addresses.
 - Remap only at CUDA event boundaries.
 - Process a sequential logical array larger than VRAM with a tiled kernel.
 - Detect corruption, OOM, timeout, and remap overhead.
+
+Exit criterion reached: the RTX 3070 development machine completed three independent
+12 GiB runs and one 16 GiB stress run with two passes in both reference and pipeline
+modes. Every report validated against `xvram.vmm_poc` schema v1, every GPU result matched
+the CPU reference, handle reuse and stable addresses were observed, unsafe remaps and
+mismatches remained zero, all cleanup flags were true, diagnostics were empty, and no
+worker process remained. Windows/Linux no-driver behavior, injected CUDA faults, worker
+crash/hang/protocol failures, and the report fixtures are covered in CI.
 
 ## Phase 2: residency cache
 
