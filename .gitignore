@@ -1,0 +1,37 @@
+# CMake and compiler outputs
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Visual Studio
+.vs/
+*.sln
+*.slnx
+*.suo
+*.user
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.tmp
+.env
+.env.*
+.python-version
+__pycache__/
+*.py[cod]
+*.dmp
+core
+core.*
+.DS_Store
+Thumbs.db
+
+# Probe output and profiling artifacts
+*.xvram-report.json
+*.nsys-rep
+*.qdrep
