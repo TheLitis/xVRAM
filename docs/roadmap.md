@@ -30,13 +30,25 @@ mismatches remained zero, all cleanup flags were true, diagnostics were empty, a
 worker process remained. Windows/Linux no-driver behavior, injected CUDA faults, worker
 crash/hang/protocol failures, and the report fixtures are covered in CI.
 
-## Phase 2: residency cache
+## Phase 2: event-safe residency cache — implementation complete, hardware gate pending
 
-- Chunk table and conservative clean/dirty state machine.
-- Bounded pinned staging pool.
-- H2D/D2H streams, event ownership, and prefetch queue.
-- WDDM-aware dynamic target and pluggable eviction policy.
-- Trace and metrics pipeline.
+- Multi-allocation logical heap with stable padded VA reservations and pageable backing.
+- Conservative state machine with generation-safe events and explicit pin/frame/staging
+  ownership.
+- Independent bounded H2D and D2H staging pools, dirty write-back, demand loading, and
+  speculative prefetch.
+- Cost-aware CLOCK and deterministic LRU policies with a manager-side victim recheck.
+- CUDA/WDDM-aware dynamic target, immediate shrink, hysteretic grow, and bounded OOM
+  recovery.
+- Isolated `xvram-cache-bench` controller/worker, strict report and JSONL trace schemas,
+  deterministic CPU verification, fake-CUDA fault coverage, and no-driver CI.
+
+The implementation and no-GPU contract gates are complete. The remaining exit criterion
+is the reproducible RTX 3070 gate: suite runs at `0.8x`, `1.1x`, `1.5x`, and `2.0x` total
+VRAM for CLOCK and LRU, followed by the `1.5x` CLOCK budget-pressure run. The checked-in
+`scripts/run-phase2-rtx3070-acceptance.ps1` command validates all nine reports, compares
+policy digests, enforces scenario-specific cache accounting, and checks that no worker
+remains.
 
 ## Phase 3: known operations
 
@@ -64,4 +76,4 @@ crash/hang/protocol failures, and the report fixtures are covered in CI.
 - Access-range profiling, PTX indirection, and automatic tiling research.
 
 Transparent support for an arbitrary unchanged CUDA executable is a long-term research
-goal, not a Phase 1 promise.
+goal, not a Phase 1 or Phase 2 promise.

@@ -38,6 +38,18 @@ reservation is deliberately retained; the worker exits as the quarantine boundar
 The controller kills and reaps a crashed or stalled worker without changing global CUDA,
 TDR, or NVIDIA configuration.
 
+The Phase 2 cache applies the same quarantine rule to every frame and reservation while
+adding independent event generations for compute, H2D, and D2H staging. A dirty frame
+cannot be reused until D2H completes and pinned bytes have been copied to pageable
+backing. Policy output is advisory: the manager rejects pinned, in-flight, aliased, or
+current-working-set victims. During budget shrink, new launches stop until the active
+transaction is drained and excess clean or written-back frames are released.
+
+`cuEventQuery` accepts only `CUDA_SUCCESS` and `CUDA_ERROR_NOT_READY`; every other result
+poisons the worker. A kernel observation above 250 ms prevents a subsequent launch. A
+failed unmap still releases the physical handle, deliberately retains the reservation,
+marks cleanup incomplete, and relies on worker-process exit as the quarantine boundary.
+
 ## Validation strategy
 
 - deterministic state-machine unit tests;
@@ -59,3 +71,9 @@ The VMM proof hashes its versioned PTX module, verifies every returned tile, rep
 complete CPU comparison after each requested mode, and requires matching 128-bit
 digests, event-safe remap counts, stable addresses, real handle reuse, and a fully true
 cleanup ledger before reporting `completed`.
+
+The residency-cache benchmark hashes `xvram_residency_workload_v1`, checks verification
+tokens at each operation, and fully compares pageable backing with the CPU model after
+each workload. CLOCK and LRU runs start from identical regenerated backing. Completed
+reports additionally reconcile hit/miss, prefetch-terminal, dirty-writeback,
+map/access/unmap, handle-lifecycle, target, staging, and cleanup counters.

@@ -1,6 +1,7 @@
 # CMake and compiler outputs
 /build/
 /out/
+/artifacts/
 /cmake-build-*/
 CMakeUserPresets.json
 compile_commands.json

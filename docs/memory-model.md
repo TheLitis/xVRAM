@@ -5,16 +5,28 @@
 System RAM is the capacity and canonical backing tier. VRAM is the resident execution
 tier. In strict mode, kernels do not directly dereference cold host-backed ranges.
 
-Each logical chunk has one authoritative state and may have a valid cached copy:
+Each logical chunk has one authoritative state and may have a valid cached copy. The
+implemented Phase 2 state machine is:
 
 ```text
-HOST_CLEAN -> PREFETCHING -> VRAM_CLEAN -> VRAM_DIRTY
-     ^                                          |
-     +---------------- EVICTING <---------------+
+host_clean
+  -> prefetch_queued
+  -> mapping
+  -> h2d_in_flight
+  -> resident_clean
+  -> resident_dirty
+  -> writeback_queued
+  -> d2h_in_flight
+  -> resident_clean
+  -> evicting
+  -> host_clean
+
+any state -> poisoned
 ```
 
-Additional orthogonal flags describe whether a chunk is in flight, locked into the
-next working set, compressed in the host tier, or undergoing codec work.
+Pin count, physical-frame ownership, staging ownership, and event generation are
+orthogonal to this state. Dirty is established immediately after successful submission
+of a write kernel, rather than after its later retirement.
 
 ## Core invariants
 
@@ -42,6 +54,10 @@ Read-only clean data can be discarded from VRAM without D2H traffic. Read-write 
 becomes dirty at the operation boundary. Fine-grained dirty tracking is a later
 optimization and cannot weaken the conservative boundary rule.
 
+Phase 2 normalizes overlapping byte ranges and merges their access strength. A
+full-chunk write-only declaration can omit H2D; a partial write-only declaration must
+first preserve untouched bytes through H2D.
+
 ## Address stability
 
 Logical addresses are reserved for the lifetime promised to the integration layer.
@@ -54,3 +70,9 @@ logical base remains fixed. Every logical tile therefore keeps the address
 those tile addresses, reapplies access rights after every mapping, executes, copies
 back, waits for the completion event, and unmaps the full chunk. The final partial
 chunk changes only the valid copy and kernel byte count, never the mapped range.
+
+Phase 2 extends the invariant to multiple allocations. Each allocation releases the
+exact original padded reservation, not merely its aligned logical base. Physical frame
+handles move between chunk addresses only after all users and the relevant event
+generation have retired. `cuMemSetAccess` is applied after every new mapping, and unmap
+always covers the original mapped chunk range.

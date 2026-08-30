@@ -10,9 +10,9 @@ virtual addresses, asynchronous transfers, explicit working-set declarations,
 WDDM-aware budgeting, cache policy, and framework hints.
 
 > [!WARNING]
-> xVRAM has an explicit VMM oversubscription proof, but not yet a general allocator or
-> residency cache. It does not transparently extend an application's VRAM and must not
-> be used for production workloads.
+> xVRAM now has an internal event-safe residency-cache implementation and benchmark,
+> but it does not yet expose a public allocator ABI or transparently extend an
+> application's VRAM. It must not be used for production workloads.
 
 ## Memory model
 
@@ -81,6 +81,26 @@ This is a fixed FIFO proof, not the Phase 2 residency cache. See the
 [VMM proof guide](docs/vmm-poc.md) for its safety model, CLI, report contract, and exit
 codes.
 
+## Phase 2 residency cache
+
+`xvram-cache-bench` exercises the internal `xvram_residency` cache engine. Each logical
+allocation owns pageable host backing and a stable padded CUDA VA reservation. Reusable
+VMM frames form a bounded write-back cache, while independent H2D and D2H pinned staging
+pools remain bounded by `--staging-slots`.
+
+The benchmark covers sequential, hot-set reuse, deterministic random, read-only, and
+write-heavy access traces. Cost-aware CLOCK is the default policy; deterministic LRU is
+available as a baseline, and `--policy both` runs both from identical backing and seeds.
+Every operation is checked against the CPU reference. Dirty frames are written back
+before reuse, mappings are removed only after their event generation completes, and
+live CUDA/WDDM observations can shrink or cautiously grow the cache target.
+
+The public process owns output and supervises an isolated worker through the versioned
+`XVC1` protocol. It emits a strict `xvram.residency_cache` v1 report and can optionally
+write an `xvram.residency_trace` v1 JSONL trace. See the
+[residency-cache guide](docs/residency-cache.md) for the CLI, state machine, report and
+trace contracts, safety rules, and hardware acceptance procedure.
+
 ## Build
 
 Requirements:
@@ -142,12 +162,25 @@ build\vs\Release\xvram-vmm-poc.exe --logical-size 12GiB --mode both --json accep
 ./build/dev/xvram-vmm-poc --json vmm-poc.json
 ```
 
+Run the Phase 2 cache suite on a VMM-capable CUDA device:
+
+```powershell
+build\vs\Release\xvram-cache-bench.exe --scenario suite --policy both --json cache-suite.json
+build\vs\Release\xvram-cache-bench.exe --scenario suite --policy both `
+  --trace cache-suite.jsonl --json cache-suite.json
+```
+
+```bash
+./build/dev/xvram-cache-bench --scenario suite --policy both --json cache-suite.json
+```
+
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
-Use `xvram-probe --help` and `xvram-vmm-poc --help` for the complete CLI contracts.
+Use `xvram-probe --help`, `xvram-vmm-poc --help`, and `xvram-cache-bench --help` for the
+complete CLI contracts.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -170,7 +203,8 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
 [correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md), and
-[roadmap](docs/roadmap.md) for the design contract.
+[residency cache](docs/residency-cache.md), and [roadmap](docs/roadmap.md) for the design
+contract.
 
 ## Performance expectations
 
