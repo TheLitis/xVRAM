@@ -1,6 +1,7 @@
 #include "vmm_poc/executor.hpp"
 
 #include "platform/dxgi_memory.hpp"
+#include "platform/pageable_memory.hpp"
 #include "platform/system_info.hpp"
 #include "xvram/vmm_transform_ptx.hpp"
 
@@ -28,8 +29,6 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <Windows.h>
-#else
-#include <sys/mman.h>
 #endif
 
 namespace xvram::vmm_poc {
@@ -131,68 +130,6 @@ void parallel_word_chunks(const std::uint64_t word_count, Work&& work, Heartbeat
     std::rethrow_exception(worker_exception);
   }
 }
-
-class PageableBacking {
-public:
-  PageableBacking() = default;
-  PageableBacking(const PageableBacking&) = delete;
-  PageableBacking& operator=(const PageableBacking&) = delete;
-
-  ~PageableBacking() {
-    (void)release();
-  }
-
-  [[nodiscard]] bool allocate(const std::uint64_t bytes) {
-    if (data_ != nullptr || bytes == 0 ||
-        bytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-      return false;
-    }
-#ifdef _WIN32
-    data_ = static_cast<std::uint32_t*>(VirtualAlloc(nullptr, static_cast<std::size_t>(bytes),
-                                                     MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-    if (data_ == nullptr) {
-      return false;
-    }
-#else
-    void* mapping = mmap(nullptr, static_cast<std::size_t>(bytes), PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (mapping == MAP_FAILED) {
-      return false;
-    }
-    data_ = static_cast<std::uint32_t*>(mapping);
-#endif
-    bytes_ = static_cast<std::size_t>(bytes);
-    return true;
-  }
-
-  [[nodiscard]] bool release() noexcept {
-    if (data_ == nullptr) {
-      return true;
-    }
-#ifdef _WIN32
-    const bool released = VirtualFree(data_, 0, MEM_RELEASE) != FALSE;
-#else
-    const bool released = munmap(data_, bytes_) == 0;
-#endif
-    if (released) {
-      data_ = nullptr;
-      bytes_ = 0;
-    }
-    return released;
-  }
-
-  [[nodiscard]] std::uint32_t* data() noexcept {
-    return data_;
-  }
-
-  [[nodiscard]] const std::uint32_t* data() const noexcept {
-    return data_;
-  }
-
-private:
-  std::uint32_t* data_ = nullptr;
-  std::size_t bytes_ = 0;
-};
 
 [[nodiscard]] double milliseconds_between(const Clock::time_point begin,
                                           const Clock::time_point end) {
@@ -1424,7 +1361,7 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   result.cleanup.host_backing_released = true;
   Resources resources;
   resources.api = &api;
-  PageableBacking backing;
+  platform::PageableMemory backing;
 
   const auto finish = [&]() noexcept -> ExecutorResult {
     try {
@@ -1773,12 +1710,14 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   try {
     if (options.mode == RequestedMode::reference || options.mode == RequestedMode::both) {
       modes_ok = run_reference_mode(resources, result, *result.device, options, plan, wddm_identity,
-                                    environment, backing.data(), progress, blocks, threads);
+                                    environment, static_cast<std::uint32_t*>(backing.data()),
+                                    progress, blocks, threads);
     }
     if (modes_ok &&
         (options.mode == RequestedMode::pipeline || options.mode == RequestedMode::both)) {
       modes_ok = run_pipeline_mode(resources, result, *result.device, options, plan, wddm_identity,
-                                   environment, backing.data(), progress, blocks, threads);
+                                   environment, static_cast<std::uint32_t*>(backing.data()),
+                                   progress, blocks, threads);
     }
   } catch (const std::bad_alloc&) {
     try {

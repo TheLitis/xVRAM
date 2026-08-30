@@ -258,6 +258,7 @@ add_library(
   src/platform/cuda/cuda_api.cpp
   src/platform/cuda/cuda_driver.cpp
   src/platform/dynamic_library.cpp
+  src/platform/pageable_memory.cpp
   src/platform/nvml/nvml.cpp
   src/platform/system_info.cpp
   src/probe/probe.cpp
@@ -292,6 +293,17 @@ target_compile_features(xvram_worker_process PUBLIC cxx_std_20)
 target_include_directories(xvram_worker_process PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(xvram_worker_process PRIVATE Threads::Threads)
 xvram_enable_warnings(xvram_worker_process)
+
+add_library(
+  xvram_residency_core STATIC
+  src/residency/budget.cpp
+  src/residency/core.cpp
+  src/residency/metrics.cpp
+  src/residency/policy.cpp
+  src/residency/scenario.cpp)
+target_compile_features(xvram_residency_core PUBLIC cxx_std_20)
+target_include_directories(xvram_residency_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+xvram_enable_warnings(xvram_residency_core)
 
 add_library(
   xvram_vmm_poc STATIC

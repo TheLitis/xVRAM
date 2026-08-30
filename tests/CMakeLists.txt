@@ -34,6 +34,13 @@ xvram_enable_warnings(xvram-vmm-poc-executor-fake-tests)
 add_test(NAME xvram.vmm-poc.executor-fake COMMAND xvram-vmm-poc-executor-fake-tests)
 set_tests_properties(xvram.vmm-poc.executor-fake PROPERTIES TIMEOUT 30)
 
+add_executable(xvram-residency-core-tests unit/residency_core_tests.cpp)
+target_link_libraries(xvram-residency-core-tests PRIVATE xvram_residency_core)
+target_compile_features(xvram-residency-core-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-residency-core-tests)
+
+add_test(NAME xvram.residency.core COMMAND xvram-residency-core-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(
