@@ -1,0 +1,15 @@
+#pragma once
+
+#include <cstdint>
+#include <string_view>
+
+namespace xvram::residency {
+
+inline constexpr std::uint32_t residency_workload_module_version =
+    @XVRAM_RESIDENCY_WORKLOAD_MODULE_VERSION@;
+inline constexpr std::string_view residency_workload_module_sha256 =
+    "@XVRAM_RESIDENCY_WORKLOAD_SHA256@";
+inline constexpr std::string_view residency_workload_ptx =
+    R"xvramptx(@XVRAM_RESIDENCY_WORKLOAD_PTX@)xvramptx";
+
+} // namespace xvram::residency

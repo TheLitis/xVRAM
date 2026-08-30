@@ -41,6 +41,14 @@ xvram_enable_warnings(xvram-residency-core-tests)
 
 add_test(NAME xvram.residency.core COMMAND xvram-residency-core-tests)
 
+add_executable(xvram-residency-workload-tests unit/residency_workload_tests.cpp)
+target_link_libraries(xvram-residency-workload-tests PRIVATE xvram_residency)
+target_include_directories(xvram-residency-workload-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-residency-workload-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-residency-workload-tests)
+
+add_test(NAME xvram.residency.workload COMMAND xvram-residency-workload-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(

@@ -17,6 +17,7 @@ struct CacheMetrics {
   std::uint64_t prefetch_wasted = 0;
   std::uint64_t prefetch_cancelled = 0;
   std::uint64_t prefetch_in_flight = 0;
+  std::uint64_t prefetch_promoted = 0;
 
   std::uint64_t clean_evictions = 0;
   std::uint64_t dirty_evictions = 0;

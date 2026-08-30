@@ -130,6 +130,7 @@ bool accumulate_metrics(CacheMetrics& accumulator, const CacheMetrics& delta) no
       !add(combined.prefetch_wasted, delta.prefetch_wasted) ||
       !add(combined.prefetch_cancelled, delta.prefetch_cancelled) ||
       !add(combined.prefetch_in_flight, delta.prefetch_in_flight) ||
+      !add(combined.prefetch_promoted, delta.prefetch_promoted) ||
       !add(combined.clean_evictions, delta.clean_evictions) ||
       !add(combined.dirty_evictions, delta.dirty_evictions) ||
       !add(combined.eviction_writebacks_completed, delta.eviction_writebacks_completed) ||

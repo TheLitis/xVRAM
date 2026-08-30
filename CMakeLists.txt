@@ -151,6 +151,14 @@ file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/vmm_poc/vmm_transform_v1.ptx"
 configure_file(cmake/vmm_transform_ptx.hpp.in
                generated/xvram/vmm_transform_ptx.hpp @ONLY)
 
+set(XVRAM_RESIDENCY_WORKLOAD_MODULE_VERSION 1)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/residency/residency_workload_v1.ptx"
+     XVRAM_RESIDENCY_WORKLOAD_PTX)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/residency/residency_workload_v1.ptx"
+     XVRAM_RESIDENCY_WORKLOAD_SHA256)
+configure_file(cmake/residency_workload_ptx.hpp.in
+               generated/xvram/residency_workload_ptx.hpp @ONLY)
+
 find_path(
   XVRAM_NVML_INCLUDE_DIR
   NAMES nvml.h
@@ -330,6 +338,23 @@ target_link_libraries(xvram-vmm-poc PRIVATE xvram_vmm_poc)
 target_include_directories(xvram-vmm-poc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(xvram-vmm-poc SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
 xvram_enable_warnings(xvram-vmm-poc)
+
+add_library(
+  xvram_residency STATIC
+  src/residency/executor.cpp
+  src/residency/workload.cpp)
+target_compile_features(xvram_residency PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_residency
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
+         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_residency SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(
+  xvram_residency
+  PRIVATE xvram_probe_lib xvram_residency_core xvram_worker_process Threads::Threads)
+xvram_enable_warnings(xvram_residency)
 
 install(TARGETS xvram-probe xvram-vmm-poc RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES schemas/capability-report-v1.schema.json

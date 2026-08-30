@@ -1,0 +1,85 @@
+.version 8.0
+.target sm_52
+.address_size 64
+
+.visible .entry xvram_residency_workload_v1(
+    .param .u64 data,
+    .param .u64 word_count,
+    .param .u64 global_start,
+    .param .u32 operation_index,
+    .param .u64 seed,
+    .param .u32 access_mode,
+    .param .u64 token_base)
+{
+    .reg .pred %p<5>;
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<14>;
+
+    ld.param.u64 %rd1, [data];
+    ld.param.u64 %rd2, [word_count];
+    ld.param.u64 %rd3, [global_start];
+    ld.param.u32 %r1, [operation_index];
+    ld.param.u64 %rd4, [seed];
+    ld.param.u32 %r23, [access_mode];
+    ld.param.u64 %rd11, [token_base];
+
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mov.u32 %r4, %tid.x;
+    mul.wide.u32 %rd5, %r2, %r3;
+    cvt.u64.u32 %rd10, %r4;
+    add.u64 %rd5, %rd5, %rd10;
+    mov.u32 %r5, %nctaid.x;
+    mul.lo.u32 %r6, %r5, %r3;
+    cvt.u64.u32 %rd6, %r6;
+    mov.b64 {%r7, %r8}, %rd4;
+    mul.wide.u32 %rd12, %r1, 4;
+    add.u64 %rd11, %rd11, %rd12;
+    mov.u32 %r22, 0;
+
+LOOP:
+    setp.ge.u64 %p1, %rd5, %rd2;
+    @%p1 bra DONE;
+    shl.b64 %rd7, %rd5, 2;
+    add.u64 %rd8, %rd1, %rd7;
+    add.u64 %rd9, %rd3, %rd5;
+    mov.b64 {%r9, %r10}, %rd9;
+
+    mul.lo.u32 %r12, %r9, 0x9e3779b9;
+    mul.lo.u32 %r13, %r10, 0x85ebca6b;
+    mul.lo.u32 %r14, %r8, 0x165667b1;
+    add.u32 %r15, %r1, 1;
+    mul.lo.u32 %r16, %r15, 0xc2b2ae35;
+    xor.b32 %r17, %r12, %r13;
+    xor.b32 %r18, %r7, %r14;
+    xor.b32 %r19, %r17, %r18;
+    xor.b32 %r20, %r19, %r16;
+
+    setp.eq.u32 %p2, %r23, 2;
+    @%p2 bra WRITE_ONLY;
+    ld.global.u32 %r11, [%rd8];
+    setp.eq.u32 %p3, %r23, 0;
+    @%p3 bra TOKEN;
+    bra TRANSFORM;
+
+WRITE_ONLY:
+    mov.u32 %r11, 0xa5a5a5a5;
+
+TRANSFORM:
+    xor.b32 %r11, %r11, %r20;
+    mad.lo.u32 %r11, %r11, 0x0019660d, 0x3c6ef35f;
+    shr.u32 %r21, %r11, 16;
+    xor.b32 %r11, %r11, %r21;
+    mul.lo.u32 %r11, %r11, 0x27d4eb2d;
+    st.global.u32 [%rd8], %r11;
+
+TOKEN:
+    xor.b32 %r24, %r11, %r20;
+    xor.b32 %r22, %r22, %r24;
+    add.u64 %rd5, %rd5, %rd6;
+    bra LOOP;
+
+DONE:
+    atom.global.xor.b32 %r25, [%rd11], %r22;
+    ret;
+}
