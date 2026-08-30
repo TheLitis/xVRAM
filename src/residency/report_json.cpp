@@ -483,6 +483,8 @@ void write_cleanup(JsonWriter& writer, const Cleanup& cleanup) {
   write_optional(writer, cleanup.mappings_removed);
   writer.key("physical_handles_released");
   write_optional(writer, cleanup.physical_handles_released);
+  writer.key("device_allocations_released");
+  write_optional(writer, cleanup.device_allocations_released);
   writer.key("virtual_reservations_released");
   write_optional(writer, cleanup.virtual_reservations_released);
   writer.key("pinned_staging_released");

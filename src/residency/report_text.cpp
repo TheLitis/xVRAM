@@ -249,8 +249,10 @@ void write_text(const Report& report, std::ostream& output) {
   output << "  events/streams/module:            " << bool_text(report.cleanup.events_destroyed)
          << '/' << bool_text(report.cleanup.streams_destroyed) << '/'
          << bool_text(report.cleanup.module_unloaded) << '\n';
-  output << "  mappings/handles/reservations:    " << bool_text(report.cleanup.mappings_removed)
+  output << "  mappings/handles/device/reservations: "
+         << bool_text(report.cleanup.mappings_removed)
          << '/' << bool_text(report.cleanup.physical_handles_released) << '/'
+         << bool_text(report.cleanup.device_allocations_released) << '/'
          << bool_text(report.cleanup.virtual_reservations_released) << '\n';
   output << "  staging/backing/context:          "
          << bool_text(report.cleanup.pinned_staging_released) << '/'

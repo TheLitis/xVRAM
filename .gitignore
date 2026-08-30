@@ -4,6 +4,9 @@
 /cmake-build-*/
 CMakeUserPresets.json
 compile_commands.json
+*.obj
+*.o
+*.lib
 
 # Visual Studio
 .vs/

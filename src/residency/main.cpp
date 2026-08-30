@@ -579,8 +579,9 @@ void apply_executor_result(xvram::residency::Report& report,
 
   report.outcome.exit_code = execution.exit_code;
   if (execution.exit_code == exit_completed) {
+    report.outcome = {};
     report.outcome.status = "completed";
-    report.outcome.reason.reset();
+    report.outcome.exit_code = exit_completed;
   } else {
     report.outcome.status = execution.status == "skipped" ? "skipped" : "failed";
     if (execution.reason.has_value() && valid_outcome_reason(*execution.reason)) {
@@ -590,7 +591,7 @@ void apply_executor_result(xvram::residency::Report& report,
     }
   }
 
-  if (execution.failure.has_value()) {
+  if (execution.exit_code != exit_completed && execution.failure.has_value()) {
     const xvram::residency::ExecutionFailure& failure = *execution.failure;
     report.outcome.stage =
         valid_outcome_stage(failure.stage) ? failure.stage : std::string("planning");

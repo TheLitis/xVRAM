@@ -441,7 +441,13 @@ public:
     return target_oom_retries_;
   }
   [[nodiscard]] std::uint64_t trace_records() const noexcept {
-    return trace_sequence_;
+    return trace_records_emitted_;
+  }
+  [[nodiscard]] std::uint64_t trace_records_dropped() const noexcept {
+    return trace_records_dropped_;
+  }
+  [[nodiscard]] bool trace_complete() const noexcept {
+    return trace_complete_;
   }
   [[nodiscard]] std::uint64_t budget_samples() const noexcept {
     return budget_samples_;
@@ -527,7 +533,8 @@ private:
   [[nodiscard]] bool finish_d2h(TransferSlot& slot, bool wait);
   [[nodiscard]] bool finish_compute(bool wait);
   [[nodiscard]] bool query_event(cuda::abi::Event event, Clock::time_point submitted,
-                                 bool wait, const char* operation, bool& complete);
+                                 bool wait, const char* operation,
+                                 std::optional<ChunkKey> key, bool& complete);
   [[nodiscard]] bool evict_chunk(ChunkKey key, bool wait, std::uint64_t operation_id);
   [[nodiscard]] bool unmap_clean(ChunkKey key, std::uint64_t operation_id);
   [[nodiscard]] bool schedule_writeback(ChunkKey key, bool evict_after,
@@ -574,6 +581,8 @@ private:
   std::string current_scenario_ = "unknown";
   std::uint64_t sequence_ = 0;
   std::uint64_t trace_sequence_ = 0;
+  std::uint64_t trace_records_emitted_ = 0;
+  std::uint64_t trace_records_dropped_ = 0;
   std::uint64_t unsafe_transitions_ = 0;
   std::uint64_t event_boundaries_ = 0;
   std::uint64_t target_minimum_bytes_ = 0;
@@ -603,6 +612,7 @@ private:
   bool poisoned_ = false;
   bool closed_ = false;
   bool quarantine_ = false;
+  bool trace_complete_ = true;
   std::uint64_t mismatch_count_ = 0;
   std::optional<std::uint64_t> first_mismatch_offset_;
 };
@@ -681,7 +691,10 @@ void CacheManager::emit_trace(const ChunkRecord* record, std::string event, std:
       }
     }
     trace_(entry);
+    ++trace_records_emitted_;
   } catch (...) {
+    ++trace_records_dropped_;
+    trace_complete_ = false;
     append_diagnostic(result_, probe::DiagnosticLevel::error, "trace_callback",
                       "trace callback raised an exception");
   }
@@ -690,11 +703,13 @@ void CacheManager::emit_trace(const ChunkRecord* record, std::string event, std:
 void CacheManager::poison(std::string operation, std::string message,
                           const std::optional<ChunkKey> key) noexcept {
   poisoned_ = true;
+  quarantine_ = true;
   if (key.has_value()) {
     if (ChunkRecord* record = chunk(*key); record != nullptr) {
       const ChunkState from = record->state;
       record->state = ChunkState::poisoned;
-      emit_trace(record, "transition", "poison", from);
+      emit_trace(record, "state_transition", "poison", from, std::nullopt, std::nullopt,
+                 record->event_generation, record->speculative);
     }
   }
   try {
@@ -715,7 +730,7 @@ bool CacheManager::transition(ChunkRecord& record, const ChunkState target, std:
            record.key);
     return false;
   }
-  emit_trace(&record, "transition", std::move(reason), from, operation_id, std::nullopt,
+  emit_trace(&record, "state_transition", std::move(reason), from, operation_id, std::nullopt,
              record.event_generation, record.speculative);
   return true;
 }
@@ -1039,7 +1054,8 @@ TransferSlot* CacheManager::free_d2h_slot() {
 }
 
 bool CacheManager::query_event(const cuda::abi::Event event, const Clock::time_point submitted,
-                               const bool wait, const char* operation, bool& complete) {
+                               const bool wait, const char* operation,
+                               const std::optional<ChunkKey> key, bool& complete) {
   complete = false;
   for (;;) {
     const cuda::abi::Result code = api_.event_query_(event);
@@ -1048,18 +1064,14 @@ bool CacheManager::query_event(const cuda::abi::Event event, const Clock::time_p
       return true;
     }
     if (code != CUDA_ERROR_NOT_READY) {
-      poison(operation, "cuEventQuery returned " + cuda_name(api_, code));
+      poison(operation, "cuEventQuery returned " + cuda_name(api_, code), key);
       return false;
     }
     if (!wait) {
       return true;
     }
     if (Clock::now() - submitted > options_.stall_timeout) {
-      record_failure(result_, exit_failure, "execution", operation,
-                     "CUDA event did not complete before the worker stall timeout",
-                     std::nullopt, nullptr, std::nullopt, std::nullopt, current_policy_,
-                     current_scenario_);
-      poisoned_ = true;
+      poison(operation, "CUDA event did not complete before the worker stall timeout", key);
       return false;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1228,7 +1240,8 @@ bool CacheManager::finish_h2d(TransferSlot& slot, const bool wait) {
     return true;
   }
   bool complete = false;
-  if (!query_event(slot.done, slot.submitted_at, wait, "cuEventQuery(h2d_done)", complete) ||
+  if (!query_event(slot.done, slot.submitted_at, wait, "cuEventQuery(h2d_done)", slot.key,
+                   complete) ||
       !complete) {
     return !poisoned_;
   }
@@ -1333,7 +1346,8 @@ bool CacheManager::finish_d2h(TransferSlot& slot, const bool wait) {
     return true;
   }
   bool complete = false;
-  if (!query_event(slot.done, slot.submitted_at, wait, "cuEventQuery(d2h_done)", complete) ||
+  if (!query_event(slot.done, slot.submitted_at, wait, "cuEventQuery(d2h_done)", slot.key,
+                   complete) ||
       !complete) {
     return !poisoned_;
   }
@@ -1420,7 +1434,6 @@ bool CacheManager::unmap_clean(const ChunkKey key, const std::uint64_t operation
   if (code != cuda::abi::success) {
     quarantine_ = true;
     owner->reservation_quarantined = true;
-    ++metrics_.unsafe_remaps;
     const cuda::abi::Result release_code = api_.mem_release_(frame.handle);
     if (release_code == cuda::abi::success) {
       frame.handle = 0;
@@ -1490,7 +1503,7 @@ bool CacheManager::finish_compute(const bool wait) {
   }
   bool complete = false;
   if (!query_event(compute.done, compute.submitted_at, wait, "cuEventQuery(kernel_done)",
-                   complete) ||
+                   compute.key, complete) ||
       !complete) {
     return !poisoned_;
   }
@@ -1613,6 +1626,7 @@ bool CacheManager::prepare_tokens(const std::uint64_t count) {
                     "setup", "cuMemAlloc(tokens)")) {
     return false;
   }
+  result_.cleanup.device_allocations_released = false;
   resources_.token_bytes = bytes;
   TransferSlot& staging = resources_.h2d_slots.front();
   std::uint64_t copied = 0;
@@ -1722,7 +1736,6 @@ bool CacheManager::ensure_resident(const ChunkAccessPlan& plan,
     hit = true;
     ++metrics_.cache_hits;
     ++metrics_.demand_accesses;
-    record->sequential_one_touch = plan.spans.size() == 1U;
     if (policy_ != nullptr) {
       policy_->touch(plan.key, ++sequence_, record->sequential_one_touch);
     }
@@ -1742,7 +1755,6 @@ bool CacheManager::ensure_resident(const ChunkAccessPlan& plan,
     return false;
   }
   record = chunk(plan.key);
-  record->sequential_one_touch = plan.spans.size() == 1U;
   if (was_prefetch) {
     record->speculative = false;
     ++metrics_.prefetch_useful;
@@ -1812,6 +1824,13 @@ bool CacheManager::enqueue_transaction(const ScenarioOperation& operation,
   }
   std::uint32_t token = 0;
   for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
+    ChunkRecord* const record = chunk(chunk_plan.key);
+    if (record == nullptr) {
+      poison("enqueue_transaction", "normalized access references an unknown chunk",
+             chunk_plan.key);
+      return false;
+    }
+    record->sequential_one_touch = operation.sequential_one_touch;
     bool hit = false;
     if (!ensure_resident(chunk_plan, operation.sequence, hit) ||
         !launch_kernel(chunk_plan, operation.sequence,
@@ -1982,13 +2001,26 @@ bool CacheManager::observe_budget(const bool force) {
       configured_cap_bytes_, free_value, live_handle_bytes(), wddm,
       options_.device_headroom_bytes, chunk_bytes_, chunk_bytes_});
   if (!target) {
-    const int code = target.error == BudgetTargetError::below_minimum ? exit_oom
-                                                                      : exit_failure;
-    record_failure(result_, code, "budget", "calculate_target",
-                   "live cache target is unsafe: " +
-                       std::string(budget_target_error_name(target.error)),
-                   std::nullopt, nullptr, std::nullopt, std::nullopt, current_policy_,
-                   current_scenario_);
+    if (target.error == BudgetTargetError::below_minimum) {
+      TargetHysteresisConfig hysteresis;
+      hysteresis.chunk_bytes = chunk_bytes_;
+      const TargetDecision pressure =
+          observe_safe_target(target_state_, target.target_bytes,
+                              target.required_minimum_bytes, hysteresis);
+      target_minimum_bytes_ =
+          std::min(target_minimum_bytes_, target_state_.current_target_bytes);
+      emit_trace(nullptr, "budget_sample", std::string(target_action_name(pressure.action)),
+                 std::nullopt, std::nullopt, target_state_.current_target_bytes);
+      record_failure(result_, exit_oom, "budget", "target_hysteresis",
+                     "dynamic budget fell below the next declared working set", std::nullopt,
+                     nullptr, std::nullopt, std::nullopt, current_policy_, current_scenario_);
+    } else {
+      record_failure(result_, exit_failure, "budget", "calculate_target",
+                     "live cache target is unsafe: " +
+                         std::string(budget_target_error_name(target.error)),
+                     std::nullopt, nullptr, std::nullopt, std::nullopt, current_policy_,
+                     current_scenario_);
+    }
     return false;
   }
   TargetHysteresisConfig hysteresis;
@@ -2085,6 +2117,7 @@ bool CacheManager::acquire_pressure(const std::uint64_t bytes) {
                     "budget", "cuMemAlloc(pressure)")) {
     return false;
   }
+  result_.cleanup.device_allocations_released = false;
   pressure_bytes_ = bytes;
   emit_trace(nullptr, "pressure_acquire", "scenario", std::nullopt, std::nullopt, bytes);
   return observe_budget(true);
@@ -2111,6 +2144,9 @@ bool CacheManager::release_pressure() {
 }
 
 bool CacheManager::drain(const bool release_mappings) {
+  if (poisoned_) {
+    return false;
+  }
   if (!finish_compute(true)) {
     return false;
   }
@@ -2153,6 +2189,7 @@ bool CacheManager::drain(const bool release_mappings) {
     }
   }
   std::sort(mapped.begin(), mapped.end(), key_less);
+  bool complete = true;
   for (const ChunkKey key : mapped) {
     ChunkRecord* record = chunk(key);
     if (record == nullptr) {
@@ -2160,19 +2197,30 @@ bool CacheManager::drain(const bool release_mappings) {
     }
     if (record->state == ChunkState::resident_dirty) {
       if (!evict_chunk(key, true, 0)) {
+        if (quarantine_ && record->state == ChunkState::evicting) {
+          complete = false;
+          continue;
+        }
         return false;
       }
     } else if (record->state == ChunkState::resident_clean) {
       ++metrics_.clean_evictions;
       if (!unmap_clean(key, 0)) {
+        if (quarantine_ && record->state == ChunkState::evicting) {
+          complete = false;
+          continue;
+        }
         return false;
       }
+    } else if (quarantine_ && record->state == ChunkState::evicting) {
+      complete = false;
+      continue;
     } else {
       poison("drain", "mapped chunk remained in an in-flight state", key);
       return false;
     }
   }
-  return true;
+  return complete;
 }
 
 bool CacheManager::verify_and_flush() {
@@ -2235,99 +2283,160 @@ void CacheManager::close() noexcept {
                    [](const TransferSlot& slot) { return slot.busy; });
   result_.cleanup.events_drained = transactions_drained;
 
-  if (pressure_allocation_ != 0) {
-    const cuda::abi::Result code = api_.mem_free_(pressure_allocation_);
-    if (code != cuda::abi::success) {
-      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemFree(pressure)",
-                        cuda_message(api_, code), static_cast<std::int64_t>(code));
-      quarantine_ = true;
-    }
-    pressure_allocation_ = 0;
-  }
-  if (resources_.token_device != 0) {
-    const cuda::abi::Result code = api_.mem_free_(resources_.token_device);
-    if (code != cuda::abi::success) {
-      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemFree(tokens)",
-                        cuda_message(api_, code), static_cast<std::int64_t>(code));
-      quarantine_ = true;
-    }
-    resources_.token_device = 0;
-  }
-
-  bool mappings_removed = metrics_.active_mappings == 0;
-  bool handles_released = true;
-  for (Frame& frame : resources_.frames) {
-    if (frame.handle == 0) {
-      continue;
-    }
-    const cuda::abi::Result code = api_.mem_release_(frame.handle);
-    if (code != cuda::abi::success) {
-      handles_released = false;
-      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemRelease",
-                        cuda_message(api_, code), static_cast<std::int64_t>(code));
-    } else {
-      ++metrics_.handles_released;
-      if (metrics_.live_handles != 0) {
-        --metrics_.live_handles;
+  const auto synchronize_streams = [&]() {
+    bool success = true;
+    for (const cuda::abi::Stream stream :
+         {resources_.h2d_stream, resources_.compute_stream, resources_.d2h_stream}) {
+      if (stream == nullptr) {
+        continue;
       }
-      frame.handle = 0;
-    }
-    if (frame.mapped) {
-      mappings_removed = false;
-      quarantine_ = true;
-    }
-  }
-  result_.cleanup.mappings_removed = mappings_removed;
-  result_.cleanup.physical_handles_released = handles_released;
-
-  bool reservations_released = mappings_removed && !quarantine_;
-  bool backing_released = true;
-  for (auto& [id, owner] : allocations_) {
-    (void)id;
-    if (owner->reservation != 0) {
-      if (owner->reservation_quarantined || quarantine_ || !mappings_removed) {
-        reservations_released = false;
-      } else {
-        const cuda::abi::Result code = api_.mem_address_free_(
-            owner->reservation, static_cast<std::size_t>(owner->reservation_bytes));
-        if (code != cuda::abi::success) {
-          reservations_released = false;
-          append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemAddressFree",
-                            cuda_message(api_, code), static_cast<std::int64_t>(code));
-        } else {
-          owner->reservation = 0;
-        }
+      const cuda::abi::Result code = api_.stream_synchronize_(stream);
+      if (code != cuda::abi::success) {
+        success = false;
+        append_diagnostic(result_, probe::DiagnosticLevel::error,
+                          "cuStreamSynchronize(cleanup)", cuda_message(api_, code),
+                          static_cast<std::int64_t>(code));
       }
     }
-    if (!owner->backing.release()) {
-      backing_released = false;
-    }
-  }
-  allocations_.clear();
-  result_.cleanup.virtual_reservations_released = reservations_released;
-  result_.cleanup.host_backing_released = backing_released;
+    return success;
+  };
 
-  bool streams_drained = true;
-  for (const cuda::abi::Stream stream :
-       {resources_.h2d_stream, resources_.compute_stream, resources_.d2h_stream}) {
-    if (stream == nullptr) {
-      continue;
-    }
-    const cuda::abi::Result code = api_.stream_synchronize_(stream);
-    if (code != cuda::abi::success) {
-      streams_drained = false;
-      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuStreamSynchronize(cleanup)",
-                        cuda_message(api_, code), static_cast<std::int64_t>(code));
-    }
-  }
+  // A failed event query poisons the normal state machine. Synchronize the isolated context's
+  // streams before touching device allocations, VMM handles, the module, or pinned DMA memory.
+  bool streams_drained = synchronize_streams();
   if (!streams_drained) {
     quarantine_ = true;
     result_.cleanup.events_drained = false;
   }
 
-  bool events_destroyed = true;
+  // If one unmap failed, drain() stops at that quarantine boundary. Continue best-effort cleanup
+  // for independent chunks whose event generations are still known-good, while preserving the
+  // failed mapping and its reservation for context destruction.
+  if (streams_drained && metrics_.active_mappings != 0) {
+    for (const auto& [id, owner] : allocations_) {
+      (void)id;
+      for (ChunkRecord& record : owner->chunks) {
+        if (!record.frame_index.has_value() || record.state == ChunkState::evicting ||
+            record.state == ChunkState::poisoned) {
+          continue;
+        }
+        const ChunkKey key = record.key;
+        bool removed = false;
+        if (record.state == ChunkState::resident_clean && is_victim_eligible(record) &&
+            record.event_generation != 0) {
+          ++metrics_.clean_evictions;
+          removed = unmap_clean(key, 0);
+        } else if (!poisoned_ && record.state == ChunkState::resident_dirty &&
+                   is_victim_eligible(record)) {
+          removed = evict_chunk(key, true, 0);
+        }
+        if (!removed && record.frame_index.has_value()) {
+          quarantine_ = true;
+          owner->reservation_quarantined = true;
+        }
+      }
+    }
+    streams_drained = synchronize_streams();
+    if (!streams_drained) {
+      quarantine_ = true;
+      result_.cleanup.events_drained = false;
+    }
+  }
+
+  bool device_allocations_released = streams_drained;
+  if (streams_drained && pressure_allocation_ != 0) {
+    const cuda::abi::Result code = api_.mem_free_(pressure_allocation_);
+    if (code != cuda::abi::success) {
+      device_allocations_released = false;
+      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemFree(pressure)",
+                        cuda_message(api_, code), static_cast<std::int64_t>(code));
+      quarantine_ = true;
+    } else {
+      pressure_allocation_ = 0;
+    }
+  }
+  if (streams_drained && resources_.token_device != 0) {
+    const cuda::abi::Result code = api_.mem_free_(resources_.token_device);
+    if (code != cuda::abi::success) {
+      device_allocations_released = false;
+      append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemFree(tokens)",
+                        cuda_message(api_, code), static_cast<std::int64_t>(code));
+      quarantine_ = true;
+    } else {
+      resources_.token_device = 0;
+    }
+  }
+
+  bool mappings_removed = metrics_.active_mappings == 0;
+  bool handles_released = streams_drained;
+  if (streams_drained) {
+    for (Frame& frame : resources_.frames) {
+      if (frame.mapped) {
+        mappings_removed = false;
+        quarantine_ = true;
+        if (frame.handle != 0) {
+          // An unexpected event-query result never authorizes handle retirement. The isolated
+          // context owns this handle until destruction. A failed cuMemUnmap has already released
+          // its handle at the exact quarantine boundary, so its frame reaches here with handle 0.
+          handles_released = false;
+          continue;
+        }
+      }
+      if (frame.handle != 0) {
+        const cuda::abi::Result code = api_.mem_release_(frame.handle);
+        if (code != cuda::abi::success) {
+          handles_released = false;
+          append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemRelease",
+                            cuda_message(api_, code), static_cast<std::int64_t>(code));
+        } else {
+          ++metrics_.handles_released;
+          if (metrics_.live_handles != 0) {
+            --metrics_.live_handles;
+          }
+          frame.handle = 0;
+        }
+      }
+    }
+  }
+  result_.cleanup.mappings_removed = mappings_removed;
+  result_.cleanup.physical_handles_released = handles_released;
+  result_.cleanup.device_allocations_released = device_allocations_released;
+
+  bool reservations_released = streams_drained && mappings_removed && !quarantine_;
+  bool backing_released = streams_drained;
+  if (streams_drained) {
+    for (auto& [id, owner] : allocations_) {
+      (void)id;
+      if (owner->reservation != 0) {
+        if (owner->reservation_quarantined || quarantine_ || !mappings_removed) {
+          reservations_released = false;
+        } else {
+          const cuda::abi::Result code = api_.mem_address_free_(
+              owner->reservation, static_cast<std::size_t>(owner->reservation_bytes));
+          if (code != cuda::abi::success) {
+            reservations_released = false;
+            append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemAddressFree",
+                              cuda_message(api_, code), static_cast<std::int64_t>(code));
+          } else {
+            owner->reservation = 0;
+          }
+        }
+      }
+      if (!owner->backing.release()) {
+        backing_released = false;
+      }
+    }
+    allocations_.clear();
+  } else {
+    append_diagnostic(result_, probe::DiagnosticLevel::warning, "release_pageable_backing",
+                      "pageable backing retained until isolated-context destruction");
+  }
+  result_.cleanup.virtual_reservations_released = reservations_released;
+  result_.cleanup.host_backing_released = backing_released;
+
+  bool events_destroyed = streams_drained;
   const auto destroy_event = [&](cuda::abi::Event& event) {
-    if (event == nullptr) {
+    if (!streams_drained || event == nullptr) {
       return;
     }
     const cuda::abi::Result code = api_.event_destroy_(event);
@@ -2350,9 +2459,9 @@ void CacheManager::close() noexcept {
   destroy_event(resources_.compute.done);
   result_.cleanup.events_destroyed = events_destroyed;
 
-  bool streams_destroyed = true;
+  bool streams_destroyed = streams_drained;
   const auto destroy_stream = [&](cuda::abi::Stream& stream) {
-    if (stream == nullptr) {
+    if (!streams_drained || stream == nullptr) {
       return;
     }
     const cuda::abi::Result code = api_.stream_destroy_(stream);
@@ -2368,8 +2477,8 @@ void CacheManager::close() noexcept {
   destroy_stream(resources_.d2h_stream);
   result_.cleanup.streams_destroyed = streams_destroyed;
 
-  bool module_unloaded = true;
-  if (resources_.module != nullptr) {
+  bool module_unloaded = streams_drained;
+  if (streams_drained && resources_.module != nullptr) {
     const cuda::abi::Result code = api_.module_unload_(resources_.module);
     if (code != cuda::abi::success) {
       module_unloaded = false;
@@ -2382,27 +2491,23 @@ void CacheManager::close() noexcept {
 
   bool pinned_released = streams_drained;
   if (streams_drained) {
-    for (TransferSlot* slot : [&]() {
-           std::vector<TransferSlot*> slots;
-           slots.reserve(resources_.h2d_slots.size() + resources_.d2h_slots.size());
-           for (TransferSlot& item : resources_.h2d_slots) {
-             slots.push_back(&item);
-           }
-           for (TransferSlot& item : resources_.d2h_slots) {
-             slots.push_back(&item);
-           }
-           return slots;
-         }()) {
-      if (slot->pinned == nullptr) {
-        continue;
+    const auto release_pinned = [&](TransferSlot& slot) {
+      if (slot.pinned == nullptr) {
+        return;
       }
-      const cuda::abi::Result code = api_.mem_free_host_(slot->pinned);
+      const cuda::abi::Result code = api_.mem_free_host_(slot.pinned);
       if (code != cuda::abi::success) {
         pinned_released = false;
         append_diagnostic(result_, probe::DiagnosticLevel::error, "cuMemFreeHost",
                           cuda_message(api_, code), static_cast<std::int64_t>(code));
       }
-      slot->pinned = nullptr;
+      slot.pinned = nullptr;
+    };
+    for (TransferSlot& slot : resources_.h2d_slots) {
+      release_pinned(slot);
+    }
+    for (TransferSlot& slot : resources_.d2h_slots) {
+      release_pinned(slot);
     }
   } else {
     append_diagnostic(result_, probe::DiagnosticLevel::warning, "cuMemFreeHost",
@@ -2531,6 +2636,7 @@ void fill_workload_metrics(WorkloadResult& workload, const CacheMetrics& before,
   const std::uint64_t mismatch_before = manager.mismatch_count();
   std::vector<std::uint32_t> expected_tokens(trace.operations.size(), 0);
   std::vector<std::uint32_t> actual_tokens(trace.operations.size(), 0);
+  long double processed_bytes = 0.0L;
   const Clock::time_point started = Clock::now();
 
   for (std::size_t index = 0; index < trace.operations.size(); ++index) {
@@ -2578,6 +2684,7 @@ void fill_workload_metrics(WorkloadResult& workload, const CacheMetrics& before,
       break;
     }
     ++*current.operations_retired;
+    processed_bytes += static_cast<long double>(operation.access->length_bytes);
     current.passes_completed =
         std::max(*current.passes_completed, operation.pass_index + 1U);
 
@@ -2662,12 +2769,9 @@ void fill_workload_metrics(WorkloadResult& workload, const CacheMetrics& before,
   current.mismatch_count = counter_delta(manager.mismatch_count(), mismatch_before);
   current.first_mismatch_byte_offset = manager.first_mismatch_offset();
   current.elapsed_ms = milliseconds_between(started, Clock::now());
-  const long double processed =
-      static_cast<long double>(logical_bytes) *
-      static_cast<long double>(current.operations_retired.value_or(0));
   if (*current.elapsed_ms > 0.0) {
     current.throughput_gib_per_second = static_cast<double>(
-        processed / (1024.0L * 1024.0L * 1024.0L) /
+        processed_bytes / (1024.0L * 1024.0L * 1024.0L) /
         (static_cast<long double>(*current.elapsed_ms) / 1000.0L));
   } else {
     current.throughput_gib_per_second = 0.0;
@@ -2713,6 +2817,7 @@ void assign_timing_summary(TimingSummary& destination, const std::vector<double>
          cleanup.streams_destroyed.value_or(false) && cleanup.module_unloaded.value_or(false) &&
          cleanup.mappings_removed.value_or(false) &&
          cleanup.physical_handles_released.value_or(false) &&
+         cleanup.device_allocations_released.value_or(false) &&
          cleanup.virtual_reservations_released.value_or(false) &&
          cleanup.pinned_staging_released.value_or(false) &&
          cleanup.host_backing_released.value_or(false) &&
@@ -2761,6 +2866,7 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   result.cleanup.module_unloaded = true;
   result.cleanup.mappings_removed = true;
   result.cleanup.physical_handles_released = true;
+  result.cleanup.device_allocations_released = true;
   result.cleanup.virtual_reservations_released = true;
   result.cleanup.pinned_staging_released = true;
   result.cleanup.host_backing_released = true;
@@ -2843,8 +2949,8 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
     assign_timing_summary(result.telemetry.d2h_timing, manager->d2h_samples());
     assign_timing_summary(result.telemetry.writeback_timing, manager->writeback_samples());
     result.telemetry.trace_records_emitted = manager->trace_records();
-    result.telemetry.trace_records_dropped = 0;
-    result.telemetry.trace_complete = true;
+    result.telemetry.trace_records_dropped = manager->trace_records_dropped();
+    result.telemetry.trace_complete = manager->trace_complete();
 
     result.proof.logical_bytes = result.configuration.effective_logical_bytes;
     result.proof.chunk_bytes = result.configuration.effective_chunk_bytes;
@@ -2878,6 +2984,30 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   const auto finish = [&]() noexcept -> ExecutorResult {
     if (manager != nullptr) {
       manager->close();
+      if (result.status == "completed" && !manager->trace_complete()) {
+        try {
+          record_failure(result, exit_failure, "trace", "trace_callback",
+                         "one or more residency trace records could not be delivered");
+        } catch (...) {
+          result.exit_code = exit_failure;
+          result.status = "failed";
+        }
+      }
+      const MetricsReconciliation reconciliation = reconcile_metrics(manager->metrics());
+      if (result.status == "completed" && !reconciliation) {
+        try {
+          std::ostringstream message;
+          message << "cache counter reconciliation failed:";
+          for (const MetricIssue issue : reconciliation.issues) {
+            message << ' ' << metric_issue_name(issue);
+          }
+          record_failure(result, exit_failure, "proof", "metrics_reconciliation",
+                         message.str());
+        } catch (...) {
+          result.exit_code = exit_failure;
+          result.status = "failed";
+        }
+      }
       populate_manager_report();
     }
     if (context != nullptr) {
@@ -3136,6 +3266,16 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   if (environment != nullptr && environment->initial_device_budget.has_value()) {
     initial_budget = environment->initial_device_budget;
   }
+#ifdef _WIN32
+  if (environment != nullptr &&
+      (!initial_budget.has_value() || !environment->query_device_budget)) {
+    result.device = device_info;
+    result.reason = "wddm_budget_unavailable";
+    record_failure(result, exit_prerequisite, "preflight", "QueryVideoMemoryInfo",
+                   "Windows cache safety requires injectable initial and live WDDM budgets");
+    return finish();
+  }
+#endif
   if (initial_budget.has_value()) {
     device_info.wddm_budget_bytes_start = initial_budget->budget_bytes;
     device_info.wddm_usage_bytes_start = initial_budget->usage_bytes;

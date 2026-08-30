@@ -442,7 +442,8 @@
       "required": [
         "complete", "transactions_drained", "prefetch_drained", "writebacks_completed",
         "events_drained", "events_destroyed", "streams_destroyed", "module_unloaded",
-        "mappings_removed", "physical_handles_released", "virtual_reservations_released",
+        "mappings_removed", "physical_handles_released", "device_allocations_released",
+        "virtual_reservations_released",
         "pinned_staging_released", "host_backing_released", "context_destroyed",
         "trace_closed", "worker_terminated"
       ],
@@ -457,6 +458,7 @@
         "module_unloaded": { "$ref": "#/$defs/nullableBoolean" },
         "mappings_removed": { "$ref": "#/$defs/nullableBoolean" },
         "physical_handles_released": { "$ref": "#/$defs/nullableBoolean" },
+        "device_allocations_released": { "$ref": "#/$defs/nullableBoolean" },
         "virtual_reservations_released": { "$ref": "#/$defs/nullableBoolean" },
         "pinned_staging_released": { "$ref": "#/$defs/nullableBoolean" },
         "host_backing_released": { "$ref": "#/$defs/nullableBoolean" },
@@ -587,7 +589,17 @@
           } },
           "outcome": { "properties": {
             "reason": { "const": null },
-            "exit_code": { "const": 0 }
+            "exit_code": { "const": 0 },
+            "stage": { "const": null },
+            "operation": { "const": null },
+            "native_code": { "const": null },
+            "native_name": { "const": null },
+            "message": { "const": null },
+            "policy": { "const": null },
+            "scenario": { "const": null },
+            "allocation_id": { "const": null },
+            "chunk_index": { "const": null },
+            "logical_byte_offset": { "const": null }
           } },
           "cleanup": { "properties": {
             "complete": { "const": true },
@@ -600,6 +612,7 @@
             "module_unloaded": { "const": true },
             "mappings_removed": { "const": true },
             "physical_handles_released": { "const": true },
+            "device_allocations_released": { "const": true },
             "virtual_reservations_released": { "const": true },
             "pinned_staging_released": { "const": true },
             "host_backing_released": { "const": true },

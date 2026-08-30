@@ -57,6 +57,18 @@ xvram_enable_warnings(xvram-cache-worker-protocol-tests)
 
 add_test(NAME xvram.residency.worker-protocol COMMAND xvram-cache-worker-protocol-tests)
 
+add_executable(xvram-residency-executor-fake-tests unit/residency_executor_fake_tests.cpp)
+target_link_libraries(xvram-residency-executor-fake-tests PRIVATE xvram_residency)
+target_include_directories(xvram-residency-executor-fake-tests
+                           PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(xvram-residency-executor-fake-tests
+                           SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_compile_features(xvram-residency-executor-fake-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-residency-executor-fake-tests)
+
+add_test(NAME xvram.residency.executor-fake COMMAND xvram-residency-executor-fake-tests)
+set_tests_properties(xvram.residency.executor-fake PROPERTIES TIMEOUT 30)
+
 find_package(Threads REQUIRED)
 
 add_executable(
@@ -83,6 +95,26 @@ add_test(
   NAME xvram.vmm-poc.worker-controller
   COMMAND xvram-worker-controller-tests "$<TARGET_FILE:xvram-worker-test-helper>")
 set_tests_properties(xvram.vmm-poc.worker-controller PROPERTIES TIMEOUT 15)
+
+add_executable(xvram-cache-worker-test-helper helpers/cache_worker_test_helper.cpp)
+target_link_libraries(xvram-cache-worker-test-helper PRIVATE xvram_residency)
+target_include_directories(xvram-cache-worker-test-helper PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-cache-worker-test-helper PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-cache-worker-test-helper)
+
+add_executable(xvram-cache-worker-controller-tests unit/cache_worker_controller_tests.cpp)
+target_link_libraries(xvram-cache-worker-controller-tests
+                      PRIVATE xvram_residency xvram_worker_process Threads::Threads)
+target_include_directories(xvram-cache-worker-controller-tests
+                           PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-cache-worker-controller-tests PRIVATE cxx_std_20)
+add_dependencies(xvram-cache-worker-controller-tests xvram-cache-worker-test-helper)
+xvram_enable_warnings(xvram-cache-worker-controller-tests)
+
+add_test(
+  NAME xvram.residency.worker-controller
+  COMMAND xvram-cache-worker-controller-tests "$<TARGET_FILE:xvram-cache-worker-test-helper>")
+set_tests_properties(xvram.residency.worker-controller PROPERTIES TIMEOUT 15)
 
 add_executable(xvram-privacy-tests unit/privacy_tests.cpp)
 target_link_libraries(xvram-privacy-tests PRIVATE xvram_probe_lib)
@@ -135,4 +167,25 @@ add_test(
   NAME xvram.vmm-poc.cli-contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/vmm_poc_cli_contract.py"
           "$<TARGET_FILE:xvram-vmm-poc>"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/vmm-poc-report-v1.schema.json")
+
+add_test(
+  NAME xvram.residency.json-contract
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/residency_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-cache-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-trace-record-v1.schema.json")
+
+add_test(
+  NAME xvram.residency.cli-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/residency_cli_contract.py"
+          "$<TARGET_FILE:xvram-cache-bench>"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-cache-report-v1.schema.json")
+set_tests_properties(xvram.residency.cli-contract PROPERTIES TIMEOUT 20)
+
+add_test(
+  NAME xvram.schema.hash-contract
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/schema_hash_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/capability-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/capability-report-v2.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/vmm-poc-report-v1.schema.json")

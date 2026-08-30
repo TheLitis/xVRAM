@@ -220,6 +220,7 @@ struct Cleanup {
   std::optional<bool> module_unloaded;
   std::optional<bool> mappings_removed;
   std::optional<bool> physical_handles_released;
+  std::optional<bool> device_allocations_released;
   std::optional<bool> virtual_reservations_released;
   std::optional<bool> pinned_staging_released;
   std::optional<bool> host_backing_released;

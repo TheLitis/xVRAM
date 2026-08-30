@@ -18,7 +18,9 @@
       "enum": [
         "state_transition", "cache_hit", "cache_miss", "prefetch_issued",
         "prefetch_retired", "prefetch_cancelled", "target_changed", "operation_retired",
-        "transaction_retired", "budget_sample", "diagnostic"
+        "transaction_retired", "budget_sample", "diagnostic", "allocation",
+        "kernel_submit", "kernel_retire", "prefetch_useful", "victim_select",
+        "victim_selected", "writeback_prepare", "pressure_acquire", "pressure_release"
       ]
     },
     "allocation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
