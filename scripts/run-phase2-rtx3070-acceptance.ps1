@@ -165,8 +165,10 @@ function Assert-NoResidualWorker {
 
     Start-Sleep -Milliseconds 250
     $residual = @(Get-ResidualCacheBenchProcess -ExecutablePath $ExecutablePath)
-    Assert-Condition ($residual.Count -eq 0) `
-        "residual xvram-cache-bench process IDs: $($residual.Id -join ', ')"
+    if ($residual.Count -ne 0) {
+        $processIds = @($residual | ForEach-Object { $_.Id })
+        throw "Phase 2 acceptance failed: residual xvram-cache-bench process IDs: $($processIds -join ', ')"
+    }
 }
 
 function Assert-BooleanLedger {
