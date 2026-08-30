@@ -142,12 +142,14 @@ void state_machine_tests() {
   CHECK(transition_chunk_state(state, ChunkState::host_clean) ==
         StateTransitionResult::illegal_transition);
 
-  ChunkRecord host{ChunkKey{AllocationId{1}, 0}};
+  ChunkRecord host{};
+  host.key = ChunkKey{AllocationId{1}, 0};
   CHECK(validate_chunk_record(host) == ChunkInvariantError::none);
   host.frame_index = 1;
   CHECK(validate_chunk_record(host) == ChunkInvariantError::unexpected_frame);
 
-  ChunkRecord transfer{ChunkKey{AllocationId{1}, 1}};
+  ChunkRecord transfer{};
+  transfer.key = ChunkKey{AllocationId{1}, 1};
   transfer.state = ChunkState::h2d_in_flight;
   transfer.frame_index = 0;
   CHECK(validate_chunk_record(transfer) == ChunkInvariantError::missing_staging);
@@ -155,7 +157,8 @@ void state_machine_tests() {
   CHECK(validate_chunk_record(transfer) == ChunkInvariantError::none);
   CHECK(chunk_has_in_flight_work(transfer));
 
-  ChunkRecord resident{ChunkKey{AllocationId{1}, 2}};
+  ChunkRecord resident{};
+  resident.key = ChunkKey{AllocationId{1}, 2};
   resident.state = ChunkState::resident_clean;
   resident.frame_index = 2;
   CHECK(is_victim_eligible(resident));

@@ -264,6 +264,7 @@ void record_failure(ExecutorResult& result, const int exit_code, std::string sta
   return true;
 }
 
+#ifdef _WIN32
 struct WddmIdentity {
   platform::AdapterLuid luid{};
   std::uint32_t node_mask = 0;
@@ -271,7 +272,6 @@ struct WddmIdentity {
 
 [[nodiscard]] std::optional<BudgetSnapshot>
 query_wddm(const WddmIdentity& identity, ExecutorResult& result) {
-#ifdef _WIN32
   std::vector<probe::Diagnostic> diagnostics;
   const auto adapter = platform::query_dxgi_memory(identity.luid, identity.node_mask, diagnostics);
   for (auto& diagnostic : diagnostics) {
@@ -281,12 +281,8 @@ query_wddm(const WddmIdentity& identity, ExecutorResult& result) {
     return std::nullopt;
   }
   return BudgetSnapshot{adapter->local->budget_bytes, adapter->local->current_usage_bytes};
-#else
-  (void)identity;
-  (void)result;
-  return std::nullopt;
-#endif
 }
+#endif
 
 struct Allocation {
   AllocationId id;
@@ -389,7 +385,7 @@ public:
 
   [[nodiscard]] bool setup();
   [[nodiscard]] std::optional<AllocationId> allocate(std::uint64_t bytes);
-  [[nodiscard]] bool release(AllocationId allocation_id);
+  [[maybe_unused, nodiscard]] bool release(AllocationId allocation_id);
   [[nodiscard]] bool enqueue_transaction(const ScenarioOperation& operation,
                                          std::span<std::uint32_t> expected_tokens,
                                          std::uint64_t& expected_token);
@@ -1156,7 +1152,9 @@ bool CacheManager::map_chunk(const ChunkKey key, const std::size_t frame_index,
     return false;
   }
   unsigned long long access_flags = 0;
-  const CUmemLocation location{CU_MEM_LOCATION_TYPE_DEVICE, device_};
+  CUmemLocation location{};
+  location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  location.id = device_;
   if (!require_cuda(result_, api_, api_.mem_get_access_(&access_flags, &location, address),
                     "execution", "cuMemGetAccess", key)) {
     quarantine_ = true;
@@ -2227,7 +2225,7 @@ bool CacheManager::verify_and_flush() {
   return drain(true) && mismatch_count_ == 0;
 }
 
-bool CacheManager::release(const AllocationId id) {
+[[maybe_unused]] bool CacheManager::release(const AllocationId id) {
   Allocation* owner = allocation(id);
   if (owner == nullptr || !drain(true)) {
     return false;
@@ -3230,7 +3228,9 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   }
   result.configuration.effective_chunk_bytes = *effective_chunk;
 
+#ifdef _WIN32
   std::optional<WddmIdentity> wddm_identity;
+#endif
   std::optional<BudgetSnapshot> initial_budget;
 #ifdef _WIN32
   if (environment == nullptr) {
@@ -3295,7 +3295,7 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
   const auto pinned_bytes = checked_multiply(*effective_chunk, options.staging_slots);
   constexpr std::uint64_t minimum_host_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
   const std::uint64_t host_headroom =
-      std::max(minimum_host_headroom, physical_host / 4ULL);
+      std::max(minimum_host_headroom, physical_host / std::uint64_t{4});
   const auto reserved_one = pinned_bytes.has_value()
                                 ? checked_add(host_headroom, *pinned_bytes)
                                 : std::nullopt;

@@ -241,7 +241,7 @@ AccessPlanResult normalize_and_split_accesses(const std::span<const AllocationLa
       const ChunkKey key{range.allocation_id, chunk_index};
 
       if (result.chunks.empty() || !same_key(result.chunks.back().key, key)) {
-        result.chunks.push_back(ChunkAccessPlan{key, chunk_origin, valid_bytes});
+        result.chunks.push_back(ChunkAccessPlan{key, chunk_origin, valid_bytes, {}});
       }
       ChunkAccessPlan& chunk = result.chunks.back();
       if (!chunk.spans.empty()) {
