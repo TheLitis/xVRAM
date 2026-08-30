@@ -14,13 +14,22 @@ project(
 
 include(CTest)
 include(CheckCXXSourceCompiles)
+include(CMakePackageConfigHelpers)
 include(FetchContent)
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
 
+# The public SDK is shared while its implementation libraries remain static.  Keep
+# those archives linkable into the shared object on ELF platforms as well as PE/COFF.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 option(XVRAM_BUILD_TESTS "Build xVRAM tests" ${BUILD_TESTING})
 option(XVRAM_FETCH_CUDA_HEADERS
        "Download NVIDIA's official CUDA redistributable headers when no Toolkit is installed" ON)
+option(XVRAM_FETCH_CUBLAS_REDIST
+       "Download and stage NVIDIA's hash-pinned cuBLAS redistributable beside the SDK" OFF)
+set(XVRAM_CUBLAS_REDIST_ROOT "" CACHE PATH
+    "Existing official cuBLAS redistributable root to stage beside the SDK")
 option(XVRAM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -308,9 +317,12 @@ add_library(
   src/residency/core.cpp
   src/residency/metrics.cpp
   src/residency/policy.cpp
+  src/residency/runtime.cpp
   src/residency/scenario.cpp)
 target_compile_features(xvram_residency_core PUBLIC cxx_std_20)
 target_include_directories(xvram_residency_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_residency_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib)
 xvram_enable_warnings(xvram_residency_core)
 
 add_library(
@@ -366,14 +378,165 @@ target_include_directories(xvram-cache-bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR
 target_include_directories(xvram-cache-bench SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
 xvram_enable_warnings(xvram-cache-bench)
 
-install(TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_library(
+  xvram_gemm_core STATIC
+  src/gemm/planner.cpp
+  src/platform/cublas/cublas_api.cpp)
+target_compile_features(xvram_gemm_core PUBLIC cxx_std_20)
+target_include_directories(xvram_gemm_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(xvram_gemm_core PRIVATE xvram_probe_lib xvram_residency_core)
+xvram_enable_warnings(xvram_gemm_core)
+
+add_library(
+  xvram_sdk SHARED
+  src/sdk/api.cpp
+  src/sdk/runtime.cpp
+  src/sdk/status.cpp)
+set_target_properties(
+  xvram_sdk
+  PROPERTIES OUTPUT_NAME xvram
+             EXPORT_NAME xvram
+             VERSION "${PROJECT_VERSION}"
+             SOVERSION "${PROJECT_VERSION_MAJOR}"
+             CXX_VISIBILITY_PRESET hidden
+             VISIBILITY_INLINES_HIDDEN YES)
+target_compile_definitions(xvram_sdk PRIVATE XVRAM_BUILDING_LIBRARY
+                           INTERFACE XVRAM_USING_LIBRARY)
+target_compile_features(xvram_sdk PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_sdk
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_sdk SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(
+  xvram_sdk
+  PRIVATE xvram_probe_lib xvram_residency_core xvram_gemm_core Threads::Threads)
+xvram_enable_warnings(xvram_sdk)
+
+add_library(xVRAM::xvram ALIAS xvram_sdk)
+
+add_library(
+  xvram_gemm_bench STATIC
+  src/gemm_bench/executor.cpp
+  src/gemm_bench/pattern.cpp
+  src/gemm_bench/sizing.cpp
+  src/gemm_bench/report_json.cpp
+  src/gemm_bench/report_text.cpp
+  src/gemm_bench/worker_controller.cpp
+  src/gemm_bench/worker_protocol.cpp)
+target_compile_features(xvram_gemm_bench PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_gemm_bench
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_gemm_bench SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(
+  xvram_gemm_bench
+  PRIVATE xvram_sdk xvram_probe_lib xvram_gemm_core xvram_worker_process Threads::Threads)
+xvram_enable_warnings(xvram_gemm_bench)
+
+add_executable(xvram-gemm-bench src/gemm_bench/main.cpp)
+target_link_libraries(xvram-gemm-bench PRIVATE xvram_gemm_bench)
+target_include_directories(xvram-gemm-bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram-gemm-bench SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+xvram_enable_warnings(xvram-gemm-bench)
+
+if(XVRAM_FETCH_CUBLAS_REDIST)
+  if(WIN32)
+    set(XVRAM_CUBLAS_REDIST_URL
+        "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-13.5.1.27-archive.zip")
+    set(XVRAM_CUBLAS_REDIST_HASH
+        "SHA256=C946E1C825E05895747A95ED4FEE18030B08052C09783B9B7B19818FD2E31F58")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(XVRAM_CUBLAS_REDIST_URL
+        "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-13.5.1.27-archive.tar.xz")
+    set(XVRAM_CUBLAS_REDIST_HASH
+        "SHA256=35A898360520D6101FFCAF36C0D04496B54D4FC2AFB82F7FCE44218C54513808")
+  else()
+    message(FATAL_ERROR "Automatic cuBLAS staging supports Windows/Linux x86-64 only")
+  endif()
+  FetchContent_Declare(
+    xvram_cublas_redist
+    URL "${XVRAM_CUBLAS_REDIST_URL}"
+    URL_HASH "${XVRAM_CUBLAS_REDIST_HASH}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(xvram_cublas_redist)
+  set(XVRAM_CUBLAS_REDIST_ROOT "${xvram_cublas_redist_SOURCE_DIR}")
+endif()
+
+if(XVRAM_CUBLAS_REDIST_ROOT)
+  if(WIN32)
+    file(GLOB_RECURSE XVRAM_CUBLAS_CORE_LIBRARY
+         LIST_DIRECTORIES FALSE "${XVRAM_CUBLAS_REDIST_ROOT}/cublas64_13.dll")
+    file(GLOB_RECURSE XVRAM_CUBLAS_LT_LIBRARY
+         LIST_DIRECTORIES FALSE "${XVRAM_CUBLAS_REDIST_ROOT}/cublasLt64_13.dll")
+  else()
+    file(GLOB_RECURSE XVRAM_CUBLAS_CORE_LIBRARY
+         LIST_DIRECTORIES FALSE "${XVRAM_CUBLAS_REDIST_ROOT}/libcublas.so.13")
+    file(GLOB_RECURSE XVRAM_CUBLAS_LT_LIBRARY
+         LIST_DIRECTORIES FALSE "${XVRAM_CUBLAS_REDIST_ROOT}/libcublasLt.so.13")
+  endif()
+  list(LENGTH XVRAM_CUBLAS_CORE_LIBRARY XVRAM_CUBLAS_CORE_COUNT)
+  list(LENGTH XVRAM_CUBLAS_LT_LIBRARY XVRAM_CUBLAS_LT_COUNT)
+  if(NOT XVRAM_CUBLAS_CORE_COUNT EQUAL 1 OR NOT XVRAM_CUBLAS_LT_COUNT EQUAL 1)
+    message(FATAL_ERROR "cuBLAS redistributable root does not contain one core/Lt runtime pair")
+  endif()
+  add_custom_command(
+    TARGET xvram_sdk POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XVRAM_CUBLAS_CORE_LIBRARY}" "$<TARGET_FILE_DIR:xvram_sdk>"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XVRAM_CUBLAS_LT_LIBRARY}" "$<TARGET_FILE_DIR:xvram_sdk>"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XVRAM_CUBLAS_REDIST_ROOT}/LICENSE"
+            "$<TARGET_FILE_DIR:xvram_sdk>/LICENSE.cublas.txt"
+    VERBATIM)
+  if(WIN32)
+    set(XVRAM_CUBLAS_INSTALL_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  else()
+    # The ELF loader resolves app-local cuBLAS beside libxvram.so.
+    set(XVRAM_CUBLAS_INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  endif()
+  install(FILES "${XVRAM_CUBLAS_CORE_LIBRARY}" "${XVRAM_CUBLAS_LT_LIBRARY}"
+          DESTINATION "${XVRAM_CUBLAS_INSTALL_DESTINATION}")
+  install(FILES "${XVRAM_CUBLAS_REDIST_ROOT}/LICENSE"
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
+          RENAME LICENSE.cublas.txt)
+endif()
+
+install(
+  TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench xvram-gemm-bench xvram_sdk
+  EXPORT xVRAMTargets
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(FILES include/xvram/xvram.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
               schemas/vmm-poc-report-v1.schema.json
               schemas/residency-cache-report-v1.schema.json
               schemas/residency-trace-record-v1.schema.json
+              schemas/gemm-bench-report-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
+
+configure_package_config_file(
+  cmake/xVRAMConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/xVRAMConfig.cmake"
+  INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/xVRAM")
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/xVRAMConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+install(
+  EXPORT xVRAMTargets
+  FILE xVRAMTargets.cmake
+  NAMESPACE xVRAM::
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/xVRAM")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/xVRAMConfig.cmake"
+              "${CMAKE_CURRENT_BINARY_DIR}/xVRAMConfigVersion.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/xVRAM")
 
 if(XVRAM_BUILD_TESTS)
   add_subdirectory(tests)
