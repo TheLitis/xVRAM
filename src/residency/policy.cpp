@@ -15,9 +15,9 @@ find_candidate(const std::span<const VictimCandidate> candidates, const ChunkKey
 }
 
 [[nodiscard]] unsigned int clock_cost(const bool speculative, const bool sequential_one_touch,
-                                      const ChunkState state) noexcept {
+                                      const ChunkState state, const bool hot) noexcept {
   const bool dirty = state == ChunkState::resident_dirty;
-  unsigned int cost = dirty ? 3U : 0U;
+  unsigned int cost = (dirty ? 3U : 0U) + (hot ? 4U : 0U);
   if (sequential_one_touch) {
     return cost;
   }
@@ -96,8 +96,8 @@ ClockPolicy::select_victim(const std::span<const VictimCandidate> candidates) {
     const VictimCandidate* candidate = find_candidate(candidates, entry.key);
     if (candidate != nullptr && is_policy_candidate_eligible(*candidate)) {
       cheapest_cost =
-          std::min(cheapest_cost,
-                   clock_cost(entry.speculative, entry.sequential_one_touch, candidate->state));
+          std::min(cheapest_cost, clock_cost(entry.speculative, entry.sequential_one_touch,
+                                             candidate->state, candidate->hot));
     }
   }
   if (cheapest_cost == std::numeric_limits<unsigned int>::max()) {
@@ -112,8 +112,8 @@ ClockPolicy::select_victim(const std::span<const VictimCandidate> candidates) {
       Entry& entry = entries_[index];
       const VictimCandidate* candidate = find_candidate(candidates, entry.key);
       if (candidate == nullptr || !is_policy_candidate_eligible(*candidate) ||
-          clock_cost(entry.speculative, entry.sequential_one_touch, candidate->state) !=
-              cheapest_cost) {
+          clock_cost(entry.speculative, entry.sequential_one_touch, candidate->state,
+                     candidate->hot) != cheapest_cost) {
         continue;
       }
       if (entry.referenced) {
@@ -172,8 +172,14 @@ LruPolicy::select_victim(const std::span<const VictimCandidate> candidates) {
     if (candidate == nullptr || !is_policy_candidate_eligible(*candidate)) {
       continue;
     }
-    if (selected == nullptr || entry.last_touch_sequence < selected->last_touch_sequence ||
-        (entry.last_touch_sequence == selected->last_touch_sequence && entry.key < selected->key)) {
+    const VictimCandidate* selected_candidate =
+        selected == nullptr ? nullptr : find_candidate(candidates, selected->key);
+    if (selected == nullptr ||
+        (selected_candidate != nullptr && selected_candidate->hot && !candidate->hot) ||
+        (selected_candidate != nullptr && selected_candidate->hot == candidate->hot &&
+         (entry.last_touch_sequence < selected->last_touch_sequence ||
+          (entry.last_touch_sequence == selected->last_touch_sequence &&
+           entry.key < selected->key)))) {
       selected = &entry;
     }
   }

@@ -42,6 +42,8 @@ public:
   abi::ContextGetCurrent context_get_current_ = nullptr;
   abi::ContextGetDevice context_get_device_ = nullptr;
   abi::ContextSetCurrent context_set_current_ = nullptr;
+  abi::ContextPushCurrent context_push_current_ = nullptr;
+  abi::ContextPopCurrent context_pop_current_ = nullptr;
   abi::ContextCreate context_create_ = nullptr;
   abi::ContextDestroy context_destroy_ = nullptr;
   abi::MemGetInfo mem_get_info_ = nullptr;

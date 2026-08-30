@@ -311,7 +311,8 @@ bool is_legal_transition(const ChunkState from, const ChunkState to) noexcept {
   case ChunkState::prefetch_queued:
     return to == ChunkState::host_clean || to == ChunkState::mapping;
   case ChunkState::mapping:
-    return to == ChunkState::h2d_in_flight || to == ChunkState::resident_clean;
+    return to == ChunkState::host_clean || to == ChunkState::h2d_in_flight ||
+           to == ChunkState::resident_clean;
   case ChunkState::h2d_in_flight:
     return to == ChunkState::resident_clean;
   case ChunkState::resident_clean:

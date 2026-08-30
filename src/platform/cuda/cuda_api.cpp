@@ -34,6 +34,8 @@ CudaApi::LoadResult CudaApi::load() {
   resolve(context_get_current_, {"cuCtxGetCurrent"});
   resolve(context_get_device_, {"cuCtxGetDevice"});
   resolve(context_set_current_, {"cuCtxSetCurrent"});
+  resolve(context_push_current_, {"cuCtxPushCurrent_v2", "cuCtxPushCurrent"});
+  resolve(context_pop_current_, {"cuCtxPopCurrent_v2", "cuCtxPopCurrent"});
   resolve(context_create_, {"cuCtxCreate_v2"});
   resolve(context_destroy_, {"cuCtxDestroy_v2"});
   resolve(mem_get_info_, {"cuMemGetInfo_v2"});

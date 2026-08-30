@@ -17,6 +17,7 @@ struct VictimCandidate {
   std::uint32_t pin_count = 0;
   bool in_flight = false;
   bool in_current_working_set = false;
+  bool hot = false;
 };
 
 [[nodiscard]] bool is_policy_candidate_eligible(const VictimCandidate& candidate) noexcept;
