@@ -142,6 +142,10 @@ void state_machine_tests() {
   CHECK(transition_chunk_state(state, ChunkState::host_clean) ==
         StateTransitionResult::illegal_transition);
 
+  ChunkState rollback = ChunkState::host_clean;
+  CHECK(transition_chunk_state(rollback, ChunkState::mapping) == StateTransitionResult::success);
+  CHECK(transition_chunk_state(rollback, ChunkState::host_clean) == StateTransitionResult::success);
+
   ChunkRecord host{};
   host.key = ChunkKey{AllocationId{1}, 0};
   CHECK(validate_chunk_record(host) == ChunkInvariantError::none);
@@ -230,6 +234,19 @@ void policy_tests() {
   CHECK(lru.select_victim(candidates) == second);
   candidates[1].pin_count = 1;
   CHECK(lru.select_victim(candidates) == third);
+
+  ClockPolicy hot_clock;
+  hot_clock.insert(first, 1, false, false);
+  hot_clock.insert(second, 2, false, false);
+  std::array hot_candidates{candidate(1, ChunkState::resident_clean),
+                            candidate(2, ChunkState::resident_clean)};
+  hot_candidates[0].hot = true;
+  CHECK(hot_clock.select_victim(hot_candidates) == second);
+
+  LruPolicy hot_lru;
+  hot_lru.insert(first, 1, false, false);
+  hot_lru.insert(second, 2, false, false);
+  CHECK(hot_lru.select_victim(hot_candidates) == second);
 }
 
 void budget_tests() {

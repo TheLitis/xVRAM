@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze the public Phase 0/1 JSON contracts while Phase 2 evolves independently."""
+"""Freeze every public JSON contract completed before the active phase."""
 
 from __future__ import annotations
 
@@ -12,12 +12,17 @@ EXPECTED = (
     "f56b1131bd9a2d4cf3f18bac578e5cc6cc5d9fbeca3bec8e71afae018a711e77",
     "6299205781bbfa02a626c76eadf22b7320db88c70d0043303c9d84efd032bda4",
     "7b998a8a2b50d5e1eec056d4844e572200297a443c85e0d7ee87c75966b9feeb",
+    "70ef270bcff4e0b32c412d40cfd44e8b38108677de45951437ed77120d603980",
+    "d2fbc19f2175f4922dc4b36b9653384b3bab40bed3e6daa345b5bdc8b084705c",
 )
 
 
 def main() -> int:
     if len(sys.argv) != len(EXPECTED) + 1:
-        print("usage: schema_hash_contract.py <capability-v1> <capability-v2> <vmm-poc-v1>")
+        print(
+            "usage: schema_hash_contract.py <capability-v1> <capability-v2> "
+            "<vmm-poc-v1> <residency-report-v1> <residency-trace-v1>"
+        )
         return 64
 
     failures: list[str] = []
