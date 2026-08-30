@@ -30,7 +30,7 @@ mismatches remained zero, all cleanup flags were true, diagnostics were empty, a
 worker process remained. Windows/Linux no-driver behavior, injected CUDA faults, worker
 crash/hang/protocol failures, and the report fixtures are covered in CI.
 
-## Phase 2: event-safe residency cache — implementation complete, hardware gate pending
+## Phase 2: event-safe residency cache — complete
 
 - Multi-allocation logical heap with stable padded VA reservations and pageable backing.
 - Conservative state machine with generation-safe events and explicit pin/frame/staging
@@ -43,12 +43,19 @@ crash/hang/protocol failures, and the report fixtures are covered in CI.
 - Isolated `xvram-cache-bench` controller/worker, strict report and JSONL trace schemas,
   deterministic CPU verification, fake-CUDA fault coverage, and no-driver CI.
 
-The implementation and no-GPU contract gates are complete. The remaining exit criterion
-is the reproducible RTX 3070 gate: suite runs at `0.8x`, `1.1x`, `1.5x`, and `2.0x` total
-VRAM for CLOCK and LRU, followed by the `1.5x` CLOCK budget-pressure run. The checked-in
-`scripts/run-phase2-rtx3070-acceptance.ps1` command validates all nine reports, compares
-policy digests, enforces scenario-specific cache accounting, and checks that no worker
-remains.
+The reproducible RTX 3070 gate completed on 2026-08-30 against 8,589,410,304 bytes of
+physical VRAM. CLOCK and LRU each completed the five-scenario suite at `0.8x`, `1.1x`,
+`1.5x`, and `2.0x`, producing eight schema-valid reports and 40 accepted scenario cases.
+The largest logical backing was 17,178,820,608 bytes. Policy digests matched at every
+size, read-only D2H remained zero, reuse hit rate remained above 99.7%, and oversubscribed
+runs demonstrated real eviction, dirty write-back, and handle reuse.
+
+The separate `1.5x` CLOCK budget-pressure run observed four target shrinks followed by
+two hysteretic grows. Across all nine reports, mismatch, unsafe transition, and unsafe
+remap counts remained zero; cleanup ledgers were complete, diagnostics were empty, and
+no worker process remained. The checked-in
+`scripts/run-phase2-rtx3070-acceptance.ps1` command reproduces the gate and validates the
+strict schemas, policy digests, semantic accounting, cleanup, and process isolation.
 
 ## Phase 3: known operations
 
