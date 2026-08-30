@@ -49,6 +49,14 @@ xvram_enable_warnings(xvram-residency-workload-tests)
 
 add_test(NAME xvram.residency.workload COMMAND xvram-residency-workload-tests)
 
+add_executable(xvram-cache-worker-protocol-tests unit/cache_worker_protocol_tests.cpp)
+target_link_libraries(xvram-cache-worker-protocol-tests PRIVATE xvram_residency)
+target_include_directories(xvram-cache-worker-protocol-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-cache-worker-protocol-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-cache-worker-protocol-tests)
+
+add_test(NAME xvram.residency.worker-protocol COMMAND xvram-cache-worker-protocol-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(
@@ -86,6 +94,8 @@ add_test(NAME xvram.probe.help COMMAND xvram-probe --help)
 add_test(NAME xvram.probe.version COMMAND xvram-probe --version)
 add_test(NAME xvram.vmm-poc.help COMMAND xvram-vmm-poc --help)
 add_test(NAME xvram.vmm-poc.version COMMAND xvram-vmm-poc --version)
+add_test(NAME xvram.cache-bench.help COMMAND xvram-cache-bench --help)
+add_test(NAME xvram.cache-bench.version COMMAND xvram-cache-bench --version)
 
 add_executable(xvram-report-fixture contract/fixture_report.cpp)
 target_link_libraries(xvram-report-fixture PRIVATE xvram_probe_lib)

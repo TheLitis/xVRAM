@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/TheLitis/xVRAM/main/schemas/residency-cache-report-v1.schema.json",
+  "title": "xVRAM residency cache report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_type", "generated_at_utc", "build", "system", "device",
+    "configuration", "workloads", "cache", "telemetry", "proof", "outcome", "cleanup",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "report_type": { "const": "xvram.residency_cache" },
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "build": { "$ref": "#/$defs/build" },
+    "system": { "$ref": "#/$defs/system" },
+    "device": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/device" }] },
+    "configuration": { "$ref": "#/$defs/configuration" },
+    "workloads": { "type": "array", "items": { "$ref": "#/$defs/workload" } },
+    "cache": { "$ref": "#/$defs/cache" },
+    "telemetry": { "$ref": "#/$defs/telemetry" },
+    "proof": { "$ref": "#/$defs/proof" },
+    "outcome": { "$ref": "#/$defs/outcome" },
+    "cleanup": { "$ref": "#/$defs/cleanup" },
+    "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } }
+  },
+  "$defs": {
+    "nullableInteger": { "type": ["integer", "null"] },
+    "nullableNonNegativeInteger": { "type": ["integer", "null"], "minimum": 0 },
+    "nullablePositiveInteger": { "type": ["integer", "null"], "minimum": 1 },
+    "nullableNonNegativeNumber": { "type": ["number", "null"], "minimum": 0 },
+    "nullableRatio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "nullableString": { "type": ["string", "null"] },
+    "nullableBoolean": { "type": ["boolean", "null"] },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest128": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "nullableDigest128": { "type": ["string", "null"], "pattern": "^[0-9a-f]{32}$" },
+    "policy": { "enum": ["clock", "lru"] },
+    "scenario": {
+      "enum": ["sequential", "reuse", "random", "read-only", "write-heavy", "budget-pressure"]
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "git_commit", "compiler", "build_type", "cuda_headers_version"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "git_commit": { "type": "string", "minLength": 1 },
+        "compiler": { "type": "string", "minLength": 1 },
+        "build_type": { "type": "string", "minLength": 1 },
+        "cuda_headers_version": { "type": "integer", "minimum": 13000 }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_name", "os_version", "architecture", "logical_processor_count",
+        "physical_memory_bytes", "available_memory_bytes"
+      ],
+      "properties": {
+        "os_name": { "type": "string", "minLength": 1 },
+        "os_version": { "type": "string" },
+        "architecture": { "type": "string", "minLength": 1 },
+        "logical_processor_count": { "type": "integer", "minimum": 0 },
+        "physical_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "available_memory_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal", "name", "uuid", "luid", "pci_bus_id", "driver_model",
+        "total_memory_bytes", "free_memory_bytes_start", "free_memory_bytes_end",
+        "safe_device_budget_bytes", "wddm_budget_bytes_start", "wddm_usage_bytes_start",
+        "wddm_available_bytes_start", "wddm_available_bytes_minimum",
+        "wddm_available_bytes_end", "vmm_supported", "uva_supported",
+        "minimum_granularity_bytes", "recommended_granularity_bytes"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string", "minLength": 1 },
+        "uuid": { "$ref": "#/$defs/nullableString" },
+        "luid": { "$ref": "#/$defs/nullableString" },
+        "pci_bus_id": { "$ref": "#/$defs/nullableString" },
+        "driver_model": {
+          "type": ["string", "null"],
+          "enum": ["wddm", "tcc", "mcdm", "unknown", null]
+        },
+        "total_memory_bytes": { "type": "integer", "minimum": 1 },
+        "free_memory_bytes_start": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "free_memory_bytes_end": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "safe_device_budget_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_budget_bytes_start": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_usage_bytes_start": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_available_bytes_start": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_available_bytes_minimum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_available_bytes_end": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "vmm_supported": { "type": "boolean" },
+        "uva_supported": { "type": "boolean" },
+        "minimum_granularity_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "recommended_granularity_bytes": { "$ref": "#/$defs/nullablePositiveInteger" }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_device_ordinal", "requested_logical_bytes", "effective_logical_bytes",
+        "requested_chunk_bytes", "effective_chunk_bytes", "requested_cache_target_bytes",
+        "initial_cache_target_bytes", "staging_slots", "policy", "prefetch_distance",
+        "scenario", "passes", "pressure_bytes", "host_headroom_bytes",
+        "device_headroom_bytes", "budget_poll_ms", "stall_timeout_ms", "timeout_ms",
+        "seed_hex", "sizing_mode", "trace_enabled", "identifiers_included"
+      ],
+      "properties": {
+        "requested_device_ordinal": { "type": ["integer", "null"], "minimum": 0 },
+        "requested_logical_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "effective_logical_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "requested_chunk_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "effective_chunk_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "requested_cache_target_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "initial_cache_target_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "staging_slots": { "type": "integer", "minimum": 2, "maximum": 8 },
+        "policy": { "enum": ["clock", "lru", "both"] },
+        "prefetch_distance": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "scenario": {
+          "enum": [
+            "suite", "sequential", "reuse", "random", "read-only", "write-heavy",
+            "budget-pressure"
+          ]
+        },
+        "passes": { "type": "integer", "minimum": 2, "maximum": 8 },
+        "pressure_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "host_headroom_bytes": { "type": "integer", "minimum": 0 },
+        "device_headroom_bytes": { "type": "integer", "minimum": 0 },
+        "budget_poll_ms": { "type": "integer", "minimum": 1 },
+        "stall_timeout_ms": { "type": "integer", "minimum": 1 },
+        "timeout_ms": { "type": "integer", "minimum": 1 },
+        "seed_hex": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "sizing_mode": { "enum": ["auto", "explicit", "mixed"] },
+        "trace_enabled": { "type": "boolean" },
+        "identifiers_included": { "type": "boolean" }
+      }
+    },
+    "timingSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_count", "total_ms", "minimum_ms", "median_ms", "p95_ms", "maximum_ms"],
+      "properties": {
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "total_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "minimum_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "median_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "p95_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "maximum_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" }
+      },
+      "allOf": [{
+        "if": { "properties": { "sample_count": { "minimum": 1 } }, "required": ["sample_count"] },
+        "then": { "properties": {
+          "total_ms": { "type": "number", "minimum": 0 },
+          "minimum_ms": { "type": "number", "minimum": 0 },
+          "median_ms": { "type": "number", "minimum": 0 },
+          "p95_ms": { "type": "number", "minimum": 0 },
+          "maximum_ms": { "type": "number", "minimum": 0 }
+        } }
+      }]
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario", "policy", "status", "operations_retired", "passes_completed",
+        "logical_bytes", "logical_chunk_count", "maximum_working_set_bytes",
+        "read_operations", "read_write_operations", "write_only_operations", "cache_hits",
+        "cache_misses", "cache_hit_rate", "bytes_h2d", "bytes_d2h", "clean_evictions",
+        "dirty_evictions", "writebacks_completed", "prefetch_issued", "prefetch_useful",
+        "prefetch_wasted", "prefetch_cancelled", "prefetch_promoted", "sequential_bypasses",
+        "target_shrink_count", "target_grow_count", "mapping_count", "unmap_count",
+        "set_access_count", "handle_reuse_count", "event_boundary_count",
+        "unsafe_remap_count", "unsafe_transition_count", "stable_addresses_verified",
+        "full_verification_completed", "matches_cpu", "elapsed_ms",
+        "throughput_gib_per_second", "expected_digest128", "output_digest128",
+        "mismatch_count", "first_mismatch_byte_offset"
+      ],
+      "properties": {
+        "scenario": { "$ref": "#/$defs/scenario" },
+        "policy": { "$ref": "#/$defs/policy" },
+        "status": { "enum": ["not_run", "completed", "failed", "timed_out"] },
+        "operations_retired": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "passes_completed": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "logical_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "logical_chunk_count": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "maximum_working_set_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "read_operations": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "read_write_operations": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "write_only_operations": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_hits": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_misses": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_hit_rate": { "$ref": "#/$defs/nullableRatio" },
+        "bytes_h2d": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "bytes_d2h": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "clean_evictions": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "dirty_evictions": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "writebacks_completed": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_issued": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_useful": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_wasted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_cancelled": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_promoted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "sequential_bypasses": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "target_shrink_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "target_grow_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "mapping_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unmap_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "set_access_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "handle_reuse_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "event_boundary_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unsafe_remap_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unsafe_transition_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "stable_addresses_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "full_verification_completed": { "$ref": "#/$defs/nullableBoolean" },
+        "matches_cpu": { "$ref": "#/$defs/nullableBoolean" },
+        "elapsed_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "throughput_gib_per_second": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "expected_digest128": { "$ref": "#/$defs/nullableDigest128" },
+        "output_digest128": { "$ref": "#/$defs/nullableDigest128" },
+        "mismatch_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "first_mismatch_byte_offset": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      },
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+        "then": { "properties": {
+          "operations_retired": { "type": "integer", "minimum": 1 },
+          "passes_completed": { "type": "integer", "minimum": 1 },
+          "logical_bytes": { "type": "integer", "minimum": 1 },
+          "logical_chunk_count": { "type": "integer", "minimum": 1 },
+          "maximum_working_set_bytes": { "type": "integer", "minimum": 1 },
+          "read_operations": { "type": "integer", "minimum": 0 },
+          "read_write_operations": { "type": "integer", "minimum": 0 },
+          "write_only_operations": { "type": "integer", "minimum": 0 },
+          "cache_hits": { "type": "integer", "minimum": 0 },
+          "cache_misses": { "type": "integer", "minimum": 0 },
+          "cache_hit_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "bytes_h2d": { "type": "integer", "minimum": 0 },
+          "bytes_d2h": { "type": "integer", "minimum": 0 },
+          "clean_evictions": { "type": "integer", "minimum": 0 },
+          "dirty_evictions": { "type": "integer", "minimum": 0 },
+          "writebacks_completed": { "type": "integer", "minimum": 0 },
+          "prefetch_issued": { "type": "integer", "minimum": 0 },
+          "prefetch_useful": { "type": "integer", "minimum": 0 },
+          "prefetch_wasted": { "type": "integer", "minimum": 0 },
+          "prefetch_cancelled": { "type": "integer", "minimum": 0 },
+          "prefetch_promoted": { "type": "integer", "minimum": 0 },
+          "sequential_bypasses": { "type": "integer", "minimum": 0 },
+          "target_shrink_count": { "type": "integer", "minimum": 0 },
+          "target_grow_count": { "type": "integer", "minimum": 0 },
+          "mapping_count": { "type": "integer", "minimum": 1 },
+          "unmap_count": { "type": "integer", "minimum": 1 },
+          "set_access_count": { "type": "integer", "minimum": 1 },
+          "handle_reuse_count": { "type": "integer", "minimum": 1 },
+          "event_boundary_count": { "type": "integer", "minimum": 1 },
+          "unsafe_remap_count": { "const": 0 },
+          "unsafe_transition_count": { "const": 0 },
+          "stable_addresses_verified": { "const": true },
+          "full_verification_completed": { "const": true },
+          "matches_cpu": { "const": true },
+          "elapsed_ms": { "type": "number", "minimum": 0 },
+          "throughput_gib_per_second": { "type": "number", "minimum": 0 },
+          "expected_digest128": { "$ref": "#/$defs/digest128" },
+          "output_digest128": { "$ref": "#/$defs/digest128" },
+          "mismatch_count": { "const": 0 },
+          "first_mismatch_byte_offset": { "const": null }
+        } }
+      }]
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_bytes_initial", "target_bytes_minimum", "target_bytes_maximum",
+        "target_bytes_end", "resident_bytes_peak", "pinned_staging_bytes",
+        "physical_frame_count_peak", "physical_handle_create_count",
+        "physical_handle_release_count", "handle_reuse_count", "mapping_count", "unmap_count",
+        "set_access_count", "event_boundary_count", "unsafe_remap_count",
+        "unsafe_transition_count", "cache_hits", "cache_misses", "cache_hit_rate",
+        "clean_evictions", "dirty_evictions", "writebacks_completed", "prefetch_issued",
+        "prefetch_useful", "prefetch_wasted", "prefetch_cancelled", "prefetch_promoted",
+        "sequential_bypasses", "target_shrink_count", "target_grow_count",
+        "target_oom_retry_count", "maximum_working_set_bytes"
+      ],
+      "properties": {
+        "target_bytes_initial": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "target_bytes_minimum": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "target_bytes_maximum": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "target_bytes_end": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "resident_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pinned_staging_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "physical_frame_count_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "physical_handle_create_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "physical_handle_release_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "handle_reuse_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "mapping_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unmap_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "set_access_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "event_boundary_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unsafe_remap_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "unsafe_transition_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_hits": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_misses": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cache_hit_rate": { "$ref": "#/$defs/nullableRatio" },
+        "clean_evictions": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "dirty_evictions": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "writebacks_completed": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_issued": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_useful": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_wasted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_cancelled": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "prefetch_promoted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "sequential_bypasses": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "target_shrink_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "target_grow_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "target_oom_retry_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "maximum_working_set_bytes": { "$ref": "#/$defs/nullablePositiveInteger" }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_elapsed_ms", "bytes_h2d", "bytes_d2h", "budget_sample_count",
+        "cuda_free_bytes_minimum", "cuda_free_bytes_end", "wddm_available_bytes_minimum",
+        "wddm_available_bytes_end", "resident_occupancy_peak", "resident_occupancy_mean",
+        "remap_timing", "h2d_timing", "kernel_timing", "d2h_timing", "writeback_timing",
+        "trace_records_emitted", "trace_records_dropped", "trace_complete"
+      ],
+      "properties": {
+        "total_elapsed_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
+        "bytes_h2d": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "bytes_d2h": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "budget_sample_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cuda_free_bytes_minimum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cuda_free_bytes_end": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_available_bytes_minimum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "wddm_available_bytes_end": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "resident_occupancy_peak": { "$ref": "#/$defs/nullableRatio" },
+        "resident_occupancy_mean": { "$ref": "#/$defs/nullableRatio" },
+        "remap_timing": { "$ref": "#/$defs/timingSummary" },
+        "h2d_timing": { "$ref": "#/$defs/timingSummary" },
+        "kernel_timing": { "$ref": "#/$defs/timingSummary" },
+        "d2h_timing": { "$ref": "#/$defs/timingSummary" },
+        "writeback_timing": { "$ref": "#/$defs/timingSummary" },
+        "trace_records_emitted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "trace_records_dropped": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "trace_complete": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_bytes", "chunk_bytes", "logical_chunk_count", "maximum_cache_target_bytes",
+        "pinned_staging_bytes", "kernel_module_version", "kernel_module_sha256",
+        "pattern_version", "cpu_reference_digest128", "logical_data_exceeds_vram",
+        "cache_smaller_than_logical", "handles_reused", "stable_virtual_addresses_verified",
+        "set_access_after_map_verified", "event_boundaries_verified",
+        "no_physical_aliases_verified", "dirty_writeback_verified", "staging_pool_bounded",
+        "cache_target_respected", "all_workloads_match_cpu", "policies_match",
+        "raw_virtual_addresses_omitted"
+      ],
+      "properties": {
+        "logical_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "chunk_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "logical_chunk_count": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "maximum_cache_target_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "pinned_staging_bytes": { "$ref": "#/$defs/nullablePositiveInteger" },
+        "kernel_module_version": { "type": "integer", "minimum": 0 },
+        "kernel_module_sha256": { "type": "string" },
+        "pattern_version": { "type": "string" },
+        "cpu_reference_digest128": { "$ref": "#/$defs/nullableDigest128" },
+        "logical_data_exceeds_vram": { "$ref": "#/$defs/nullableBoolean" },
+        "cache_smaller_than_logical": { "$ref": "#/$defs/nullableBoolean" },
+        "handles_reused": { "$ref": "#/$defs/nullableBoolean" },
+        "stable_virtual_addresses_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "set_access_after_map_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "event_boundaries_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "no_physical_aliases_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "dirty_writeback_verified": { "$ref": "#/$defs/nullableBoolean" },
+        "staging_pool_bounded": { "$ref": "#/$defs/nullableBoolean" },
+        "cache_target_respected": { "$ref": "#/$defs/nullableBoolean" },
+        "all_workloads_match_cpu": { "$ref": "#/$defs/nullableBoolean" },
+        "policies_match": { "$ref": "#/$defs/nullableBoolean" },
+        "raw_virtual_addresses_omitted": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "reason", "exit_code", "stage", "operation", "native_code", "native_name",
+        "message", "policy", "scenario", "allocation_id", "chunk_index",
+        "logical_byte_offset"
+      ],
+      "properties": {
+        "status": { "enum": ["completed", "skipped", "failed"] },
+        "reason": {
+          "type": ["string", "null"],
+          "enum": [
+            "device_unavailable", "vmm_unsupported", "uva_unsupported",
+            "invalid_configuration", "insufficient_host_memory", "insufficient_device_budget",
+            "working_set_too_large", "host_oom", "device_oom", "budget_pressure", "timeout",
+            "data_mismatch", "cuda_error", "platform_error", "protocol_error",
+            "trace_io_error", "cleanup_error", "internal_error", null
+          ]
+        },
+        "exit_code": { "enum": [0, 23, 24, 25, 26, 27, 64, 70, 74] },
+        "stage": {
+          "type": ["string", "null"],
+          "enum": [
+            "planning", "reserve", "host_backing", "physical_allocation", "mapping",
+            "cache_lookup", "prefetch", "transfer_h2d", "kernel", "writeback",
+            "transfer_d2h", "verification", "budget", "unmapping", "cleanup", "watchdog",
+            "protocol", "trace", null
+          ]
+        },
+        "operation": { "$ref": "#/$defs/nullableString" },
+        "native_code": { "$ref": "#/$defs/nullableInteger" },
+        "native_name": { "$ref": "#/$defs/nullableString" },
+        "message": { "$ref": "#/$defs/nullableString" },
+        "policy": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/policy" }] },
+        "scenario": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/scenario" }] },
+        "allocation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "chunk_index": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "logical_byte_offset": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete", "transactions_drained", "prefetch_drained", "writebacks_completed",
+        "events_drained", "events_destroyed", "streams_destroyed", "module_unloaded",
+        "mappings_removed", "physical_handles_released", "virtual_reservations_released",
+        "pinned_staging_released", "host_backing_released", "context_destroyed",
+        "trace_closed", "worker_terminated"
+      ],
+      "properties": {
+        "complete": { "$ref": "#/$defs/nullableBoolean" },
+        "transactions_drained": { "$ref": "#/$defs/nullableBoolean" },
+        "prefetch_drained": { "$ref": "#/$defs/nullableBoolean" },
+        "writebacks_completed": { "$ref": "#/$defs/nullableBoolean" },
+        "events_drained": { "$ref": "#/$defs/nullableBoolean" },
+        "events_destroyed": { "$ref": "#/$defs/nullableBoolean" },
+        "streams_destroyed": { "$ref": "#/$defs/nullableBoolean" },
+        "module_unloaded": { "$ref": "#/$defs/nullableBoolean" },
+        "mappings_removed": { "$ref": "#/$defs/nullableBoolean" },
+        "physical_handles_released": { "$ref": "#/$defs/nullableBoolean" },
+        "virtual_reservations_released": { "$ref": "#/$defs/nullableBoolean" },
+        "pinned_staging_released": { "$ref": "#/$defs/nullableBoolean" },
+        "host_backing_released": { "$ref": "#/$defs/nullableBoolean" },
+        "context_destroyed": { "$ref": "#/$defs/nullableBoolean" },
+        "trace_closed": { "$ref": "#/$defs/nullableBoolean" },
+        "worker_terminated": { "$ref": "#/$defs/nullableBoolean" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "component", "operation", "message", "code", "device_ordinal"],
+      "properties": {
+        "level": { "enum": ["info", "warning", "error"] },
+        "component": { "type": "string", "minLength": 1 },
+        "operation": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "code": { "$ref": "#/$defs/nullableInteger" },
+        "device_ordinal": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": { "properties": { "status": { "const": "completed" } }, "required": ["status"] }
+        },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "device": {
+            "allOf": [
+              { "$ref": "#/$defs/device" },
+              { "properties": {
+                "vmm_supported": { "const": true },
+                "uva_supported": { "const": true },
+                "minimum_granularity_bytes": { "type": "integer", "minimum": 1 },
+                "recommended_granularity_bytes": { "type": "integer", "minimum": 1 }
+              } }
+            ]
+          },
+          "configuration": { "properties": {
+            "effective_logical_bytes": { "type": "integer", "minimum": 1 },
+            "effective_chunk_bytes": { "type": "integer", "minimum": 1 },
+            "initial_cache_target_bytes": { "type": "integer", "minimum": 1 }
+          } },
+          "workloads": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "allOf": [
+                { "$ref": "#/$defs/workload" },
+                { "properties": { "status": { "const": "completed" } } }
+              ]
+            }
+          },
+          "cache": { "properties": {
+            "target_bytes_initial": { "type": "integer", "minimum": 1 },
+            "target_bytes_minimum": { "type": "integer", "minimum": 1 },
+            "target_bytes_maximum": { "type": "integer", "minimum": 1 },
+            "target_bytes_end": { "type": "integer", "minimum": 1 },
+            "resident_bytes_peak": { "type": "integer", "minimum": 1 },
+            "pinned_staging_bytes": { "type": "integer", "minimum": 1 },
+            "physical_frame_count_peak": { "type": "integer", "minimum": 1 },
+            "physical_handle_create_count": { "type": "integer", "minimum": 1 },
+            "physical_handle_release_count": { "type": "integer", "minimum": 1 },
+            "handle_reuse_count": { "type": "integer", "minimum": 1 },
+            "mapping_count": { "type": "integer", "minimum": 1 },
+            "unmap_count": { "type": "integer", "minimum": 1 },
+            "set_access_count": { "type": "integer", "minimum": 1 },
+            "event_boundary_count": { "type": "integer", "minimum": 1 },
+            "unsafe_remap_count": { "const": 0 },
+            "unsafe_transition_count": { "const": 0 },
+            "cache_hits": { "type": "integer", "minimum": 0 },
+            "cache_misses": { "type": "integer", "minimum": 1 },
+            "cache_hit_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "clean_evictions": { "type": "integer", "minimum": 0 },
+            "dirty_evictions": { "type": "integer", "minimum": 0 },
+            "writebacks_completed": { "type": "integer", "minimum": 0 },
+            "prefetch_issued": { "type": "integer", "minimum": 0 },
+            "prefetch_useful": { "type": "integer", "minimum": 0 },
+            "prefetch_wasted": { "type": "integer", "minimum": 0 },
+            "prefetch_cancelled": { "type": "integer", "minimum": 0 },
+            "prefetch_promoted": { "type": "integer", "minimum": 0 },
+            "sequential_bypasses": { "type": "integer", "minimum": 0 },
+            "target_shrink_count": { "type": "integer", "minimum": 0 },
+            "target_grow_count": { "type": "integer", "minimum": 0 },
+            "target_oom_retry_count": { "type": "integer", "minimum": 0 },
+            "maximum_working_set_bytes": { "type": "integer", "minimum": 1 }
+          } },
+          "telemetry": { "properties": {
+            "total_elapsed_ms": { "type": "number", "minimum": 0 },
+            "bytes_h2d": { "type": "integer", "minimum": 0 },
+            "bytes_d2h": { "type": "integer", "minimum": 0 },
+            "budget_sample_count": { "type": "integer", "minimum": 1 },
+            "cuda_free_bytes_minimum": { "type": "integer", "minimum": 0 },
+            "cuda_free_bytes_end": { "type": "integer", "minimum": 0 },
+            "resident_occupancy_peak": { "type": "number", "minimum": 0, "maximum": 1 },
+            "resident_occupancy_mean": { "type": "number", "minimum": 0, "maximum": 1 },
+            "trace_records_emitted": { "type": "integer", "minimum": 0 },
+            "trace_records_dropped": { "const": 0 },
+            "trace_complete": { "const": true }
+          } },
+          "proof": { "properties": {
+            "logical_bytes": { "type": "integer", "minimum": 1 },
+            "chunk_bytes": { "type": "integer", "minimum": 1 },
+            "logical_chunk_count": { "type": "integer", "minimum": 2 },
+            "maximum_cache_target_bytes": { "type": "integer", "minimum": 1 },
+            "pinned_staging_bytes": { "type": "integer", "minimum": 1 },
+            "kernel_module_version": { "type": "integer", "minimum": 1 },
+            "kernel_module_sha256": { "$ref": "#/$defs/sha256" },
+            "pattern_version": { "type": "string", "minLength": 1 },
+            "cpu_reference_digest128": { "$ref": "#/$defs/digest128" },
+            "logical_data_exceeds_vram": { "type": "boolean" },
+            "cache_smaller_than_logical": { "const": true },
+            "handles_reused": { "const": true },
+            "stable_virtual_addresses_verified": { "const": true },
+            "set_access_after_map_verified": { "const": true },
+            "event_boundaries_verified": { "const": true },
+            "no_physical_aliases_verified": { "const": true },
+            "dirty_writeback_verified": { "const": true },
+            "staging_pool_bounded": { "const": true },
+            "cache_target_respected": { "const": true },
+            "all_workloads_match_cpu": { "const": true },
+            "raw_virtual_addresses_omitted": { "const": true }
+          } },
+          "outcome": { "properties": {
+            "reason": { "const": null },
+            "exit_code": { "const": 0 }
+          } },
+          "cleanup": { "properties": {
+            "complete": { "const": true },
+            "transactions_drained": { "const": true },
+            "prefetch_drained": { "const": true },
+            "writebacks_completed": { "const": true },
+            "events_drained": { "const": true },
+            "events_destroyed": { "const": true },
+            "streams_destroyed": { "const": true },
+            "module_unloaded": { "const": true },
+            "mappings_removed": { "const": true },
+            "physical_handles_released": { "const": true },
+            "virtual_reservations_released": { "const": true },
+            "pinned_staging_released": { "const": true },
+            "host_backing_released": { "const": true },
+            "context_destroyed": { "const": true },
+            "trace_closed": { "const": true },
+            "worker_terminated": { "const": true }
+          } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": { "status": { "enum": ["skipped", "failed"] } },
+            "required": ["status"]
+          }
+        },
+        "required": ["outcome"]
+      },
+      "then": { "properties": { "outcome": { "properties": {
+        "reason": { "type": "string" },
+        "exit_code": { "enum": [23, 24, 25, 26, 27, 64, 70, 74] }
+      } } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "configuration": {
+            "properties": { "policy": { "const": "both" } },
+            "required": ["policy"]
+          },
+          "outcome": {
+            "properties": { "status": { "const": "completed" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["configuration", "outcome"]
+      },
+      "then": { "properties": { "proof": { "properties": {
+        "policies_match": { "const": true }
+      } } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "configuration": {
+            "properties": { "identifiers_included": { "const": false } },
+            "required": ["identifiers_included"]
+          }
+        },
+        "required": ["configuration"]
+      },
+      "then": { "properties": { "device": { "oneOf": [
+        { "type": "null" },
+        { "allOf": [
+          { "$ref": "#/$defs/device" },
+          { "properties": {
+            "uuid": { "const": null },
+            "luid": { "const": null },
+            "pci_bus_id": { "const": null }
+          } }
+        ] }
+      ] } } }
+    }
+  ]
+}

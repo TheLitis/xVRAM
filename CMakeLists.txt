@@ -342,6 +342,10 @@ xvram_enable_warnings(xvram-vmm-poc)
 add_library(
   xvram_residency STATIC
   src/residency/executor.cpp
+  src/residency/report_json.cpp
+  src/residency/report_text.cpp
+  src/residency/worker_controller.cpp
+  src/residency/worker_protocol.cpp
   src/residency/workload.cpp)
 target_compile_features(xvram_residency PUBLIC cxx_std_20)
 target_include_directories(
@@ -356,10 +360,19 @@ target_link_libraries(
   PRIVATE xvram_probe_lib xvram_residency_core xvram_worker_process Threads::Threads)
 xvram_enable_warnings(xvram_residency)
 
-install(TARGETS xvram-probe xvram-vmm-poc RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_executable(xvram-cache-bench src/residency/main.cpp)
+target_link_libraries(xvram-cache-bench PRIVATE xvram_residency)
+target_include_directories(xvram-cache-bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram-cache-bench SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+xvram_enable_warnings(xvram-cache-bench)
+
+install(TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
               schemas/vmm-poc-report-v1.schema.json
+              schemas/residency-cache-report-v1.schema.json
+              schemas/residency-trace-record-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 if(XVRAM_BUILD_TESTS)

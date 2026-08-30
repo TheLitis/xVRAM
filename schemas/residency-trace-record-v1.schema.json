@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/TheLitis/xVRAM/main/schemas/residency-trace-record-v1.schema.json",
+  "title": "xVRAM residency trace record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_type", "sequence", "monotonic_time_ns", "event",
+    "allocation_id", "chunk_index", "operation_id", "transaction_id", "from_state",
+    "to_state", "bytes", "reason", "policy", "speculative", "generation"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "report_type": { "const": "xvram.residency_trace" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "monotonic_time_ns": { "type": "integer", "minimum": 0 },
+    "event": {
+      "enum": [
+        "state_transition", "cache_hit", "cache_miss", "prefetch_issued",
+        "prefetch_retired", "prefetch_cancelled", "target_changed", "operation_retired",
+        "transaction_retired", "budget_sample", "diagnostic"
+      ]
+    },
+    "allocation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "chunk_index": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "operation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "transaction_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "from_state": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }] },
+    "to_state": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }] },
+    "bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "reason": { "type": ["string", "null"] },
+    "policy": { "type": ["string", "null"], "enum": ["clock", "lru", null] },
+    "speculative": { "type": ["boolean", "null"] },
+    "generation": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+  },
+  "$defs": {
+    "nullableNonNegativeInteger": { "type": ["integer", "null"], "minimum": 0 },
+    "state": {
+      "enum": [
+        "host_clean", "prefetch_queued", "mapping", "h2d_in_flight", "resident_clean",
+        "resident_dirty", "writeback_queued", "d2h_in_flight", "evicting", "poisoned"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "event": { "const": "state_transition" } },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "allocation_id": { "type": "integer", "minimum": 0 },
+        "chunk_index": { "type": "integer", "minimum": 0 },
+        "from_state": { "$ref": "#/$defs/state" },
+        "to_state": { "$ref": "#/$defs/state" },
+        "generation": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": { "enum": ["cache_hit", "cache_miss", "prefetch_issued", "prefetch_retired", "prefetch_cancelled"] }
+        },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "allocation_id": { "type": "integer", "minimum": 0 },
+        "chunk_index": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": {
+        "properties": { "event": { "const": "operation_retired" } },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "operation_id": { "type": "integer", "minimum": 0 },
+        "transaction_id": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": {
+        "properties": { "event": { "const": "transaction_retired" } },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "transaction_id": { "type": "integer", "minimum": 0 }
+      } }
+    }
+  ]
+}
