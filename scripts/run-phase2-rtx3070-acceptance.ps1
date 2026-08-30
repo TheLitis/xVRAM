@@ -413,7 +413,7 @@ function Get-AlignedLogicalBytes {
 $script:ProbePath = Resolve-XvramExecutable -Name "xvram-probe" -Override $ProbeExecutable
 $script:CacheBenchPath = Resolve-XvramExecutable -Name "xvram-cache-bench" `
     -Override $CacheBenchExecutable
-Assert-Condition ((Get-ResidualCacheBenchProcess -ExecutablePath $script:CacheBenchPath).Count -eq 0) `
+Assert-Condition (@(Get-ResidualCacheBenchProcess -ExecutablePath $script:CacheBenchPath).Count -eq 0) `
     "a benchmark process is already running from $script:CacheBenchPath"
 Assert-Condition (Test-Path -LiteralPath $script:SchemaPath -PathType Leaf) `
     "report schema is missing: $script:SchemaPath"
