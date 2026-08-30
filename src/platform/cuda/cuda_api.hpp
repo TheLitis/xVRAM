@@ -40,6 +40,7 @@ public:
   abi::DeviceGetPciBusId device_get_pci_bus_id_ = nullptr;
   abi::MemGetAllocationGranularity mem_get_allocation_granularity_ = nullptr;
   abi::ContextGetCurrent context_get_current_ = nullptr;
+  abi::ContextGetDevice context_get_device_ = nullptr;
   abi::ContextSetCurrent context_set_current_ = nullptr;
   abi::ContextCreate context_create_ = nullptr;
   abi::ContextDestroy context_destroy_ = nullptr;
@@ -51,6 +52,7 @@ public:
   abi::MemMap mem_map_ = nullptr;
   abi::MemUnmap mem_unmap_ = nullptr;
   abi::MemSetAccess mem_set_access_ = nullptr;
+  abi::MemGetAccess mem_get_access_ = nullptr;
   abi::MemAlloc mem_alloc_ = nullptr;
   abi::MemFree mem_free_ = nullptr;
   abi::MemHostAlloc mem_host_alloc_ = nullptr;

@@ -32,6 +32,7 @@ CudaApi::LoadResult CudaApi::load() {
   resolve(device_get_pci_bus_id_, {"cuDeviceGetPCIBusId"});
   resolve(mem_get_allocation_granularity_, {"cuMemGetAllocationGranularity"});
   resolve(context_get_current_, {"cuCtxGetCurrent"});
+  resolve(context_get_device_, {"cuCtxGetDevice"});
   resolve(context_set_current_, {"cuCtxSetCurrent"});
   resolve(context_create_, {"cuCtxCreate_v2"});
   resolve(context_destroy_, {"cuCtxDestroy_v2"});
@@ -43,6 +44,7 @@ CudaApi::LoadResult CudaApi::load() {
   resolve(mem_map_, {"cuMemMap"});
   resolve(mem_unmap_, {"cuMemUnmap"});
   resolve(mem_set_access_, {"cuMemSetAccess"});
+  resolve(mem_get_access_, {"cuMemGetAccess"});
   resolve(mem_alloc_, {"cuMemAlloc_v2"});
   resolve(mem_free_, {"cuMemFree_v2"});
   resolve(mem_host_alloc_, {"cuMemHostAlloc"});

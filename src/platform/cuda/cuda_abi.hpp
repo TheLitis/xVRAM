@@ -19,6 +19,8 @@ using Module = CUmodule;
 using Function = CUfunction;
 using Uuid = CUuuid;
 using MemAllocationProp = CUmemAllocationProp;
+using MemLocation = CUmemLocation;
+using MemAccessFlags = CUmemAccess_flags;
 using GenericAllocationHandle = CUmemGenericAllocationHandle;
 using NativeDeviceAttribute = CUdevice_attribute;
 
@@ -29,6 +31,9 @@ inline constexpr auto location_host = CU_MEM_LOCATION_TYPE_HOST;
 inline constexpr auto location_host_numa = CU_MEM_LOCATION_TYPE_HOST_NUMA;
 inline constexpr auto granularity_minimum = CU_MEM_ALLOC_GRANULARITY_MINIMUM;
 inline constexpr auto granularity_recommended = CU_MEM_ALLOC_GRANULARITY_RECOMMENDED;
+inline constexpr auto mem_access_none = CU_MEM_ACCESS_FLAGS_PROT_NONE;
+inline constexpr auto mem_access_read = CU_MEM_ACCESS_FLAGS_PROT_READ;
+inline constexpr auto mem_access_read_write = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 
 namespace attributes {
 inline constexpr auto max_threads_per_block = CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK;
@@ -105,6 +110,7 @@ using DeviceGetPciBusId = CUresult(CUDAAPI*)(char*, int, CUdevice);
 using MemGetAllocationGranularity = CUresult(CUDAAPI*)(std::size_t*, const CUmemAllocationProp*,
                                                        CUmemAllocationGranularity_flags);
 using ContextGetCurrent = CUresult(CUDAAPI*)(CUcontext*);
+using ContextGetDevice = CUresult(CUDAAPI*)(CUdevice*);
 using ContextSetCurrent = CUresult(CUDAAPI*)(CUcontext);
 using ContextCreate = CUresult(CUDAAPI*)(CUcontext*, unsigned int, CUdevice);
 using ContextDestroy = CUresult(CUDAAPI*)(CUcontext);
@@ -120,6 +126,7 @@ using MemMap = CUresult(CUDAAPI*)(CUdeviceptr, std::size_t, std::size_t,
 using MemUnmap = CUresult(CUDAAPI*)(CUdeviceptr, std::size_t);
 using MemSetAccess = CUresult(CUDAAPI*)(CUdeviceptr, std::size_t, const CUmemAccessDesc*,
                                         std::size_t);
+using MemGetAccess = CUresult(CUDAAPI*)(unsigned long long*, const CUmemLocation*, CUdeviceptr);
 using MemAlloc = CUresult(CUDAAPI*)(CUdeviceptr*, std::size_t);
 using MemFree = CUresult(CUDAAPI*)(CUdeviceptr);
 using MemHostAlloc = CUresult(CUDAAPI*)(void**, std::size_t, unsigned int);

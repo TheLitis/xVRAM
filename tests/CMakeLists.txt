@@ -52,7 +52,7 @@ add_executable(
   "${PROJECT_SOURCE_DIR}/src/vmm_poc/worker_controller.cpp")
 target_include_directories(xvram-worker-controller-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(xvram-worker-controller-tests PRIVATE cxx_std_20)
-target_link_libraries(xvram-worker-controller-tests PRIVATE Threads::Threads)
+target_link_libraries(xvram-worker-controller-tests PRIVATE Threads::Threads xvram_worker_process)
 add_dependencies(xvram-worker-controller-tests xvram-worker-test-helper)
 xvram_enable_warnings(xvram-worker-controller-tests)
 

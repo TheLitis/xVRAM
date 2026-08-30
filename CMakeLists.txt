@@ -287,6 +287,12 @@ add_executable(xvram-probe src/probe/main.cpp)
 target_link_libraries(xvram-probe PRIVATE xvram_probe_lib)
 xvram_enable_warnings(xvram-probe)
 
+add_library(xvram_worker_process STATIC src/platform/worker_process.cpp)
+target_compile_features(xvram_worker_process PUBLIC cxx_std_20)
+target_include_directories(xvram_worker_process PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(xvram_worker_process PRIVATE Threads::Threads)
+xvram_enable_warnings(xvram_worker_process)
+
 add_library(
   xvram_vmm_poc STATIC
   src/vmm_poc/executor.cpp
@@ -304,7 +310,7 @@ target_include_directories(
          "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(xvram_vmm_poc SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
-target_link_libraries(xvram_vmm_poc PRIVATE xvram_probe_lib Threads::Threads)
+target_link_libraries(xvram_vmm_poc PRIVATE xvram_probe_lib xvram_worker_process Threads::Threads)
 xvram_enable_warnings(xvram_vmm_poc)
 
 add_executable(xvram-vmm-poc src/vmm_poc/main.cpp)
