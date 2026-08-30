@@ -5,13 +5,13 @@ memory. System RAM is the large capacity and backing tier; physical VRAM is the 
 write-back residency tier where kernels execute.
 
 The project is aimed at workloads whose total data is larger than VRAM but whose
-per-kernel working set can be made resident. The runtime will combine stable CUDA
+per-operation working set can be made resident. The runtime combines stable CUDA
 virtual addresses, asynchronous transfers, explicit working-set declarations,
-WDDM-aware budgeting, cache policy, and framework hints.
+WDDM-aware budgeting, cache policy, and library-aware tiling.
 
 > [!WARNING]
-> xVRAM now has an internal event-safe residency-cache implementation and benchmark,
-> but it does not yet expose a public allocator ABI or transparently extend an
+> xVRAM now exposes an experimental, versioned C ABI and a tiled GEMM integration,
+> but the SDK remains pre-release and does not transparently extend an arbitrary
 > application's VRAM. It must not be used for production workloads.
 
 ## Memory model
@@ -101,6 +101,33 @@ write an `xvram.residency_trace` v1 JSONL trace. See the
 [residency-cache guide](docs/residency-cache.md) for the CLI, state machine, report and
 trace contracts, safety rules, and hardware acceptance procedure.
 
+## Phase 3 SDK and tiled GEMM
+
+The `xvram` shared library exposes ABI v1 through the single exported symbol
+`xvram_get_api`. Its opaque sessions and allocations retain the Phase 2 pageable-backing,
+stable-VA, event-generation, write-back, staging, policy, and live-budget rules. The ABI
+supports isolated CUDA contexts by default and opt-in attachment to the caller's current
+context, asynchronous operations with polling/waiting, synchronous wrappers, prefetch,
+explicit working-set transactions, and allocation priority hints.
+
+Generic transaction callbacks run on the session worker thread with the session CUDA
+context current. A callback may enqueue work only on the supplied stream; it may not
+synchronize or replace the context, retain resolved device addresses, or use them after
+return. xVRAM records the completion event after the callback and does not make any
+declared range evictable until that event retires.
+
+The first known operation is ordinary real-valued GEMM. Its planner divides M, N, and K
+so each A/B/C tile working set and the bounded library workspace fit the live cache
+target. cuBLASLt is preferred and cached per tile signature, with cuBLAS GEMM as the
+compatibility fallback. FP16, BF16, FP32/TF32, and FP64, row/column-major layouts, and
+N/T operands are represented by ABI v1. Batching, complex values, fused epilogues,
+framework adapters, and transparent CUDA interception remain out of scope.
+
+`xvram-gemm-bench` is the isolated controller/worker hardware gate for this path. It
+validates tiled numerical output, reports algorithms, workspace and residency telemetry,
+and writes the strict `xvram.gemm_bench` v1 report without serializing raw CUDA virtual
+addresses.
+
 ## Build
 
 Requirements:
@@ -109,6 +136,11 @@ Requirements:
 - CMake 3.25 or newer;
 - a C++20 compiler (MSVC 2022/2026, Clang, or GCC).
 - Python 3 plus `tests/requirements.txt` when running the JSON Schema contract test.
+
+The SDK loads the CUDA Driver API and cuBLAS/cuBLASLt at runtime. A CUDA Toolkit is not
+required to use an already-built SDK, but a compatible NVIDIA driver and cuBLAS runtime
+must be discoverable for GPU work. Package builds may stage the hash-pinned official
+CUDA 13.3 cuBLAS redistributable next to the SDK.
 
 Install the test-only Python dependency:
 
@@ -174,13 +206,33 @@ build\vs\Release\xvram-cache-bench.exe --scenario suite --policy both `
 ./build/dev/xvram-cache-bench --scenario suite --policy both --json cache-suite.json
 ```
 
+Install and consume the Phase 3 C ABI:
+
+```powershell
+cmake --install build\vs --config Release --prefix build\install
+```
+
+An installed CMake consumer uses `find_package(xVRAM CONFIG REQUIRED)` and links
+`xVRAM::xvram`; plain C consumers can include `<xvram/xvram.h>` and dynamically resolve
+`xvram_get_api`.
+
+Run the Phase 3 GEMM gate on a CUDA/cuBLAS-capable device:
+
+```powershell
+build\vs\Release\xvram-gemm-bench.exe --suite --json gemm-suite.json
+```
+
+```bash
+./build/dev/xvram-gemm-bench --suite --json gemm-suite.json
+```
+
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
-Use `xvram-probe --help`, `xvram-vmm-poc --help`, and `xvram-cache-bench --help` for the
-complete CLI contracts.
+Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`, and
+`xvram-gemm-bench --help` for the complete CLI contracts.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -196,13 +248,13 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 1. Hardware and driver capability probe.
 2. Explicit CUDA VMM proof of concept with stable logical addresses.
 3. Event-safe residency cache with pinned staging pools and WDDM budget tracking.
-4. Library-aware tiled operations, starting with GEMM.
+4. Stable C ABI and library-aware tiled operations, starting with GEMM.
 5. PyTorch allocator and graph-scheduling adapter.
 6. Adaptive transport compression based on measured cost.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
-[correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md), and
+[correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md),
 [residency cache](docs/residency-cache.md), and [roadmap](docs/roadmap.md) for the design
 contract.
 
@@ -220,7 +272,8 @@ CUDA allocation. The opportunity is to:
 
 ## Project status and license
 
-The public API and report schema are pre-release and may change before `0.1.0`.
+The ABI v1 function table and report schemas are pre-release and may change before
+`0.1.0`.
 A project license has not yet been selected; until one is added, no rights are granted
 beyond those provided by applicable law. Keep the GitHub repository private until that
 choice is made.

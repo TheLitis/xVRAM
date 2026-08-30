@@ -4,19 +4,26 @@ Performance policy is replaceable; correctness policy is not.
 
 ## Launch protocol
 
-For every managed operation the runtime will:
+For every managed operation the runtime:
 
-1. validate that the declared working set can fit the current physical target;
-2. pin all ranges participating in the operation;
-3. choose only unpinned, idle victims;
-4. finish required dirty write-back;
-5. establish mappings and access rights;
-6. enqueue or await H2D completion;
-7. launch after the residency dependency;
-8. record completion before ranges become evictable.
+1. validates that the declared working set can fit the current physical target;
+2. pins all ranges participating in the operation;
+3. chooses only unpinned, idle victims;
+4. finishes required dirty write-back;
+5. establishes mappings and access rights;
+6. enqueues or awaits H2D completion;
+7. launches after the residency dependency;
+8. records completion before ranges become evictable.
 
 If the working set is larger than the safe VRAM target, strict mode returns a structured
 error requiring tiling. It must not rely on an unrecoverable GPU access fault.
+
+The Phase 3 known-operation planner applies the same rule to every GEMM tile. It pins
+the exact A/B/C chunks and bounded library workspace before calling cuBLAS and releases
+those ranges only after the post-library event generation retires. K panels for one C
+tile are contiguous, and event-safe write-back/reload preserves accumulation if C does
+not remain resident. If budget shrink makes the next tile impossible, it drains and
+returns budget pressure; it never launches against a partial working set.
 
 ## Error handling
 
@@ -45,8 +52,23 @@ backing. Policy output is advisory: the manager rejects pinned, in-flight, alias
 current-working-set victims. During budget shrink, new launches stop until the active
 transaction is drained and excess clean or written-back frames are released.
 
+The Phase 3 SDK serializes CUDA and cuBLAS work on a session worker thread. A generic
+transaction callback is trusted in-process code, but its contract is deliberately
+narrow: enqueue only on the supplied stream, do not synchronize or replace the current
+context, and do not retain any resolved device address or workspace pointer. The runtime
+records a completion event immediately after callback return. A non-success callback
+result fails the operation; if the callback may already have submitted work, the session
+is conservatively poisoned and accepts no later operation.
+
+Isolated sessions own and destroy their CUDA context. Attach-current sessions borrow the
+context captured during creation and only push/pop it on the worker thread. They never
+destroy, reset, or retain ownership of the caller's context. Because an SDK callback can
+hang inside the caller process, hard termination is intentionally available only through
+the isolated `xvram-gemm-bench` controller/worker boundary.
+
 `cuEventQuery` accepts only `CUDA_SUCCESS` and `CUDA_ERROR_NOT_READY`; every other result
-poisons the worker. A kernel observation above 250 ms prevents a subsequent launch. A
+poisons the worker. On Windows, a GEMM tile observation above 250 ms prevents a
+subsequent tile launch and reports watchdog risk. A
 failed unmap still releases the physical handle, deliberately retains the reservation,
 marks cleanup incomplete, and relies on worker-process exit as the quarantine boundary.
 
@@ -77,3 +99,11 @@ tokens at each operation, and fully compares pageable backing with the CPU model
 each workload. CLOCK and LRU runs start from identical regenerated backing. Completed
 reports additionally reconcile hit/miss, prefetch-terminal, dirty-writeback,
 map/access/unmap, handle-lifecycle, target, staging, and cleanup counters.
+
+The GEMM benchmark uses two validation paths. Small and boundary cases compare every
+element against a higher-precision CPU reference with format- and compute-mode-specific
+tolerances. Oversubscribed cases use deterministic structured operands whose full result
+can be evaluated in O(M x N), so validation does not require a second O(M x N x K) host
+GEMM. Acceptance requires finite outputs, zero out-of-tolerance elements, matching
+digests for equivalent plans, event-safe map/access/unmap accounting, a bounded working
+set and workspace, complete cleanup, and no residual worker.

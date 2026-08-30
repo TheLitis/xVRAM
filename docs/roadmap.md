@@ -57,11 +57,25 @@ no worker process remained. The checked-in
 `scripts/run-phase2-rtx3070-acceptance.ps1` command reproduces the gate and validates the
 strict schemas, policy digests, semantic accounting, cleanup, and process isolation.
 
-## Phase 3: known operations
+## Phase 3: public SDK and known GEMM — implementation complete, hardware gate pending
 
-- Tiled cuBLAS/cuBLASLt GEMM working-set planner.
-- Workspace declarations and reusable hot allocations.
-- Explicit operation transactions through the stable C ABI.
+- Size-tagged C ABI v1 behind the single `xvram_get_api` export, with opaque session,
+  allocation, plan, and asynchronous-operation handles.
+- Isolated and attach-current CUDA context modes serialized through a per-session worker
+  thread.
+- Explicit access-range transactions, bounded workspace declarations, prefetch,
+  allocation priority hints, asynchronous poll/wait/cancel, and synchronous wrappers.
+- M/N/K tiled ordinary GEMM for FP16, BF16, FP32/TF32, and FP64 with row/column-major and
+  N/T operands.
+- Dynamic cuBLAS/cuBLASLt dispatch, cuBLASLt heuristic caching, and cuBLAS fallback.
+- Isolated `xvram-gemm-bench`, `XVG1` worker protocol, strict
+  `xvram.gemm_bench` v1 reporting, no-driver tests, and installable CMake package.
+
+The implementation is not marked hardware-complete until the checked-in Phase 3 RTX
+3070 acceptance script passes all small/boundary format cases and the `1.1x` and `1.5x`
+full-validation oversubscribed cases. The gate must show numerical agreement, K-panel
+accumulation, real eviction, dirty C write-back, handle reuse, bounded workspace/cache,
+event-safe remapping, complete cleanup, empty diagnostics, and no residual worker.
 
 ## Phase 4: PyTorch
 
@@ -83,4 +97,4 @@ strict schemas, policy digests, semantic accounting, cleanup, and process isolat
 - Access-range profiling, PTX indirection, and automatic tiling research.
 
 Transparent support for an arbitrary unchanged CUDA executable is a long-term research
-goal, not a Phase 1 or Phase 2 promise.
+goal, not a Phase 1, Phase 2, or Phase 3 promise.

@@ -39,11 +39,15 @@ of a write kernel, rather than after its later retirement.
 6. Pinned host memory is bounded independently from the logical heap capacity.
 7. A failed prefetch, mapping, or eviction fails the operation; it never degrades into
    an access to an invalid address.
+8. Runtime-owned CUDA-library workspace is bounded and charged against the same live
+   device target and headroom as cache frames.
+9. A borrowed device address is valid only inside the transaction generation that
+   resolved and pinned it.
 
 ## Chunk sizing
 
 CUDA VMM minimum and recommended allocation granularities are queried per device and
-location. The runtime chunk size will be a policy choice aligned to the required
+location. The runtime chunk size is a policy choice aligned to the required
 granularity. It must balance mapping overhead, internal fragmentation, scheduling
 precision, and transfer efficiency. No fixed page size is assumed globally.
 
@@ -57,6 +61,13 @@ optimization and cannot weaken the conservative boundary rule.
 Phase 2 normalizes overlapping byte ranges and merges their access strength. A
 full-chunk write-only declaration can omit H2D; a partial write-only declaration must
 first preserve untouched bytes through H2D.
+
+Phase 3 applies these modes to strided matrices rather than conservatively declaring a
+single dense bounding box. For each GEMM tile, A and B segments are read-only. C is
+read-write when beta or an earlier K panel contributes to it. With beta equal to zero,
+fully covered C chunks are write-only; boundary chunks still preserve untouched host
+bytes. The union of these exact segments is normalized before the transaction is
+admitted.
 
 ## Address stability
 
@@ -76,3 +87,16 @@ exact original padded reservation, not merely its aligned logical base. Physical
 handles move between chunk addresses only after all users and the relevant event
 generation have retired. `cuMemSetAccess` is applied after every new mapping, and unmap
 always covers the original mapped chunk range.
+
+The public ABI does not turn a stable reservation into a permanently dereferenceable
+pointer. Generic callbacks receive resolved addresses only after their declared ranges
+are resident and pinned. They may enqueue work on the supplied stream and must forget
+those values on return. The runtime's post-callback event is the generation boundary
+that later permits write-back, eviction, or remapping.
+
+GEMM plans preserve the same rule across M/N/K tiling. K panels for one C tile are
+contiguous. Each panel is an event-safe transaction, so C may remain resident or may be
+written back and loaded again without changing the accumulation result; A/B panels may
+be prefetched or evicted between transactions. cuBLAS workspace comes from a separate
+reusable pool, cannot alias a physical frame or logical allocation, and cannot be reused
+until the library event generation completes.

@@ -14,19 +14,19 @@ library, and compiler integrations improve scheduling and transfer volume.
 ## Layers
 
 ```text
-Framework adapters / CUDA library wrappers / interception
-                             |
-                    working-set contract
-                             |
-                     logical GPU heap
-                             |
-          residency manager + synchronization
-                /             |             \
-        cache policy     transfer engine     telemetry
-                \             |             /
-             CUDA VMM / Driver API / WDDM budgets
-                     /                 \
-                  VRAM              host RAM
+Framework adapters / public C ABI / known operations
+                          |
+                 working-set contract
+                          |
+                  logical GPU heap
+                          |
+       residency manager + synchronization
+             /             |             \
+     cache policy     transfer engine     telemetry
+             \             |             /
+          CUDA VMM / Driver API / WDDM budgets
+                  /                 \
+               VRAM              host RAM
 ```
 
 ### Integration layer
@@ -34,6 +34,18 @@ Framework adapters / CUDA library wrappers / interception
 The best integration declares allocation lifetime, access mode, next use, and the exact
 range required by an operation. Generic interception can only provide conservative
 allocation-level residency until access analysis or instrumentation is available.
+
+Phase 3 exposes that contract through the versioned C function table returned by
+`xvram_get_api`. The shared library keeps its C++ implementation private and represents
+sessions, allocations, plans, and operations with opaque handles. Every public structure
+has a size-tagged v1 prefix so later ABIs can reject an incompatible caller without
+reading beyond the caller-owned object.
+
+The generic transaction boundary resolves declared ranges and invokes trusted client
+code on a session-owned worker thread. The session CUDA context is current and one
+runtime stream is supplied for enqueue-only use. Resolved device addresses and the
+workspace are borrowed only until callback return; retaining them would bypass residency
+and event-generation ownership.
 
 ### Logical heap
 
@@ -46,6 +58,11 @@ own pageable backing and padded VA reservation; cache metadata addresses chunks 
 `{allocation_id, chunk_index}`. A physical frame owns one reusable VMM handle and at
 most one mapping, so allocation lifetime, logical address lifetime, and frame lifetime
 remain independent.
+
+Phase 3 retains this heap behind the public ABI. Allocation priorities (`normal`, `hot`,
+and `streaming`) are eviction-cost hints, not permanent residency promises. Host
+read/write functions operate on canonical backing and are serialized through the session
+worker so they cannot race conflicting GPU ownership.
 
 ### Residency manager
 
@@ -67,6 +84,12 @@ The implemented scheduling order is deliberate:
 4. service demand H2D;
 5. launch the declared compute transaction;
 6. fill remaining H2D capacity with speculative prefetch.
+
+One worker thread owns the CUDA call sequence for each public session. Isolated mode
+creates and destroys a private context there. Attach-current mode captures the caller's
+current context, pushes it for worker activity, pops it at the boundary, and never
+destroys the caller-owned context. Multiple operations may be queued, but at most one
+compute transaction executes at once.
 
 ### Transfer engine
 
@@ -111,9 +134,33 @@ requires ten consecutive safe samples with at least two chunks of surplus and ad
 most two chunks per control cycle. One allocation OOM may trigger one refresh, shrink,
 and retry.
 
+Runtime-owned CUDA-library workspace is reserved outside the cache-frame pool but is
+charged against the same configured cap, live CUDA/WDDM observations, and device
+headroom. A budget shrink blocks new tiles, drains the active tile, writes dirty chunks
+back, and releases excess mappings/frames. If the next tile no longer fits, execution
+returns budget pressure at that safe boundary; the caller can create a smaller plan.
+
+## Known-operation layer
+
+The Phase 3 GEMM path converts a matrix operation into a deterministic sequence of
+explicit residency transactions. The planner enumerates M/N/K tiles, derives exact
+strided A/B/C byte ranges for layout and transpose, and accepts only candidates whose
+unique chunks plus workspace fit the minimum live target. K panels for one C tile stay
+contiguous: the first panel applies the user beta and later panels accumulate with beta
+equal to one. Event-safe write-back/reload preserves correctness if C does not remain resident.
+
+cuBLASLt is the preferred executor. Its heuristic selection is cached by complete tile
+signature, including dimensions, data types, layouts, transposes, compute mode, and
+workspace limit. If no compatible Lt algorithm exists, the executor falls back to the
+matching cuBLAS GEMM entry point. This is a known-operation wrapper; arbitrary cuBLAS
+calls are not intercepted.
+
 ## Backend strategy
 
-The portable core uses the CUDA Driver API. The Windows backend adds DXGI/WDDM budget
+The portable core uses the CUDA Driver API. CUDA Driver, cuBLAS, and cuBLASLt symbols
+are resolved dynamically, so the SDK does not link an application directly to the CUDA
+Runtime API. Each cuBLAS handle is created and destroyed on its session worker thread
+while that session's context is current. The Windows backend adds DXGI/WDDM budget
 observation and LUID-based adapter matching. Host VMM is an optional capability, not a
 requirement for the resident-only baseline: pageable backing plus a bounded pinned
 staging pool remains the compatibility path.
@@ -121,9 +168,9 @@ staging pool remains the compatibility path.
 All optional behavior is capability-gated at runtime. A recent header or driver version
 does not imply that a particular GeForce implements every location or memory-pool mode.
 
-## Planned public boundaries
+## Public boundaries
 
-- A stable C ABI for framework adapters and injected modules.
+- A size-tagged, versioned C ABI for framework adapters and known operations.
 - A C++ implementation API hidden behind the ABI.
 - Versioned JSON telemetry and capability reports.
 - Explicit working-set transactions for known libraries.
@@ -133,5 +180,7 @@ does not imply that a particular GeForce implements every location or memory-poo
 `xvram-vmm-poc` is the deliberately narrow stable-address FIFO proof.
 `xvram-cache-bench` is the Phase 2 boundary: its isolated worker drives the internal
 multi-allocation residency engine through deterministic workloads and returns telemetry
-to a controller-owned report and trace sink. Neither internal library is a public SDK
-ABI. That boundary remains Phase 3.
+to a controller-owned report and trace sink. The `xvram` shared library and
+`<xvram/xvram.h>` are the Phase 3 SDK boundary. `xvram-gemm-bench` keeps hardware
+acceptance outside the caller process through the `XVG1` controller/worker protocol;
+that process isolation is a benchmark safety boundary, not a property of an SDK callback.
