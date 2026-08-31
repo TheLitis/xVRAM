@@ -56,6 +56,8 @@ template <std::size_t Size>
     return XVRAM_STATUS_BUDGET_PRESSURE;
   case residency::RuntimeStatus::timeout:
     return XVRAM_STATUS_TIMEOUT;
+  case residency::RuntimeStatus::callback_skipped:
+    return XVRAM_STATUS_TIMEOUT;
   case residency::RuntimeStatus::callback_failed:
     return XVRAM_STATUS_CALLBACK_FAILED;
   case residency::RuntimeStatus::cuda_failure:
@@ -155,6 +157,19 @@ static_assert(to_compute_mode(XVRAM_COMPUTE_AUTO, XVRAM_DATA_FP64) == gemm::Comp
 
 [[nodiscard]] bool fits_cublas_int(const std::uint64_t value) noexcept {
   return value <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+}
+
+[[nodiscard]] bool uses_low_precision_output(const gemm::GemmProblem& problem) noexcept {
+  return problem.c.element_type == gemm::ElementType::fp16 ||
+         problem.c.element_type == gemm::ElementType::bf16;
+}
+
+// cuBLASLt is free to select reduction trees whose final low-precision conversion differs by an
+// output ULP from the strict scalar reference. Keep the Phase 3 exact-proof path on the pedantic
+// cublasGemmEx implementation when FP32 accumulation is written to FP16/BF16 output.
+[[nodiscard]] bool cublas_lt_is_exact_proof_eligible(const gemm::GemmProblem& problem) noexcept {
+  return problem.compute_mode != gemm::ComputeMode::strict_fp32 ||
+         !uses_low_precision_output(problem);
 }
 
 class RuntimeSession;
@@ -364,14 +379,14 @@ public:
 
   [[nodiscard]] Error allocate(const xvram_allocation_desc_v1& desc,
                                std::shared_ptr<BackendAllocation>& output) override {
-    residency::RuntimeAllocation value;
-    std::uint64_t effective_alignment = 0;
-    const Error error = invoke_sync([&]() {
-      effective_alignment = runtime_.chunk_bytes();
+    std::shared_ptr<BackendAllocation> created;
+    const Error error = invoke_sync([&]() -> Error {
+      const std::uint64_t effective_alignment = runtime_.chunk_bytes();
       if (desc.alignment_bytes > effective_alignment) {
         return make_error(XVRAM_STATUS_INVALID_ARGUMENT, "allocation", "alignment",
                           "allocation alignment exceeds the runtime chunk alignment");
       }
+      residency::RuntimeAllocation value;
       const residency::RuntimeStatus status = runtime_.allocate(
           desc.size_bytes,
           desc.priority == XVRAM_ALLOCATION_HOT
@@ -379,17 +394,27 @@ public:
               : (desc.priority == XVRAM_ALLOCATION_STREAMING ? residency::ResidencyHint::streaming
                                                              : residency::ResidencyHint::normal),
           value);
-      return status == residency::RuntimeStatus::success ? Error{}
-                                                         : runtime_error(runtime_, status);
+      if (status != residency::RuntimeStatus::success) {
+        return runtime_error(runtime_, status);
+      }
+      xvram_allocation_desc_v1 normalized = desc;
+      if (normalized.alignment_bytes == 0) {
+        normalized.alignment_bytes = effective_alignment;
+      }
+      try {
+        created = std::make_shared<RuntimeAllocation>(shared_from_this(), value, normalized);
+      } catch (...) {
+        Error handle_error = exception_error("allocation_handle");
+        const residency::RuntimeStatus rollback = runtime_.release(value.id);
+        return rollback == residency::RuntimeStatus::success ? handle_error
+                                                             : runtime_error(runtime_, rollback);
+      }
+      return {};
     });
     if (error) {
       return error;
     }
-    xvram_allocation_desc_v1 normalized = desc;
-    if (normalized.alignment_bytes == 0) {
-      normalized.alignment_bytes = effective_alignment;
-    }
-    output = std::make_shared<RuntimeAllocation>(shared_from_this(), value, normalized);
+    output = std::move(created);
     return {};
   }
 
@@ -440,6 +465,12 @@ public:
               Error callback_error;
               const residency::RuntimeStatus status = runtime_.execute(
                   ranges, workspace_bytes, [&](const residency::TransactionContext& context) {
+                    if (Error deadline_error =
+                            progress.deadline_error("operation", "post_residency_deadline");
+                        deadline_error) {
+                      callback_error = std::move(deadline_error);
+                      return residency::RuntimeStatus::callback_skipped;
+                    }
                     std::vector<xvram_resolved_range_v1> resolved;
                     resolved.reserve(context.ranges.size());
                     for (const residency::ResolvedRange& range : context.ranges) {
@@ -500,6 +531,13 @@ public:
   [[nodiscard]] Error telemetry(xvram_session_telemetry_v1& output) const override {
     const std::scoped_lock lock(telemetry_mutex_);
     const residency::RuntimeTelemetry& source = telemetry_snapshot_;
+    output.flags = 0;
+    if (source.stable_addresses) {
+      output.flags |= XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES;
+    }
+    if (source.no_physical_aliases) {
+      output.flags |= XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES;
+    }
     output.cache_target_bytes = source.target_bytes;
     output.cache_target_minimum_bytes = source.target_minimum_bytes;
     output.cache_target_maximum_bytes = source.target_maximum_bytes;
@@ -672,6 +710,9 @@ public:
   [[nodiscard]] const xvram_session_config_v1& config() const noexcept {
     return config_;
   }
+  [[nodiscard]] std::uint64_t chunk_size_bytes() const noexcept override {
+    return runtime_.chunk_bytes();
+  }
   [[nodiscard]] const cublas::CublasDispatch& cublas_dispatch() const noexcept {
     return cublas_.dispatch();
   }
@@ -688,11 +729,13 @@ public:
     return cublas_lt_.get();
   }
   void record_algorithm(const cublas::PreferredGemmResult& result) noexcept {
-    if (result.path != cublas::PreferredGemmPath::cublas_lt || !result.lt) {
+    if (!result) {
       return;
     }
     const std::scoped_lock lock(telemetry_mutex_);
-    if (result.lt.algorithm_cache_hit) {
+    if (result.path == cublas::PreferredGemmPath::cublas_core) {
+      ++algorithm_selections_;
+    } else if (result.lt.algorithm_cache_hit) {
       ++algorithm_cache_hits_;
     } else {
       ++algorithm_selections_;
@@ -801,8 +844,12 @@ private:
       Error result;
       try {
         if (item.shutdown_after) {
-          const Error cublas_cleanup_error = destroy_cublas();
+          const bool quarantine = runtime_.async_completion_unknown();
+          const Error cublas_cleanup_error = quarantine ? abandon_cublas() : destroy_cublas();
           const residency::RuntimeStatus status = runtime_.close();
+          if (quarantine || runtime_.async_completion_unknown()) {
+            cuda_.abandon();
+          }
           result = cublas_cleanup_error ? cublas_cleanup_error
                                         : (status == residency::RuntimeStatus::success
                                                ? Error{}
@@ -899,12 +946,22 @@ private:
     }
     cublas_handle_ = nullptr;
     cublas_ready_ = false;
-    cublas_lt_available_ = false;
     return cleanup_status == cublas::abi::success
                ? Error{}
                : make_native_error(XVRAM_STATUS_CLEANUP_FAILED, XVRAM_NATIVE_ERROR_CUBLAS,
                                    cleanup_status, "cleanup", cleanup_operation, "cuBLAS",
                                    "cuBLAS handle destruction failed");
+  }
+
+  [[nodiscard]] Error abandon_cublas() noexcept {
+    if (cublas_lt_ != nullptr) {
+      cublas_lt_->abandon();
+      cublas_lt_.reset();
+    }
+    cublas_handle_ = nullptr;
+    cublas_ready_ = false;
+    cublas_.abandon();
+    return {};
   }
 
   void refresh_telemetry() noexcept {
@@ -1116,6 +1173,12 @@ public:
                 const residency::RuntimeStatus status = owner->runtime().execute(
                     working_set.accesses, request.workspace_cap_bytes,
                     [&](const residency::TransactionContext& context) {
+                      if (Error deadline_error =
+                              progress.deadline_error("gemm", "post_residency_deadline");
+                          deadline_error) {
+                        cublas_error = std::move(deadline_error);
+                        return residency::RuntimeStatus::callback_skipped;
+                      }
                       cublas_error = launch_tile(*owner, request, problem, tile, context);
                       return cublas_error ? residency::RuntimeStatus::callback_failed
                                           : residency::RuntimeStatus::success;
@@ -1451,9 +1514,10 @@ Error RuntimeSession::create_gemm_plan(const GemmRequest& request,
             ? XVRAM_COMPUTE_FP64
             : (problem.compute_mode == gemm::ComputeMode::fast_tf32 ? XVRAM_COMPUTE_FP32_TF32
                                                                     : XVRAM_COMPUTE_FP32_STRICT);
+    const bool use_cublas_lt = cublas_lt_ready() && cublas_lt_is_exact_proof_eligible(problem);
     output = std::make_shared<RuntimeGemmPlan>(shared_from_this(), std::move(normalized),
                                                std::move(problem), std::move(plan), effective,
-                                               cublas_lt_ready());
+                                               use_cublas_lt);
     return Error{};
   });
 }

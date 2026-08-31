@@ -352,7 +352,12 @@ template <typename Structure> [[nodiscard]] bool has_v1_size(const Structure* st
                                     "backend returned success without a session");
     }
 
-    auto state = std::make_shared<SessionState>(std::move(backend), config->chunk_size_bytes,
+    const std::uint64_t effective_chunk_bytes = backend->chunk_size_bytes();
+    if (effective_chunk_bytes == 0U) {
+      return xvram::sdk::make_error(XVRAM_STATUS_INTERNAL, "sdk", "session_create",
+                                    "backend reported a zero effective chunk size");
+    }
+    auto state = std::make_shared<SessionState>(std::move(backend), effective_chunk_bytes,
                                                 config->workspace_cap_bytes);
     auto* handle = new (std::nothrow) xvram_session_t{std::move(state)};
     if (handle == nullptr) {
@@ -466,8 +471,10 @@ allocation_create_entry(const xvram_session session, const xvram_allocation_desc
         (desc->alignment_bytes & (desc->alignment_bytes - 1U)) != 0U) {
       return invalid("allocation_create", "alignment must be zero or a power of two");
     }
-    if (desc->alignment_bytes > session->state->chunk_size_bytes) {
-      return invalid("allocation_create", "alignment exceeds the configured chunk size");
+    if (desc->alignment_bytes > session->state->chunk_size_bytes ||
+        (desc->alignment_bytes != 0U &&
+         session->state->chunk_size_bytes % desc->alignment_bytes != 0U)) {
+      return invalid("allocation_create", "alignment must divide the effective runtime chunk size");
     }
 
     std::shared_ptr<xvram::sdk::BackendAllocation> backend;

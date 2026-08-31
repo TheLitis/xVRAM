@@ -97,6 +97,8 @@ class BackendSession {
 public:
   virtual ~BackendSession() = default;
 
+  [[nodiscard]] virtual std::uint64_t chunk_size_bytes() const noexcept = 0;
+
   [[nodiscard]] virtual Error allocate(const xvram_allocation_desc_v1& desc,
                                        std::shared_ptr<BackendAllocation>& output) = 0;
   [[nodiscard]] virtual Error prefetch(const PrefetchRequest& request,

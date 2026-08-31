@@ -1036,9 +1036,15 @@ GemmPlan make_plan(const GemmProblem& problem, const PlannerConfig& config) {
     return fail(PlanError::workspace_exceeds_cache);
   }
 
+  // K-panel accumulation writes each partial result through C. A low-precision C would round
+  // between panels and violate the advertised FP32 accumulation semantics, so keep the complete
+  // K dimension in one library call unless C itself is FP32/FP64.
+  const bool requires_full_k =
+      problem.c.element_type == ElementType::fp16 || problem.c.element_type == ElementType::bf16;
   TileGeometry geometry{std::min(problem.m, config.preferred_geometry.m),
                         std::min(problem.n, config.preferred_geometry.n),
-                        std::min(problem.k, config.preferred_geometry.k)};
+                        requires_full_k ? problem.k
+                                        : std::min(problem.k, config.preferred_geometry.k)};
   const std::optional<std::uint64_t> initial_tile_count = tile_count(problem, geometry);
   if (!initial_tile_count.has_value()) {
     return fail(PlanError::tile_count_overflow);
@@ -1063,7 +1069,8 @@ GemmPlan make_plan(const GemmProblem& problem, const PlannerConfig& config) {
     const std::array reduced{
         TileGeometry{reduced_dimension(geometry.m, alignment), geometry.n, geometry.k},
         TileGeometry{geometry.m, reduced_dimension(geometry.n, alignment), geometry.k},
-        TileGeometry{geometry.m, geometry.n, reduced_dimension(geometry.k, alignment)},
+        TileGeometry{geometry.m, geometry.n,
+                     requires_full_k ? geometry.k : reduced_dimension(geometry.k, alignment)},
     };
     for (const TileGeometry& candidate_geometry : reduced) {
       if (candidate_geometry == geometry ||

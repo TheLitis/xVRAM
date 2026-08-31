@@ -152,8 +152,9 @@ equal to one. Event-safe write-back/reload preserves correctness if C does not r
 cuBLASLt is the preferred executor. Its heuristic selection is cached by complete tile
 signature, including dimensions, data types, layouts, transposes, compute mode, and
 workspace limit. If no compatible Lt algorithm exists, the executor falls back to the
-matching cuBLAS GEMM entry point. This is a known-operation wrapper; arbitrary cuBLAS
-calls are not intercepted.
+matching cuBLAS GEMM entry point. Strict FP16/BF16-output operations deliberately use
+the pedantic core cuBLAS path with reduced-precision reduction disabled and an unsplit K
+dimension. This is a known-operation wrapper; arbitrary cuBLAS calls are not intercepted.
 
 ## Backend strategy
 

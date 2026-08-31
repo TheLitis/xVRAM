@@ -195,6 +195,22 @@ void planner_tests() {
   CHECK(split_plan.tiles[2].k_count == 1);
   CHECK(split_plan.tiles[0].algorithm_signature.workspace.workspace_limit_bytes == 4096);
 
+  GemmProblem low_precision_output = split_k;
+  low_precision_output.a.element_type = ElementType::fp16;
+  low_precision_output.b.element_type = ElementType::fp16;
+  low_precision_output.c.element_type = ElementType::fp16;
+  low_precision_output.compute_mode = ComputeMode::strict_fp32;
+  const GemmPlan low_precision_plan = make_plan(low_precision_output, split_config);
+  CHECK(low_precision_plan);
+  CHECK(low_precision_plan.geometry.k == low_precision_output.k);
+  CHECK(low_precision_plan.tiles.size() == 1);
+
+  low_precision_output.c.element_type = ElementType::fp32;
+  const GemmPlan fp32_accumulator_plan = make_plan(low_precision_output, split_config);
+  CHECK(fp32_accumulator_plan);
+  CHECK(fp32_accumulator_plan.geometry.k == split_config.preferred_geometry.k);
+  CHECK(fp32_accumulator_plan.tiles.size() == split_plan.tiles.size());
+
   GemmProblem nonzero_beta = split_k;
   nonzero_beta.beta = 2.0;
   const GemmPlan beta_plan = make_plan(nonzero_beta, split_config);
@@ -411,6 +427,7 @@ struct FakeLtState {
   int heuristic_calls = 0;
   int matmul_calls = 0;
   int core_gemm_calls = 0;
+  xvram::cublas::abi::MathMode last_math_mode = xvram::cublas::abi::default_math;
   xvram::cublas::abi::Status destroy_status = xvram::cublas::abi::success;
   std::uint64_t workspace_limit = 0;
   std::array<std::uint32_t, 4> alignments{};
@@ -555,7 +572,9 @@ xvram::cublas::abi::Status fake_set_stream(xvram::cublas::abi::Handle, xvram::cu
   return xvram::cublas::abi::success;
 }
 
-xvram::cublas::abi::Status fake_set_math(xvram::cublas::abi::Handle, xvram::cublas::abi::MathMode) {
+xvram::cublas::abi::Status fake_set_math(xvram::cublas::abi::Handle,
+                                         const xvram::cublas::abi::MathMode mode) {
+  fake_lt.last_math_mode = mode;
   return xvram::cublas::abi::success;
 }
 
@@ -663,6 +682,44 @@ void cublas_lt_executor_tests() {
   request.signature.d.data_type = abi::data_bf16;
   CHECK(executor.execute(request));
 
+  CoreGemmRequest strict_low_precision;
+  strict_low_precision.m = 2;
+  strict_low_precision.n = 4;
+  strict_low_precision.k = 1025;
+  strict_low_precision.a = a.data();
+  strict_low_precision.lda = 2;
+  strict_low_precision.b = b.data();
+  strict_low_precision.ldb = 1025;
+  strict_low_precision.c = c.data();
+  strict_low_precision.ldc = 2;
+  strict_low_precision.compute_type = abi::compute_fp32_pedantic;
+  strict_low_precision.math_mode = abi::pedantic_math;
+  strict_low_precision.workspace = workspace.data();
+  strict_low_precision.workspace_bytes = workspace.size();
+  const auto core_handle = reinterpret_cast<abi::Handle>(&fake_lt);
+  for (const abi::DataType low_precision_type : {abi::data_fp16, abi::data_bf16}) {
+    request.signature.compute_type = abi::compute_fp32_pedantic;
+    request.signature.a.data_type = low_precision_type;
+    request.signature.b.data_type = low_precision_type;
+    request.signature.c.data_type = low_precision_type;
+    request.signature.d.data_type = low_precision_type;
+    strict_low_precision.a_type = low_precision_type;
+    strict_low_precision.b_type = low_precision_type;
+    strict_low_precision.c_type = low_precision_type;
+    const int matmul_calls_before = fake_lt.matmul_calls;
+    const int heuristic_calls_before = fake_lt.heuristic_calls;
+    const int core_calls_before = fake_lt.core_gemm_calls;
+    const PreferredGemmResult exact =
+        executor.execute_preferred(request, core_handle, strict_low_precision);
+    CHECK(exact);
+    CHECK(exact.path == PreferredGemmPath::cublas_core);
+    CHECK(fake_lt.matmul_calls == matmul_calls_before);
+    CHECK(fake_lt.heuristic_calls == heuristic_calls_before);
+    CHECK(fake_lt.core_gemm_calls == core_calls_before + 1);
+    CHECK(fake_lt.last_math_mode ==
+          (abi::pedantic_math | abi::disallow_reduced_precision_reduction));
+  }
+
   executor.cache().clear();
   request.signature.compute_type = abi::compute_fast_tf32;
   request.signature.a.data_type = abi::data_fp32;
@@ -684,18 +741,27 @@ void cublas_lt_executor_tests() {
   fallback.math_mode = abi::tf32_tensor_op_math;
   fallback.workspace = workspace.data();
   fallback.workspace_bytes = workspace.size();
-  const auto core_handle = reinterpret_cast<abi::Handle>(&fake_lt);
+  const int fallback_core_calls_before = fake_lt.core_gemm_calls;
   const PreferredGemmResult preferred = executor.execute_preferred(request, core_handle, fallback);
   CHECK(preferred);
   CHECK(preferred.path == PreferredGemmPath::cublas_core);
   CHECK(preferred.lt.code == LtExecutionCode::fallback_required);
-  CHECK(fake_lt.core_gemm_calls == 1);
+  CHECK(fake_lt.core_gemm_calls == fallback_core_calls_before + 1);
   fake_lt.destroy_status = abi::execution_failed;
   CHECK(executor.close() == abi::execution_failed);
   CHECK(fake_lt.destroy_calls == 1);
   CHECK(fake_lt.descriptor_creates == fake_lt.descriptor_destroys);
   CHECK(fake_lt.layout_creates == fake_lt.layout_destroys);
   CHECK(fake_lt.preference_creates == fake_lt.preference_destroys);
+
+  fake_lt.destroy_status = abi::success;
+  const int destroy_calls_before_abandon = fake_lt.destroy_calls;
+  {
+    LtMatmulExecutor abandoned(dispatch, 2);
+    CHECK(abandoned.initialize() == abi::success);
+    abandoned.abandon();
+  }
+  CHECK(fake_lt.destroy_calls == destroy_calls_before_abandon);
 }
 
 void cublas_optional_lt_loader_tests() {

@@ -119,14 +119,17 @@ declared range evictable until that event retires.
 The first known operation is ordinary real-valued GEMM. Its planner divides M, N, and K
 so each A/B/C tile working set and the bounded library workspace fit the live cache
 target. cuBLASLt is preferred and cached per tile signature, with cuBLAS GEMM as the
-compatibility fallback. FP16, BF16, FP32/TF32, and FP64, row/column-major layouts, and
-N/T operands are represented by ABI v1. Batching, complex values, fused epilogues,
-framework adapters, and transparent CUDA interception remain out of scope.
+compatibility fallback. Strict FP16/BF16-output proofs keep the complete K dimension in
+one tile and use the pedantic cuBLAS path with reduced-precision reduction disabled, so
+intermediate values are never rounded through low-precision C storage. FP16, BF16,
+FP32/TF32, and FP64, row/column-major layouts, and N/T operands are represented by ABI
+v1. Batching, complex values, fused epilogues, framework adapters, and transparent CUDA
+interception remain out of scope.
 
 `xvram-gemm-bench` is the isolated controller/worker hardware gate for this path. It
-validates tiled numerical output, reports algorithms, workspace and residency telemetry,
-and writes the strict `xvram.gemm_bench` v1 report without serializing raw CUDA virtual
-addresses.
+validates every pass of tiled numerical output, reports algorithms, workspace,
+GEMM-only throughput, end-to-end residency timing, and residency telemetry, and writes
+the strict `xvram.gemm_bench` v1 report without serializing raw CUDA virtual addresses.
 
 ## Build
 

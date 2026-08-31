@@ -100,6 +100,7 @@ public:
 
   // set_workspace and get_status_string are optional across supported redistributable versions.
   [[nodiscard]] bool has_optional_workspace_api() const noexcept;
+  void abandon() noexcept;
 
 private:
   void resolve_symbols();
@@ -302,6 +303,7 @@ public:
 
   [[nodiscard]] abi::Status initialize() noexcept;
   [[nodiscard]] abi::Status close() noexcept;
+  void abandon() noexcept;
   [[nodiscard]] bool ready() const noexcept;
   [[nodiscard]] abi::LtHandle handle() const noexcept;
   [[nodiscard]] std::size_t library_version() const noexcept;

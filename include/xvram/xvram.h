@@ -457,6 +457,11 @@ typedef struct xvram_session_telemetry_v1 {
 } xvram_session_telemetry_v1;
 
 enum {
+  XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES = 1U << 0U,
+  XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES = 1U << 1U
+};
+
+enum {
   XVRAM_CUBLAS_SOURCE_UNKNOWN = 0,
   XVRAM_CUBLAS_SOURCE_SYSTEM = 1,
   XVRAM_CUBLAS_SOURCE_APP_LOCAL = 2,

@@ -140,6 +140,11 @@ void DynamicLibrary::close() noexcept {
   loaded_name_.clear();
 }
 
+void DynamicLibrary::abandon() noexcept {
+  handle_ = nullptr;
+  loaded_name_.clear();
+}
+
 void* DynamicLibrary::symbol_address(const char* const name) const noexcept {
   if (handle_ == nullptr || name == nullptr) {
     return nullptr;

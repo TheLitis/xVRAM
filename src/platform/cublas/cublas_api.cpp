@@ -196,6 +196,12 @@ bool CublasApi::has_optional_workspace_api() const noexcept {
   return dispatch_.set_workspace != nullptr;
 }
 
+void CublasApi::abandon() noexcept {
+  core_library_.abandon();
+  lt_library_.abandon();
+  dispatch_ = {};
+}
+
 void CublasApi::resolve_symbols() {
   missing_symbols_.clear();
   require(core_library_, dispatch_.create, "cublasCreate_v2");
@@ -603,6 +609,11 @@ struct LtDescriptorSet {
   return status == abi::not_supported || status == abi::architecture_mismatch;
 }
 
+[[nodiscard]] bool requires_strict_low_precision_core(const CoreGemmRequest& request) noexcept {
+  return request.compute_type == abi::compute_fp32_pedantic &&
+         (request.c_type == abi::data_fp16 || request.c_type == abi::data_bf16);
+}
+
 [[nodiscard]] bool dispatch_supports_lt_execution(const CublasDispatch& dispatch) noexcept {
   return dispatch.lt_create != nullptr && dispatch.lt_destroy != nullptr &&
          dispatch.lt_matmul_desc_create != nullptr && dispatch.lt_matmul_desc_destroy != nullptr &&
@@ -638,7 +649,11 @@ CoreExecutionResult execute_core_gemm(const CublasDispatch& dispatch, const abi:
   if (status != abi::success) {
     return fail(status, "cublasSetStream_v2");
   }
-  status = dispatch.set_math_mode(handle, request.math_mode);
+  const abi::MathMode effective_math_mode =
+      requires_strict_low_precision_core(request)
+          ? request.math_mode | abi::disallow_reduced_precision_reduction
+          : request.math_mode;
+  status = dispatch.set_math_mode(handle, effective_math_mode);
   if (status != abi::success) {
     return fail(status, "cublasSetMathMode");
   }
@@ -705,6 +720,12 @@ abi::Status LtMatmulExecutor::close() noexcept {
   const abi::LtHandle handle = std::exchange(handle_, nullptr);
   return dispatch_ != nullptr && dispatch_->lt_destroy != nullptr ? dispatch_->lt_destroy(handle)
                                                                   : abi::not_initialized;
+}
+
+void LtMatmulExecutor::abandon() noexcept {
+  cache_.clear();
+  handle_ = nullptr;
+  library_version_ = 0;
 }
 
 bool LtMatmulExecutor::ready() const noexcept {
@@ -900,6 +921,11 @@ PreferredGemmResult
 LtMatmulExecutor::execute_preferred(const LtMatmulRequest& request, const abi::Handle core_handle,
                                     const std::optional<CoreGemmRequest>& core_fallback) {
   PreferredGemmResult result;
+  if (core_fallback.has_value() && requires_strict_low_precision_core(*core_fallback)) {
+    result.core = execute_core_gemm(*dispatch_, core_handle, *core_fallback);
+    result.path = PreferredGemmPath::cublas_core;
+    return result;
+  }
   result.lt = execute(request);
   if (result.lt) {
     result.path = PreferredGemmPath::cublas_lt;

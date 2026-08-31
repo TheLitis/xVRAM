@@ -18,6 +18,7 @@
 #include <ctime>
 #include <iomanip>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -191,6 +192,24 @@ struct MatrixStorage {
   return left + right;
 }
 
+[[nodiscard]] std::optional<std::uint64_t>
+checked_least_common_multiple(const std::uint64_t left, const std::uint64_t right) noexcept {
+  if (left == 0 || right == 0) {
+    return std::nullopt;
+  }
+  return checked_multiply(left / std::gcd(left, right), right);
+}
+
+[[nodiscard]] std::optional<std::uint64_t>
+checked_align_up(const std::uint64_t value, const std::uint64_t alignment) noexcept {
+  if (alignment == 0) {
+    return std::nullopt;
+  }
+  const std::uint64_t remainder = value % alignment;
+  return remainder == 0 ? std::optional<std::uint64_t>{value}
+                        : checked_add(value, alignment - remainder);
+}
+
 [[nodiscard]] std::optional<MatrixStorage> matrix_storage(const std::uint64_t rows,
                                                           const std::uint64_t columns,
                                                           const RequestedLayout layout,
@@ -289,12 +308,10 @@ void fail_report(Report& report, const int exit_code, std::string reason, std::s
   return api.status_name(status);
 }
 
-[[nodiscard]] bool write_pattern_allocation(const xvram_api_v1& api,
-                                            const xvram_allocation allocation,
-                                            const std::uint64_t bytes, const PatternMatrix& matrix,
-                                            const PatternOperand operand,
-                                            const PatternProblem& problem,
-                                            std::vector<std::byte>& buffer) {
+[[nodiscard]] bool write_pattern_allocation(
+    const xvram_api_v1& api, const xvram_allocation allocation, const std::uint64_t bytes,
+    const PatternMatrix& matrix, const PatternOperand operand, const PatternProblem& problem,
+    std::vector<std::byte>& buffer, const std::function<void(std::uint64_t)>& progress) {
   std::uint64_t offset = 0;
   while (offset < bytes) {
     const std::uint64_t batch = std::min<std::uint64_t>(buffer.size(), bytes - offset);
@@ -306,6 +323,9 @@ void fail_report(Report& report, const int exit_code, std::string reason, std::s
       return false;
     }
     offset += batch;
+    if (progress) {
+      progress(offset);
+    }
   }
   return true;
 }
@@ -486,10 +506,25 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
     return report;
   }
 
+  const std::uint64_t minimum_granularity = device_info.minimum_granularity_bytes.value_or(0);
+  const std::uint64_t recommended_granularity =
+      device_info.recommended_granularity_bytes.value_or(minimum_granularity);
+  const auto common_granularity =
+      checked_least_common_multiple(minimum_granularity, recommended_granularity);
+  const auto effective_chunk_bytes =
+      common_granularity.has_value() ? checked_align_up(options.chunk_bytes, *common_granularity)
+                                     : std::nullopt;
+  if (!effective_chunk_bytes.has_value() || *effective_chunk_bytes == 0) {
+    fail_report(report, exit_prerequisite, "invalid_granularity", "preflight",
+                "allocation_granularity",
+                "CUDA VMM granularities cannot represent the requested chunk size");
+    return report;
+  }
+
   const auto safe_host_limit =
       safe_host_logical_limit(HostSizingInput{report.system.physical_memory_bytes.value_or(0),
                                               report.system.available_memory_bytes.value_or(0),
-                                              options.chunk_bytes, options.staging_slots});
+                                              *effective_chunk_bytes, options.staging_slots});
   if (!safe_host_limit.has_value()) {
     fail_report(report, exit_oom, "insufficient_host_memory", "planning", "host_memory",
                 "safe pageable GEMM backing limit is unavailable");
@@ -504,7 +539,7 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
   }
   xvram_session_config_v1 session_config = XVRAM_SESSION_CONFIG_V1_INIT;
   session_config.device_ordinal = options.device_ordinal;
-  session_config.chunk_size_bytes = options.chunk_bytes;
+  session_config.chunk_size_bytes = *effective_chunk_bytes;
   session_config.cache_target_bytes = options.cache_target_bytes.value_or(0);
   session_config.device_headroom_bytes = options.device_headroom_bytes;
   session_config.workspace_cap_bytes = options.workspace_bytes;
@@ -580,8 +615,12 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
     const auto logical_bytes = ab_bytes.has_value() && c_storage.has_value()
                                    ? checked_add(*ab_bytes, c_storage->bytes)
                                    : std::nullopt;
+    const auto verification_stream_bytes =
+        c_storage.has_value()
+            ? checked_multiply(c_storage->bytes, static_cast<std::uint64_t>(options.passes))
+            : std::nullopt;
     if (!a_storage.has_value() || !b_storage.has_value() || !c_storage.has_value() ||
-        !logical_bytes.has_value()) {
+        !logical_bytes.has_value() || !verification_stream_bytes.has_value()) {
       fail_report(report, exit_prerequisite, "invalid_configuration", "planning", "matrix_storage",
                   "matrix storage size overflowed");
       all_match = false;
@@ -601,13 +640,22 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
     xvram_allocation c = nullptr;
     allocation_desc.size_bytes = a_storage->bytes;
     xvram_status status = api.allocation_create(session, &allocation_desc, &a);
+    if (status == XVRAM_STATUS_SUCCESS && progress) {
+      progress(report, 1, 3);
+    }
     if (status == XVRAM_STATUS_SUCCESS) {
       allocation_desc.size_bytes = b_storage->bytes;
       status = api.allocation_create(session, &allocation_desc, &b);
+      if (status == XVRAM_STATUS_SUCCESS && progress) {
+        progress(report, 2, 3);
+      }
     }
     if (status == XVRAM_STATUS_SUCCESS) {
       allocation_desc.size_bytes = c_storage->bytes;
       status = api.allocation_create(session, &allocation_desc, &c);
+      if (status == XVRAM_STATUS_SUCCESS && progress) {
+        progress(report, 3, 3);
+      }
     }
     if (status != XVRAM_STATUS_SUCCESS) {
       fail_report(report, exit_code_for_status(status), "host_oom", "allocation",
@@ -635,10 +683,20 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
                                   options.b_layout, type};
     const PatternMatrix c_pattern{c_storage->rows, c_storage->columns, c_storage->leading_dimension,
                                   options.c_layout, type};
+    const auto a_initialization_progress = [&](const std::uint64_t bytes_completed) {
+      if (progress) {
+        progress(report, bytes_completed, *ab_bytes);
+      }
+    };
+    const auto b_initialization_progress = [&](const std::uint64_t bytes_completed) {
+      if (progress) {
+        progress(report, a_storage->bytes + bytes_completed, *ab_bytes);
+      }
+    };
     if (!write_pattern_allocation(api, a, a_storage->bytes, a_pattern, PatternOperand::a,
-                                  pattern_problem, io_buffer) ||
+                                  pattern_problem, io_buffer, a_initialization_progress) ||
         !write_pattern_allocation(api, b, b_storage->bytes, b_pattern, PatternOperand::b,
-                                  pattern_problem, io_buffer)) {
+                                  pattern_problem, io_buffer, b_initialization_progress)) {
       fail_report(report, exit_failure, "platform_error", "initialization", "allocation_write",
                   "failed to initialize structured GEMM operands");
       (void)api.allocation_release(a);
@@ -714,10 +772,79 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
     workload.tiles_total = plan_info.tile_count * options.passes;
     workload.logical_allocation_bytes = *logical_bytes;
     workload.oversubscribed = *logical_bytes > device_info.total_memory_bytes;
+    const std::uint64_t verify_batch = std::min<std::uint64_t>(io_batch_bytes, c_storage->bytes);
+    io_buffer.resize(static_cast<std::size_t>(verify_batch));
+    std::vector<std::byte> expected_buffer(io_buffer.size());
+    const double tolerance = type == RequestedDataType::fp16
+                                 ? 0.5
+                                 : (type == RequestedDataType::bf16
+                                        ? 2.0
+                                        : (type == RequestedDataType::fp32 ? 1.0e-4 : 1.0e-10));
+    maximum_absolute_tolerance = std::max(maximum_absolute_tolerance, tolerance);
+    bool reference_ok = true;
+    xvram_status verification_status = XVRAM_STATUS_SUCCESS;
+    const auto verify_output = [&](const std::uint32_t pass) {
+      std::uint64_t offset = 0;
+      const std::uint64_t pass_offset = static_cast<std::uint64_t>(pass) * c_storage->bytes;
+      while (offset < c_storage->bytes) {
+        const std::uint64_t batch =
+            std::min<std::uint64_t>(io_buffer.size(), c_storage->bytes - offset);
+        verification_status = api.allocation_read(c, offset, io_buffer.data(), batch);
+        if (verification_status != XVRAM_STATUS_SUCCESS) {
+          return false;
+        }
+        expected_buffer.resize(static_cast<std::size_t>(batch));
+        if (!fill_pattern_bytes(expected_buffer, offset, c_pattern, PatternOperand::expected_c,
+                                pattern_problem)) {
+          reference_ok = false;
+          return false;
+        }
+        const std::uint64_t stride = item_bytes;
+        for (std::uint64_t byte = 0; byte < batch; byte += stride) {
+          const auto actual = decode_pattern_value(
+              std::span<const std::byte>(io_buffer.data() + byte, static_cast<std::size_t>(stride)),
+              type);
+          const auto expected =
+              decode_pattern_value(std::span<const std::byte>(expected_buffer.data() + byte,
+                                                              static_cast<std::size_t>(stride)),
+                                   type);
+          if (!actual.has_value() || !expected.has_value()) {
+            reference_ok = false;
+            return false;
+          }
+          const double absolute_error = std::abs(*actual - *expected);
+          const double relative_error =
+              *expected == 0.0 ? absolute_error : absolute_error / std::abs(*expected);
+          maximum_absolute_error = std::max(maximum_absolute_error, absolute_error);
+          maximum_relative_error = std::max(maximum_relative_error, relative_error);
+          if (!std::isfinite(*actual) || absolute_error > tolerance) {
+            ++mismatches;
+            all_match = false;
+            case_match = false;
+            if (!first_mismatch.has_value()) {
+              first_mismatch = offset + byte;
+            }
+          }
+          ++verified_elements;
+        }
+        const std::span<const std::byte> actual_bytes(io_buffer.data(),
+                                                      static_cast<std::size_t>(batch));
+        actual_digest.update(actual_bytes, pass_offset + offset);
+        case_actual_digest.update(actual_bytes, pass_offset + offset);
+        expected_digest.update(expected_buffer, pass_offset + offset);
+        case_expected_digest.update(expected_buffer, pass_offset + offset);
+        offset += batch;
+        if (progress) {
+          progress(report, pass_offset + offset, *verification_stream_bytes);
+        }
+      }
+      return true;
+    };
     xvram_session_telemetry_v1 workload_before{};
     workload_before.struct_size = sizeof(workload_before);
     (void)api.session_get_telemetry(session, &workload_before);
     const Clock::time_point workload_started = Clock::now();
+    double case_gemm_elapsed_ms = 0.0;
     std::optional<xvram_error_info_v1> operation_failure;
     for (std::uint32_t pass = 0; pass < options.passes; ++pass) {
       const Clock::time_point gemm_started = Clock::now();
@@ -754,9 +881,14 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
         }
       }
       api.operation_release(operation);
-      gemm_timings.add(
-          std::chrono::duration<double, std::milli>(Clock::now() - gemm_started).count());
+      const double gemm_elapsed_ms =
+          std::chrono::duration<double, std::milli>(Clock::now() - gemm_started).count();
+      gemm_timings.add(gemm_elapsed_ms);
+      case_gemm_elapsed_ms += gemm_elapsed_ms;
       if (status != XVRAM_STATUS_SUCCESS) {
+        break;
+      }
+      if (!verify_output(pass)) {
         break;
       }
       ++workload.passes_completed;
@@ -766,11 +898,11 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
         std::chrono::duration<double, std::milli>(Clock::now() - workload_started).count();
     const long double operation_count =
         2.0L * static_cast<long double>(shape.m) * static_cast<long double>(shape.n) *
-        static_cast<long double>(shape.k) * static_cast<long double>(options.passes);
+        static_cast<long double>(shape.k) * static_cast<long double>(workload.passes_completed);
     workload.achieved_tflops =
-        *workload.elapsed_ms > 0.0
+        case_gemm_elapsed_ms > 0.0
             ? static_cast<double>(operation_count /
-                                  (static_cast<long double>(*workload.elapsed_ms) * 1.0e9L))
+                                  (static_cast<long double>(case_gemm_elapsed_ms) * 1.0e9L))
             : 0.0;
     if (status != XVRAM_STATUS_SUCCESS) {
       const std::string message =
@@ -797,79 +929,16 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
       break;
     }
 
-    const std::uint64_t verify_batch = std::min<std::uint64_t>(io_batch_bytes, c_storage->bytes);
-    io_buffer.resize(static_cast<std::size_t>(verify_batch));
-    std::vector<std::byte> expected_buffer(io_buffer.size());
-    const double tolerance = type == RequestedDataType::fp16
-                                 ? 0.5
-                                 : (type == RequestedDataType::bf16
-                                        ? 2.0
-                                        : (type == RequestedDataType::fp32 ? 1.0e-4 : 1.0e-10));
-    maximum_absolute_tolerance = std::max(maximum_absolute_tolerance, tolerance);
-    bool reference_ok = true;
-    std::uint64_t offset = 0;
-    while (offset < c_storage->bytes) {
-      const std::uint64_t batch =
-          std::min<std::uint64_t>(io_buffer.size(), c_storage->bytes - offset);
-      status = api.allocation_read(c, offset, io_buffer.data(), batch);
-      if (status != XVRAM_STATUS_SUCCESS) {
-        break;
-      }
-      expected_buffer.resize(static_cast<std::size_t>(batch));
-      if (!fill_pattern_bytes(expected_buffer, offset, c_pattern, PatternOperand::expected_c,
-                              pattern_problem)) {
-        reference_ok = false;
-        break;
-      }
-      const std::uint64_t stride = item_bytes;
-      for (std::uint64_t byte = 0; byte < batch; byte += stride) {
-        const auto actual = decode_pattern_value(
-            std::span<const std::byte>(io_buffer.data() + byte, static_cast<std::size_t>(stride)),
-            type);
-        const auto expected =
-            decode_pattern_value(std::span<const std::byte>(expected_buffer.data() + byte,
-                                                            static_cast<std::size_t>(stride)),
-                                 type);
-        if (!actual.has_value() || !expected.has_value()) {
-          reference_ok = false;
-          break;
-        }
-        const double absolute_error = std::abs(*actual - *expected);
-        const double relative_error =
-            *expected == 0.0 ? absolute_error : absolute_error / std::abs(*expected);
-        maximum_absolute_error = std::max(maximum_absolute_error, absolute_error);
-        maximum_relative_error = std::max(maximum_relative_error, relative_error);
-        if (!std::isfinite(*actual) || absolute_error > tolerance) {
-          ++mismatches;
-          all_match = false;
-          case_match = false;
-          if (!first_mismatch.has_value()) {
-            first_mismatch = offset + byte;
-          }
-        }
-        ++verified_elements;
-      }
-      if (!reference_ok) {
-        break;
-      }
-      const std::span<const std::byte> actual_bytes(io_buffer.data(),
-                                                    static_cast<std::size_t>(batch));
-      actual_digest.update(actual_bytes, offset);
-      case_actual_digest.update(actual_bytes, offset);
-      expected_digest.update(expected_buffer, offset);
-      case_expected_digest.update(expected_buffer, offset);
-      offset += batch;
-    }
     if (!reference_ok) {
       fail_report(report, exit_failure, "internal_error", "verification", "generate_reference",
                   "failed to generate the deterministic physical C reference");
       all_match = false;
-    } else if (status != XVRAM_STATUS_SUCCESS) {
-      fail_report(report, exit_code_for_status(status), "cuda_error", "verification",
-                  "allocation_read", error_message(api, session, status));
+    } else if (verification_status != XVRAM_STATUS_SUCCESS) {
+      fail_report(report, exit_code_for_status(verification_status), "cuda_error", "verification",
+                  "allocation_read", error_message(api, session, verification_status));
       all_match = false;
     }
-    case_match = case_match && reference_ok && status == XVRAM_STATUS_SUCCESS &&
+    case_match = case_match && reference_ok && verification_status == XVRAM_STATUS_SUCCESS &&
                  case_actual_digest.format() == case_expected_digest.format();
     all_match = all_match && case_match;
     workload.status = case_match ? "completed" : "failed";
@@ -937,7 +1006,7 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
                                         ? std::string{}
                                         : error_message(api, session, close_status);
   api.session_release(session);
-  report.configuration.effective_chunk_bytes = options.chunk_bytes;
+  report.configuration.effective_chunk_bytes = *effective_chunk_bytes;
   report.configuration.initial_cache_target_bytes = initial_telemetry.cache_target_bytes;
   report.configuration.effective_workspace_cap_bytes = options.workspace_bytes;
   report.cache.target_bytes_initial = initial_telemetry.cache_target_bytes;
@@ -947,8 +1016,7 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
   report.cache.resident_bytes_peak = telemetry.resident_bytes_peak;
   report.cache.pinned_staging_bytes = telemetry.pinned_staging_bytes;
   report.cache.workspace_bytes_peak = telemetry.workspace_bytes;
-  report.cache.physical_frame_count_peak =
-      options.chunk_bytes == 0 ? 0 : telemetry.resident_bytes_peak / options.chunk_bytes;
+  report.cache.physical_frame_count_peak = telemetry.resident_bytes_peak / *effective_chunk_bytes;
   report.cache.physical_handle_create_count = telemetry.physical_handles_created;
   report.cache.physical_handle_release_count = telemetry.physical_handles_released;
   report.cache.handle_reuse_count = telemetry.handle_reuses;
@@ -1037,12 +1105,14 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
         return item.tiles_total != 0 && item.tiles_retired == item.tiles_total;
       });
   report.proof.handles_reused = telemetry.handle_reuses > 0;
-  report.proof.stable_virtual_addresses_verified = telemetry.unsafe_remaps == 0;
+  report.proof.stable_virtual_addresses_verified =
+      (telemetry.flags & XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES) != 0U;
   report.proof.set_access_after_map_verified = telemetry.mappings == telemetry.set_access_calls;
   report.proof.event_boundaries_verified = telemetry.mappings == telemetry.unmaps &&
                                            telemetry.unmaps == telemetry.event_boundaries &&
                                            telemetry.unsafe_remaps == 0;
-  report.proof.no_physical_aliases_verified = telemetry.unsafe_remaps == 0;
+  report.proof.no_physical_aliases_verified =
+      (telemetry.flags & XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES) != 0U;
   report.proof.dirty_writeback_verified = telemetry.writebacks_completed > 0;
   report.proof.cache_target_respected =
       telemetry.resident_bytes_peak <= telemetry.cache_target_maximum_bytes &&

@@ -169,6 +169,7 @@ struct FakeCuda {
   FaultInjection injection;
   std::uint64_t free_memory_bytes = 16ULL * mib;
   std::uint64_t total_memory_bytes = 16ULL * mib;
+  std::optional<std::uint64_t> free_memory_after_create_fault;
   bool event_fault_used = false;
   bool unmap_fault_used = false;
   bool quarantined_release_observed = false;
@@ -478,6 +479,9 @@ Result CUDAAPI fake_address_free(const DevicePointer address, const std::size_t 
 Result CUDAAPI fake_mem_create(GenericAllocationHandle* handle, const std::size_t bytes,
                                const CUmemAllocationProp*, unsigned long long) {
   if (fake().injection.should_inject(FaultSite::memory_create)) {
+    if (fake().free_memory_after_create_fault.has_value()) {
+      fake().free_memory_bytes = *fake().free_memory_after_create_fault;
+    }
     return fake().injection.result;
   }
   const GenericAllocationHandle created = fake().next_handle++;
@@ -744,6 +748,7 @@ Result CUDAAPI fake_event_destroy(const Event event) {
 
 Result CUDAAPI fake_event_record(const Event event, const Stream stream) {
   if (fake().injection.should_inject(FaultSite::event_record)) {
+    fake().event_fault_used = true;
     return fake().injection.result;
   }
   const auto event_state = fake().events.find(event);
@@ -1140,6 +1145,77 @@ void runtime_allocation_release_unmaps_test() {
                     [](const auto& pair) { return pair.second.released; }));
 }
 
+void runtime_safe_callback_skip_keeps_session_reusable_test() {
+  const CheckContext context("runtime safe callback skip keeps session reusable");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
+
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::callback_skipped;
+  }) == xvram::residency::RuntimeStatus::callback_skipped);
+  CHECK(!runtime.poisoned());
+  CHECK(!runtime.telemetry().quarantined);
+  CHECK(runtime.telemetry().transactions_completed == 0U);
+
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().transactions_completed == 1U);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_failed_callback_retires_before_poison_test() {
+  const CheckContext context("runtime failed callback retires before logical poison");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
+
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::callback_failed;
+  }) == xvram::residency::RuntimeStatus::callback_failed);
+  CHECK(runtime.poisoned());
+  CHECK(!runtime.async_completion_unknown());
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.pinned.empty());
+  CHECK(cuda.events.empty());
+  CHECK(cuda.streams.empty());
+  CHECK(cuda.violations.empty());
+}
+
 void runtime_set_access_rollback_test() {
   const CheckContext context("runtime SetAccess rollback");
   FakeCuda cuda;
@@ -1216,20 +1292,18 @@ void runtime_set_access_rollback_quarantine_test() {
   CHECK(runtime.telemetry().quarantined);
   CHECK(cuda.mappings.size() == 1U);
   CHECK(cuda.reservations.size() == 1U);
-  CHECK(cuda.release_calls == 0U);
-  CHECK(std::none_of(cuda.physical.begin(), cuda.physical.end(),
-                     [](const auto& pair) { return pair.second.released; }));
-
-  // The failed rollback remains fully represented, so close can safely retry it. A one-shot
-  // unmap fault must not turn into a release of a still-mapped physical handle.
-  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
-  CHECK(cuda.unmap_calls == 2U);
-  CHECK(cuda.mappings.empty());
-  CHECK(cuda.reservations.empty());
-  CHECK(!cuda.quarantined_release_observed);
-  CHECK(cuda.violations.empty());
+  CHECK(cuda.release_calls == 1U);
   CHECK(std::all_of(cuda.physical.begin(), cuda.physical.end(),
                     [](const auto& pair) { return pair.second.released; }));
+
+  // A failed unmap is the worker quarantine boundary. The handle is released, while the mapping
+  // and its exact reservation remain represented until process exit and are never retried.
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(cuda.unmap_calls == 1U);
+  CHECK(cuda.mappings.size() == 1U);
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(cuda.quarantined_release_observed);
+  CHECK(cuda.violations.empty());
 }
 
 void runtime_close_attempts_every_mapping_test() {
@@ -1383,6 +1457,47 @@ void runtime_retries_one_frame_oom_test() {
   CHECK(cuda.violations.empty());
 }
 
+void runtime_oom_shrink_defers_pinned_working_set_test() {
+  const CheckContext context("runtime OOM shrink defers a pinned working set");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(2ULL * chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+
+  cuda.injection.site = FaultSite::memory_create;
+  cuda.injection.result = CUDA_ERROR_OUT_OF_MEMORY;
+  cuda.injection.calls_to_skip = 1;
+  cuda.free_memory_after_create_fault = 0;
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, 2ULL * chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::budget_pressure);
+  CHECK(cuda.injection.triggered);
+  CHECK(!runtime.poisoned());
+  CHECK(!runtime.telemetry().quarantined);
+  CHECK(runtime.telemetry().unsafe_remaps == 0U);
+  CHECK(runtime.telemetry().target_oom_retries == 1U);
+  CHECK(runtime.telemetry().budget_shrinks == 1U);
+  CHECK(cuda.unmap_calls == 1U);
+  CHECK(cuda.release_calls == 1U);
+  CHECK(cuda.mappings.empty());
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
 void runtime_stall_timeout_quarantines_generation_test() {
   const CheckContext context("runtime stall timeout quarantines the in-flight generation");
   FakeCuda cuda;
@@ -1419,6 +1534,50 @@ void runtime_stall_timeout_quarantines_generation_test() {
   CHECK(cuda.map_calls == mappings_before_retry);
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
   CHECK(cuda.release_calls > 0);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_event_record_failure_preserves_async_resources_test() {
+  const CheckContext context("runtime event-record failure preserves asynchronous resources");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+
+  cuda.injection.site = FaultSite::event_record;
+  cuda.injection.result = CUDA_ERROR_UNKNOWN;
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::poisoned);
+  CHECK(runtime.poisoned());
+  CHECK(runtime.telemetry().quarantined);
+  const std::size_t pinned_before_close = cuda.pinned.size();
+  const std::size_t events_before_close = cuda.events.size();
+  const std::size_t streams_before_close = cuda.streams.size();
+
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(cuda.release_calls > 0);
+  CHECK(cuda.quarantined_release_observed);
+  CHECK(cuda.pinned.size() == pinned_before_close);
+  CHECK(cuda.events.size() == events_before_close);
+  CHECK(cuda.streams.size() == streams_before_close);
+  CHECK(cuda.destroyed_contexts.empty());
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(cuda.mappings.size() == 1U);
   CHECK(cuda.violations.empty());
 }
 
@@ -1794,13 +1953,17 @@ void fault_injection_matrix_test() {
 int main() {
   completed_sequential_test();
   runtime_allocation_release_unmaps_test();
+  runtime_safe_callback_skip_keeps_session_reusable_test();
+  runtime_failed_callback_retires_before_poison_test();
   runtime_set_access_rollback_test();
   runtime_set_access_rollback_quarantine_test();
   runtime_close_attempts_every_mapping_test();
   runtime_attach_current_context_ownership_test();
   runtime_staging_pool_configuration_test();
   runtime_retries_one_frame_oom_test();
+  runtime_oom_shrink_defers_pinned_working_set_test();
   runtime_stall_timeout_quarantines_generation_test();
+  runtime_event_record_failure_preserves_async_resources_test();
   runtime_budget_pressure_shrinks_before_failure_test();
   runtime_explicit_target_is_post_headroom_cap_test();
   invalid_event_query_test();

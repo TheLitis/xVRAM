@@ -66,6 +66,7 @@ inline constexpr ComputeType compute_fast_tf32 = 77;
 inline constexpr MathMode default_math = 0;
 inline constexpr MathMode pedantic_math = 2;
 inline constexpr MathMode tf32_tensor_op_math = 3;
+inline constexpr MathMode disallow_reduced_precision_reduction = 16;
 inline constexpr GemmAlgorithm gemm_default = -1;
 
 // CUDA 13.3 / libcublas 13.5 public cuBLASLt ABI values. These values are also present in

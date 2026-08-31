@@ -81,4 +81,8 @@ const std::string& CudaApi::error() const noexcept {
   return library_.error();
 }
 
+void CudaApi::abandon() noexcept {
+  library_.abandon();
+}
+
 } // namespace xvram::cuda

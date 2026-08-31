@@ -24,6 +24,7 @@ enum class RuntimeStatus {
   device_oom,
   budget_pressure,
   timeout,
+  callback_skipped,
   callback_failed,
   cuda_failure,
   poisoned,
@@ -122,6 +123,7 @@ struct RuntimeTelemetry {
   std::uint64_t resident_peak_bytes = 0;
   double last_transaction_ms = 0.0;
   bool stable_addresses = true;
+  bool no_physical_aliases = true;
   bool quarantined = false;
 };
 
@@ -158,6 +160,7 @@ public:
   [[nodiscard]] const RuntimeTelemetry& telemetry() const noexcept;
   [[nodiscard]] const RuntimeError& error() const noexcept;
   [[nodiscard]] bool poisoned() const noexcept;
+  [[nodiscard]] bool async_completion_unknown() const noexcept;
 
 private:
   class Impl;

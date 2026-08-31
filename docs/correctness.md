@@ -25,6 +25,10 @@ tile are contiguous, and event-safe write-back/reload preserves accumulation if 
 not remain resident. If budget shrink makes the next tile impossible, it drains and
 returns budget pressure; it never launches against a partial working set.
 
+FP16/BF16 inputs accumulate in FP32. K-panel splitting is used only when C is FP32 (or
+FP64 for FP64 compute); a low-precision C keeps the complete K dimension in one library
+call so partial sums are never rounded through FP16/BF16 storage between panels.
+
 ## Error handling
 
 - Every CUDA and platform result is checked and retained in the diagnostic report.
@@ -57,8 +61,9 @@ transaction callback is trusted in-process code, but its contract is deliberatel
 narrow: enqueue only on the supplied stream, do not synchronize or replace the current
 context, and do not retain any resolved device address or workspace pointer. The runtime
 records a completion event immediately after callback return. A non-success callback
-result fails the operation; if the callback may already have submitted work, the session
-is conservatively poisoned and accepts no later operation.
+result fails the operation; any submitted work is retired through its event generation
+before the pinned ranges are released, then the session is conservatively poisoned and
+accepts no later operation.
 
 Isolated sessions own and destroy their CUDA context. Attach-current sessions borrow the
 context captured during creation and only push/pop it on the worker thread. They never
@@ -71,6 +76,9 @@ poisons the worker. On Windows, a GEMM tile observation above 250 ms prevents a
 subsequent tile launch and reports watchdog risk. A
 failed unmap still releases the physical handle, deliberately retains the reservation,
 marks cleanup incomplete, and relies on worker-process exit as the quarantine boundary.
+If asynchronous completion cannot be established, the runtime also deliberately
+abandons owned CUDA modules, cuBLAS handles, streams, events, pinned buffers, and the
+isolated context so no implicit destroy-time synchronization can cross that boundary.
 
 ## Validation strategy
 
@@ -106,4 +114,7 @@ tolerances. Oversubscribed cases use deterministic structured operands whose ful
 can be evaluated in O(M x N), so validation does not require a second O(M x N x K) host
 GEMM. Acceptance requires finite outputs, zero out-of-tolerance elements, matching
 digests for equivalent plans, event-safe map/access/unmap accounting, a bounded working
-set and workspace, complete cleanup, and no residual worker.
+set and workspace, complete cleanup, and no residual worker. Every requested pass is
+read back, fully checked, and included in the validation digest; `elements_verified`
+therefore equals M x N x passes. Reported TFLOPS uses only measured library GEMM time,
+while workload elapsed time remains the complete residency-and-validation observation.

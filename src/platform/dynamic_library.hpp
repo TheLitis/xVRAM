@@ -22,6 +22,9 @@ public:
   [[nodiscard]] bool open_system(std::initializer_list<std::string_view> candidates);
   [[nodiscard]] bool open_absolute(const std::filesystem::path& path);
   void close() noexcept;
+  // Deliberately retain the OS module reference until process exit. Quarantine paths use this
+  // when a live library-owned GPU handle cannot be synchronized or destroyed safely.
+  void abandon() noexcept;
 
   template <typename Function> [[nodiscard]] Function symbol(const char* name) const noexcept {
     static_assert(std::is_pointer_v<Function> && std::is_trivially_copyable_v<Function>);

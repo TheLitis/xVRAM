@@ -691,10 +691,12 @@ void mark_progress_snapshot(xvram::gemm_bench::Report& report) {
     }
   });
 
-  const auto progress = [&](const xvram::gemm_bench::Report& execution, const std::uint64_t,
-                            const std::uint64_t) {
+  const auto progress = [&](const xvram::gemm_bench::Report& execution,
+                            const std::uint64_t completed, const std::uint64_t total) {
     xvram::gemm_bench::Report snapshot = execution;
     mark_progress_snapshot(snapshot);
+    snapshot.outcome.message = "worker made measurable progress: " + std::to_string(completed) +
+                               "/" + std::to_string(total);
     std::scoped_lock snapshot_lock(snapshot_mutex);
     latest_snapshot = std::move(snapshot);
   };

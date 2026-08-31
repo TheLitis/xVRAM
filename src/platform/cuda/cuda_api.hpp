@@ -25,6 +25,7 @@ public:
   [[nodiscard]] LoadResult load();
   [[nodiscard]] const std::string& loaded_name() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
+  void abandon() noexcept;
 
   abi::Init init_ = nullptr;
   abi::DriverGetVersion driver_get_version_ = nullptr;

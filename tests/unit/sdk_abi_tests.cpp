@@ -165,6 +165,12 @@ public:
 
 class FakeSession final : public xvram::sdk::BackendSession {
 public:
+  explicit FakeSession(const std::uint64_t chunk_bytes) : chunk_bytes_(chunk_bytes) {}
+
+  [[nodiscard]] std::uint64_t chunk_size_bytes() const noexcept override {
+    return chunk_bytes_;
+  }
+
   [[nodiscard]] xvram::sdk::Error
   allocate(const xvram_allocation_desc_v1&,
            std::shared_ptr<xvram::sdk::BackendAllocation>& output) override {
@@ -204,6 +210,7 @@ public:
   }
 
   [[nodiscard]] xvram::sdk::Error telemetry(xvram_session_telemetry_v1& output) const override {
+    output.flags = XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES | XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES;
     output.cache_target_bytes = 512;
     output.cublas_version = 130501;
     output.cublas_lt_available = 1;
@@ -224,15 +231,18 @@ public:
     fake_backend_closed = true;
     return {};
   }
+
+private:
+  std::uint64_t chunk_bytes_ = 0;
 };
 
 class FakeFactory final : public xvram::sdk::BackendFactory {
 public:
   [[nodiscard]] xvram::sdk::Error
-  create_session(const xvram_session_config_v1&,
+  create_session(const xvram_session_config_v1& config,
                  std::shared_ptr<xvram::sdk::BackendSession>& output) override {
     fake_backend_closed = false;
-    output = std::make_shared<FakeSession>();
+    output = std::make_shared<FakeSession>(config.chunk_size_bytes);
     return {};
   }
 };
@@ -402,6 +412,8 @@ void adapter_tests() {
   telemetry.struct_size = sizeof(telemetry);
   CHECK(api.session_get_telemetry(session, &telemetry) == XVRAM_STATUS_SUCCESS);
   CHECK(telemetry.cublas_lt_available == 1);
+  CHECK((telemetry.flags & XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES) != 0U);
+  CHECK((telemetry.flags & XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES) != 0U);
   xvram_error_info_v1 session_error = XVRAM_ERROR_INFO_V1_INIT;
   CHECK(api.session_get_error(session, &session_error) == XVRAM_STATUS_SUCCESS);
   CHECK(session_error.status == XVRAM_STATUS_CUBLAS_ERROR);
@@ -425,6 +437,26 @@ void lifecycle_adapter_tests() {
   xvram_session_config_v1 config = XVRAM_SESSION_CONFIG_V1_INIT;
   xvram_session session = nullptr;
   CHECK(api.session_create(&config, &session) == XVRAM_STATUS_SUCCESS);
+
+  xvram_session_config_v1 non_power_of_two_chunk = XVRAM_SESSION_CONFIG_V1_INIT;
+  non_power_of_two_chunk.chunk_size_bytes = 66ULL * 1024ULL * 1024ULL;
+  xvram_session alignment_session = nullptr;
+  CHECK(api.session_create(&non_power_of_two_chunk, &alignment_session) == XVRAM_STATUS_SUCCESS);
+  xvram_allocation_desc_v1 non_divisor = XVRAM_ALLOCATION_DESC_V1_INIT;
+  non_divisor.size_bytes = 1024;
+  non_divisor.alignment_bytes = 64ULL * 1024ULL * 1024ULL;
+  xvram_allocation alignment_allocation = nullptr;
+  CHECK(api.allocation_create(alignment_session, &non_divisor, &alignment_allocation) ==
+        XVRAM_STATUS_INVALID_ARGUMENT);
+  non_divisor.alignment_bytes = 2ULL * 1024ULL * 1024ULL;
+  CHECK(api.allocation_create(alignment_session, &non_divisor, &alignment_allocation) ==
+        XVRAM_STATUS_SUCCESS);
+  CHECK(api.allocation_release(alignment_allocation) == XVRAM_STATUS_SUCCESS);
+  CHECK(api.session_close(alignment_session, 1000) == XVRAM_STATUS_SUCCESS);
+  api.session_release(alignment_session);
+  fake_close_calls = 0;
+  fake_allocation_release_calls = 0;
+  fake_backend_closed = false;
 
   xvram_allocation_desc_v1 oversized_alignment = XVRAM_ALLOCATION_DESC_V1_INIT;
   oversized_alignment.size_bytes = 1024;

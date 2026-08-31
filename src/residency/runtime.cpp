@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <thread>
 #include <unordered_map>
@@ -78,6 +79,8 @@ const char* runtime_status_name(const RuntimeStatus status) noexcept {
     return "budget_pressure";
   case RuntimeStatus::timeout:
     return "timeout";
+  case RuntimeStatus::callback_skipped:
+    return "callback_skipped";
   case RuntimeStatus::callback_failed:
     return "callback_failed";
   case RuntimeStatus::cuda_failure:
@@ -114,6 +117,7 @@ public:
     std::optional<ChunkKey> key;
     cuda::abi::DevicePointer address = 0;
     bool mapped = false;
+    bool quarantined = false;
     std::uint64_t map_generation = 0;
   };
 
@@ -317,31 +321,62 @@ public:
       return fail(RuntimeStatus::host_oom, "allocation", "allocate_pageable_backing",
                   "pageable host backing allocation failed");
     }
-    if (const cuda::abi::Result code = api_.mem_address_reserve_(
-            &owner->reservation, static_cast<std::size_t>(owner->reservation_bytes), 0, 0, 0);
-        code != cuda::abi::success) {
-      return fail_cuda("allocation", "cuMemAddressReserve", code);
+    try {
+      owner->chunks.resize(static_cast<std::size_t>(*chunk_count));
+    } catch (const std::bad_alloc&) {
+      return fail(RuntimeStatus::host_oom, "allocation", "allocate_chunk_metadata",
+                  "chunk metadata allocation failed");
+    } catch (...) {
+      return fail(RuntimeStatus::internal_failure, "allocation", "allocate_chunk_metadata",
+                  "chunk metadata allocation raised an unexpected exception");
     }
-    const auto logical_base =
-        align_up(static_cast<std::uint64_t>(owner->reservation), config_.chunk_bytes);
-    const auto logical_end =
-        logical_base.has_value() ? checked_add(*logical_base, owner->mapped_bytes) : std::nullopt;
-    const auto reservation_end =
-        checked_add(static_cast<std::uint64_t>(owner->reservation), owner->reservation_bytes);
-    if (!logical_base.has_value() || !logical_end.has_value() || !reservation_end.has_value() ||
-        *logical_end > *reservation_end) {
-      (void)api_.mem_address_free_(owner->reservation,
-                                   static_cast<std::size_t>(owner->reservation_bytes));
-      return fail(RuntimeStatus::internal_failure, "allocation", "align_logical_base",
-                  "padded reservation cannot contain the stable logical range");
-    }
-    owner->logical_base = static_cast<cuda::abi::DevicePointer>(*logical_base);
-    owner->chunks.resize(static_cast<std::size_t>(*chunk_count));
     for (std::uint64_t index = 0; index < *chunk_count; ++index) {
       owner->chunks[static_cast<std::size_t>(index)].key = ChunkKey{owner->id, index};
     }
-    output = RuntimeAllocation{owner->id, bytes};
-    allocations_.emplace(owner->id.value, std::move(owner));
+    try {
+      auto [position, inserted] = allocations_.try_emplace(owner->id.value, std::move(owner));
+      if (!inserted) {
+        return fail(RuntimeStatus::internal_failure, "allocation", "register_allocation",
+                    "allocation identifier was already registered");
+      }
+    } catch (const std::bad_alloc&) {
+      return fail(RuntimeStatus::host_oom, "allocation", "register_allocation",
+                  "allocation registry growth failed");
+    } catch (...) {
+      return fail(RuntimeStatus::internal_failure, "allocation", "register_allocation",
+                  "allocation registry raised an unexpected exception");
+    }
+
+    Allocation& registered = *allocations_.at(next_allocation_id_.value);
+    if (const cuda::abi::Result code = api_.mem_address_reserve_(
+            &registered.reservation, static_cast<std::size_t>(registered.reservation_bytes), 0, 0,
+            0);
+        code != cuda::abi::success) {
+      allocations_.erase(next_allocation_id_.value);
+      return fail_cuda("allocation", "cuMemAddressReserve", code);
+    }
+    const auto logical_base =
+        align_up(static_cast<std::uint64_t>(registered.reservation), config_.chunk_bytes);
+    const auto logical_end = logical_base.has_value()
+                                 ? checked_add(*logical_base, registered.mapped_bytes)
+                                 : std::nullopt;
+    const auto reservation_end = checked_add(static_cast<std::uint64_t>(registered.reservation),
+                                             registered.reservation_bytes);
+    if (!logical_base.has_value() || !logical_end.has_value() || !reservation_end.has_value() ||
+        *logical_end > *reservation_end) {
+      const cuda::abi::Result code = api_.mem_address_free_(
+          registered.reservation, static_cast<std::size_t>(registered.reservation_bytes));
+      if (code != cuda::abi::success) {
+        registered.reservation_quarantined = true;
+        return poison_cuda("allocation", "cuMemAddressFree(alignment_rollback)", code);
+      }
+      registered.reservation = 0;
+      allocations_.erase(next_allocation_id_.value);
+      return fail(RuntimeStatus::internal_failure, "allocation", "align_logical_base",
+                  "padded reservation cannot contain the stable logical range");
+    }
+    registered.logical_base = static_cast<cuda::abi::DevicePointer>(*logical_base);
+    output = RuntimeAllocation{next_allocation_id_, bytes};
     ++telemetry_.allocations_created;
     if (next_allocation_id_.value == std::numeric_limits<std::uint64_t>::max()) {
       next_allocation_id_ = {};
@@ -476,16 +511,37 @@ public:
     ++telemetry_.transactions_submitted;
     std::vector<ChunkRecord*> pinned;
     pinned.reserve(plan.chunks.size());
+    const auto retire_prelaunch_generations = [&]() noexcept {
+      bool retired = true;
+      for (ChunkRecord* record : pinned) {
+        if (record != nullptr && complete_event_generation(*record, record->event_generation) !=
+                                     EventGenerationResult::success) {
+          retired = false;
+        }
+      }
+      unpin(pinned);
+      return retired;
+    };
     for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
       bool hit = false;
       if (const RuntimeStatus status = ensure_resident(chunk_plan, false, hit);
           status != RuntimeStatus::success) {
-        unpin(pinned);
+        if (!retire_prelaunch_generations()) {
+          return poison("transaction", "prepare_rollback",
+                        "pre-launch working-set generations could not retire");
+        }
+        if (status == RuntimeStatus::budget_pressure) {
+          const RuntimeStatus shrink_status = refresh_budget(0, workspace_bytes_, true);
+          if (shrink_status != RuntimeStatus::success &&
+              shrink_status != RuntimeStatus::budget_pressure) {
+            return shrink_status;
+          }
+        }
         return status;
       }
       ChunkRecord* record = chunk(chunk_plan.key);
       if (record == nullptr || begin_event_generation(*record) != EventGenerationResult::success) {
-        unpin(pinned);
+        (void)retire_prelaunch_generations();
         return poison("transaction", "pin_working_set", "chunk event generation cannot be started");
       }
       ++record->pin_count;
@@ -494,21 +550,34 @@ public:
     }
 
     std::vector<ResolvedRange> resolved;
-    resolved.reserve(plan.normalized_ranges.size());
-    for (const AccessRange& range : plan.normalized_ranges) {
-      const Allocation* owner = allocation(range.allocation_id);
-      if (owner == nullptr) {
-        unpin(pinned);
-        return poison("transaction", "resolve_range", "normalized allocation disappeared");
+    try {
+      resolved.reserve(plan.normalized_ranges.size());
+      for (const AccessRange& range : plan.normalized_ranges) {
+        const Allocation* owner = allocation(range.allocation_id);
+        if (owner == nullptr) {
+          (void)retire_prelaunch_generations();
+          return poison("transaction", "resolve_range", "normalized allocation disappeared");
+        }
+        resolved.push_back(ResolvedRange{range.allocation_id, range.offset_bytes,
+                                         range.length_bytes, range.mode,
+                                         owner->logical_base + range.offset_bytes});
       }
-      resolved.push_back(ResolvedRange{range.allocation_id, range.offset_bytes, range.length_bytes,
-                                       range.mode, owner->logical_base + range.offset_bytes});
+    } catch (const std::bad_alloc&) {
+      if (!retire_prelaunch_generations()) {
+        return poison("transaction", "resolve_rollback",
+                      "pre-launch generations could not retire after host OOM");
+      }
+      return fail(RuntimeStatus::host_oom, "transaction", "resolve_ranges",
+                  "resolved range allocation failed");
     }
 
     if (const cuda::abi::Result code = api_.event_record_(compute_started_, compute_stream_);
         code != cuda::abi::success) {
-      unpin(pinned);
-      return fail_cuda("transaction", "cuEventRecord(compute_start)", code);
+      if (!retire_prelaunch_generations()) {
+        return poison("transaction", "compute_start_rollback",
+                      "pre-launch generations could not retire after event failure");
+      }
+      return poison_cuda("transaction", "cuEventRecord(compute_start)", code);
     }
     RuntimeStatus callback_status = RuntimeStatus::internal_failure;
     try {
@@ -519,11 +588,40 @@ public:
     }
     const cuda::abi::Result record_result = api_.event_record_(compute_done_, compute_stream_);
     if (record_result != cuda::abi::success) {
+      async_resources_quarantined_ = true;
       unpin(pinned);
       return poison_cuda("transaction", "cuEventRecord(compute_done)", record_result);
     }
+    if (callback_status == RuntimeStatus::callback_skipped) {
+      const RuntimeStatus drain_status = wait_event(compute_done_, "callback_skip_drain");
+      if (drain_status == RuntimeStatus::success) {
+        for (ChunkRecord* record : pinned) {
+          if (complete_event_generation(*record, record->event_generation) !=
+              EventGenerationResult::success) {
+            unpin(pinned);
+            return poison("transaction", "callback_skip_retire",
+                          "skipped callback generation could not retire");
+          }
+        }
+      }
+      unpin(pinned);
+      return drain_status == RuntimeStatus::success ? RuntimeStatus::callback_skipped
+                                                    : drain_status;
+    }
     if (callback_status != RuntimeStatus::success) {
-      (void)wait_event(compute_done_, "callback_drain");
+      const RuntimeStatus drain_status = wait_event(compute_done_, "callback_drain");
+      if (drain_status != RuntimeStatus::success) {
+        unpin(pinned);
+        return drain_status;
+      }
+      for (ChunkRecord* record : pinned) {
+        if (complete_event_generation(*record, record->event_generation) !=
+            EventGenerationResult::success) {
+          unpin(pinned);
+          return poison("transaction", "callback_failure_retire",
+                        "failed callback generation could not retire");
+        }
+      }
       unpin(pinned);
       return poison("transaction", "callback", "transaction callback rejected submission",
                     RuntimeStatus::callback_failed);
@@ -551,7 +649,7 @@ public:
             api_.event_elapsed_time_(&elapsed, compute_started_, compute_done_);
         code != cuda::abi::success) {
       unpin(pinned);
-      return fail_cuda("transaction", "cuEventElapsedTime", code);
+      return poison_cuda("transaction", "cuEventElapsedTime", code);
     }
     telemetry_.last_transaction_ms = static_cast<double>(elapsed);
     for (ChunkRecord* record : pinned) {
@@ -646,6 +744,10 @@ public:
           note_cleanup_failure();
           continue;
         }
+        if (frame.quarantined) {
+          note_cleanup_failure();
+          continue;
+        }
 
         RuntimeStatus status = RuntimeStatus::cleanup_failure;
         switch (record->state) {
@@ -704,6 +806,8 @@ public:
       if (live_mapping) {
         quarantine_mapping(*owner);
         note_cleanup_failure();
+      } else if (owner->reservation_quarantined) {
+        note_cleanup_failure();
       } else if (owner->reservation != 0) {
         if (api_.mem_address_free_(owner->reservation,
                                    static_cast<std::size_t>(owner->reservation_bytes)) !=
@@ -718,7 +822,7 @@ public:
       }
     }
     allocations_.clear();
-    if (workspace_ != 0) {
+    if (workspace_ != 0 && !async_resources_quarantined_) {
       if (api_.mem_free_(workspace_) != cuda::abi::success) {
         note_cleanup_failure();
       } else {
@@ -749,13 +853,20 @@ public:
         frame.handle = 0;
       }
     }
-    destroy_staging_pool(h2d_staging_, aggregate);
-    destroy_staging_pool(d2h_staging_, aggregate);
-    destroy_event(compute_started_, aggregate);
-    destroy_event(compute_done_, aggregate);
-    destroy_stream(h2d_stream_, aggregate);
-    destroy_stream(compute_stream_, aggregate);
-    destroy_stream(d2h_stream_, aggregate);
+    if (async_resources_quarantined_) {
+      // No trustworthy completion boundary exists. Keep memory, event, stream, workspace, and
+      // owned-context resources alive until the quarantine process exits; destroying any of them
+      // here could race an unobserved DMA transfer or kernel.
+      note_cleanup_failure();
+    } else {
+      destroy_staging_pool(h2d_staging_, aggregate);
+      destroy_staging_pool(d2h_staging_, aggregate);
+      destroy_event(compute_started_, aggregate);
+      destroy_event(compute_done_, aggregate);
+      destroy_stream(h2d_stream_, aggregate);
+      destroy_stream(compute_stream_, aggregate);
+      destroy_stream(d2h_stream_, aggregate);
+    }
     if (context_pushed_) {
       cuda::abi::Context popped = nullptr;
       if (api_.context_pop_current_(&popped) != cuda::abi::success || popped != context_) {
@@ -763,12 +874,12 @@ public:
       }
       context_pushed_ = false;
     }
-    if (owns_context_ && context_ != nullptr) {
+    if (owns_context_ && context_ != nullptr && !async_resources_quarantined_) {
       if (api_.context_destroy_(context_) != cuda::abi::success) {
         aggregate = RuntimeStatus::cleanup_failure;
       }
-      owns_context_ = false;
     }
+    owns_context_ = false;
     context_ = nullptr;
     setup_complete_ = false;
     closed_ = true;
@@ -796,6 +907,10 @@ public:
   }
   [[nodiscard]] bool poisoned() const noexcept {
     return poisoned_;
+  }
+
+  [[nodiscard]] bool async_completion_unknown() const noexcept {
+    return async_resources_quarantined_;
   }
 
   [[nodiscard]] std::optional<std::uint64_t> allocation_size(const AllocationId id) const noexcept {
@@ -972,9 +1087,11 @@ private:
         return RuntimeStatus::success;
       }
       if (code != CUDA_ERROR_NOT_READY) {
+        async_resources_quarantined_ = true;
         return poison_cuda("event", operation, code);
       }
       if (Clock::now() >= deadline) {
+        async_resources_quarantined_ = true;
         return poison("event", operation,
                       "CUDA event did not retire before the stall deadline; the in-flight "
                       "generation is quarantined",
@@ -1146,6 +1263,25 @@ private:
     // caller may still be unable to launch its next working set, but returning before this drain
     // would leave handles and mappings above the live CUDA/WDDM budget.
     if (observed_frames < frame_capacity_) {
+      // A forced refresh can run after earlier chunks of the next working set have already been
+      // pinned. Validate the complete shrink tail before changing anything: a partial shrink that
+      // later reaches one of those chunks would either violate the pin invariant or leave frame
+      // capacity accounting half-mutated. The caller unwinds its pins and may retry after the
+      // budget stabilizes.
+      for (std::uint64_t index = observed_frames; index < frame_capacity_; ++index) {
+        const Frame& frame = frames_[static_cast<std::size_t>(index)];
+        if (!frame.key.has_value()) {
+          continue;
+        }
+        const ChunkRecord* record = chunk(*frame.key);
+        if (record == nullptr) {
+          return poison("budget", "shrink_preflight", "tail frame references an unknown chunk");
+        }
+        if (!is_victim_eligible(*record)) {
+          return fail(RuntimeStatus::budget_pressure, "budget", "shrink_preflight",
+                      "active working-set or in-flight frame defers live target shrink");
+        }
+      }
       for (std::uint64_t index = observed_frames; index < frame_capacity_; ++index) {
         Frame& frame = frames_[static_cast<std::size_t>(index)];
         if (frame.key.has_value()) {
@@ -1292,6 +1428,16 @@ private:
     Frame& frame = frames_[*frame_index];
     const cuda::abi::DevicePointer address =
         owner->logical_base + plan.key.chunk_index * config_.chunk_bytes;
+    const bool physical_alias =
+        frame.mapped || frame.handle == 0 ||
+        std::any_of(frames_.begin(), frames_.end(), [&](const Frame& other) {
+          return &other != &frame && other.mapped && other.handle == frame.handle;
+        });
+    if (physical_alias) {
+      telemetry_.no_physical_aliases = false;
+      return poison("cache", "map_alias_check",
+                    "a physical frame was already mapped at another logical address");
+    }
     if (transition_chunk_state(record->state, ChunkState::mapping) !=
         StateTransitionResult::success) {
       return poison_transition("cache", "map", "illegal mapping state transition");
@@ -1320,7 +1466,9 @@ private:
           api_.mem_unmap_(address, static_cast<std::size_t>(config_.chunk_bytes));
       if (rollback != cuda::abi::success) {
         owner->reservation_quarantined = true;
+        frame.quarantined = true;
         telemetry_.quarantined = true;
+        release_quarantined_handle(frame);
         return poison_cuda("cache", "cuMemUnmap(set_access_rollback)", rollback);
       }
       frame.key.reset();
@@ -1362,13 +1510,19 @@ private:
       if (const cuda::abi::Result code = api_.memcpy_h2d_async_(
               address, staging.memory, static_cast<std::size_t>(valid), h2d_stream_);
           code != cuda::abi::success) {
-        return fail_cuda("cache", "cuMemcpyHtoDAsync", code);
+        async_resources_quarantined_ = true;
+        frame.quarantined = true;
+        quarantine_mapping(*owner);
+        return poison_cuda("cache", "cuMemcpyHtoDAsync", code);
       }
       telemetry_.h2d_bytes += valid;
     }
     if (const cuda::abi::Result code = api_.event_record_(staging.done, h2d_stream_);
         code != cuda::abi::success) {
-      return fail_cuda("cache", "cuEventRecord(h2d)", code);
+      async_resources_quarantined_ = true;
+      frame.quarantined = true;
+      quarantine_mapping(*owner);
+      return poison_cuda("cache", "cuEventRecord(h2d)", code);
     }
     if (const RuntimeStatus status = wait_event(staging.done, "h2d_complete");
         status != RuntimeStatus::success) {
@@ -1410,11 +1564,17 @@ private:
     if (const cuda::abi::Result code = api_.memcpy_d2h_async_(
             staging.memory, frame->address, static_cast<std::size_t>(valid), d2h_stream_);
         code != cuda::abi::success) {
-      return fail_cuda("cache", "cuMemcpyDtoHAsync", code);
+      async_resources_quarantined_ = true;
+      frame->quarantined = true;
+      quarantine_mapping(*owner);
+      return poison_cuda("cache", "cuMemcpyDtoHAsync", code);
     }
     if (const cuda::abi::Result code = api_.event_record_(staging.done, d2h_stream_);
         code != cuda::abi::success) {
-      return fail_cuda("cache", "cuEventRecord(d2h)", code);
+      async_resources_quarantined_ = true;
+      frame->quarantined = true;
+      quarantine_mapping(*owner);
+      return poison_cuda("cache", "cuEventRecord(d2h)", code);
     }
     if (const RuntimeStatus status = wait_event(staging.done, "d2h_complete");
         status != RuntimeStatus::success) {
@@ -1456,6 +1616,7 @@ private:
     const cuda::abi::Result code =
         api_.mem_unmap_(frame.address, static_cast<std::size_t>(config_.chunk_bytes));
     if (code != cuda::abi::success) {
+      frame.quarantined = true;
       quarantine_mapping(owner);
       release_quarantined_handle(frame);
       return poison_cuda("cache", "cuMemUnmap", code);
@@ -1467,6 +1628,7 @@ private:
     frame.key.reset();
     frame.address = 0;
     frame.mapped = false;
+    frame.quarantined = false;
     record.frame_index.reset();
     record.speculative = false;
     if (transition_chunk_state(record.state, ChunkState::host_clean) !=
@@ -1481,6 +1643,7 @@ private:
     const cuda::abi::Result code =
         api_.mem_unmap_(frame.address, static_cast<std::size_t>(config_.chunk_bytes));
     if (code != cuda::abi::success) {
+      frame.quarantined = true;
       quarantine_mapping(owner);
       release_quarantined_handle(frame);
       return poison_cuda("cache", operation, code);
@@ -1488,6 +1651,7 @@ private:
     frame.key.reset();
     frame.address = 0;
     frame.mapped = false;
+    frame.quarantined = false;
     record.frame_index.reset();
     if (transition_chunk_state(record.state, ChunkState::host_clean) !=
         StateTransitionResult::success) {
@@ -1573,6 +1737,7 @@ private:
   bool closed_ = false;
   bool poisoned_ = false;
   bool launches_blocked_ = false;
+  bool async_resources_quarantined_ = false;
   RuntimeStatus close_status_ = RuntimeStatus::success;
   AllocationId next_allocation_id_{1};
   std::uint64_t frame_capacity_ = 0;
@@ -1666,6 +1831,10 @@ const RuntimeError& Runtime::error() const noexcept {
 }
 bool Runtime::poisoned() const noexcept {
   return impl_->poisoned();
+}
+
+bool Runtime::async_completion_unknown() const noexcept {
+  return impl_->async_completion_unknown();
 }
 
 } // namespace xvram::residency
