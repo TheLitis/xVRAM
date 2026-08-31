@@ -57,7 +57,7 @@ no worker process remained. The checked-in
 `scripts/run-phase2-rtx3070-acceptance.ps1` command reproduces the gate and validates the
 strict schemas, policy digests, semantic accounting, cleanup, and process isolation.
 
-## Phase 3: public SDK and known GEMM — implementation complete, hardware gate pending
+## Phase 3: public SDK and known GEMM — complete
 
 - Size-tagged C ABI v1 behind the single `xvram_get_api` export, with opaque session,
   allocation, plan, and asynchronous-operation handles.
@@ -71,11 +71,20 @@ strict schemas, policy digests, semantic accounting, cleanup, and process isolat
 - Isolated `xvram-gemm-bench`, `XVG1` worker protocol, strict
   `xvram.gemm_bench` v1 reporting, no-driver tests, and installable CMake package.
 
-The implementation is not marked hardware-complete until the checked-in Phase 3 RTX
-3070 acceptance script passes all small/boundary format cases and the `1.1x` and `1.5x`
-full-validation oversubscribed cases. The gate must show numerical agreement, K-panel
-accumulation, real eviction, dirty C write-back, handle reuse, bounded workspace/cache,
-event-safe remapping, complete cleanup, empty diagnostics, and no residual worker.
+The reproducible RTX 3070 gate completed on 2026-08-31 against 8,589,410,304 bytes of
+physical VRAM. All nine schema-valid reports exited zero: the mixed suite; FP16, BF16,
+strict FP32, TF32, FP64 transpose, and explicit FP32 K-panel boundary cases; plus `1.1x`
+and `1.5x` full-validation oversubscribed cases. Every numerical digest matched, mismatch,
+unsafe-remap, and unsafe-transition counts remained zero, cleanup was complete,
+diagnostics were empty, and no worker process remained.
+
+The `1.1x` case validated 9,447,689,772 logical bytes and 787,307,481 output elements,
+with 527 evictions/handle reuses and 47 dirty write-backs. The `1.5x` case validated
+12,882,542,700 logical bytes and 1,073,545,225 output elements, with 7,211
+evictions/handle reuses and 64 dirty write-backs. Both oversized reports set every proof
+flag true while keeping their cache and workspace within the observed live target. The
+checked-in `scripts/run-phase3-rtx3070-acceptance.ps1` command reproduces the complete
+format, planner, residency, correctness, cleanup, and process-isolation gate.
 
 ## Phase 4: PyTorch
 
