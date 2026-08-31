@@ -1,0 +1,6 @@
+XVRAM_0.1 {
+  global:
+    xvram_get_api;
+  local:
+    *;
+};

@@ -13,4 +13,3 @@ add_executable(xvram-package-consumer-cxx main.cpp)
 target_compile_features(xvram-package-consumer-cxx PRIVATE cxx_std_20)
 target_link_libraries(xvram-package-consumer-cxx PRIVATE xVRAM::xvram)
 add_test(NAME xvram.package.consumer-cxx COMMAND xvram-package-consumer-cxx)
-

@@ -412,6 +412,15 @@ target_include_directories(xvram_sdk SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
 target_link_libraries(
   xvram_sdk
   PRIVATE xvram_probe_lib xvram_residency_core xvram_gemm_core Threads::Threads)
+if(UNIX AND NOT APPLE)
+  target_link_options(
+    xvram_sdk
+    PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram.exports.map")
+  set_property(
+    TARGET xvram_sdk
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram.exports.map")
+endif()
 xvram_enable_warnings(xvram_sdk)
 
 add_library(xVRAM::xvram ALIAS xvram_sdk)
