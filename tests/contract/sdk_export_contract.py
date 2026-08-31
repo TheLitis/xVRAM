@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 EXPECTED = {"xvram_get_api"}
+ELF_VERSION_NODE = "XVRAM_0.1"
 
 
 def _u16(data: bytes, offset: int) -> int:
@@ -62,6 +63,21 @@ def _pe_exports(path: Path) -> set[str]:
     return exports
 
 
+def _parse_elf_exports(output: str) -> set[str]:
+    exports: set[str] = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        # GNU/LLVM nm reports ELF symbol-version definitions as absolute dynamic symbols (for
+        # example ``XVRAM_0.1 A 0``). They are linker metadata, not callable/data exports.
+        symbol = fields[0].split("@", 1)[0]
+        if fields[1].upper() == "A" and symbol == ELF_VERSION_NODE:
+            continue
+        exports.add(symbol)
+    return exports
+
+
 def _elf_exports(path: Path) -> set[str]:
     nm = shutil.which("nm") or shutil.which("llvm-nm")
     if nm is None:
@@ -72,20 +88,25 @@ def _elf_exports(path: Path) -> set[str]:
         capture_output=True,
         text=True,
     )
-    exports: set[str] = set()
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) < 2:
-            continue
-        # GNU/LLVM nm reports ELF symbol-version definitions as absolute dynamic symbols (for
-        # example ``XVRAM_0.1 A 0``). They are linker metadata, not callable/data exports.
-        if fields[1].upper() == "A":
-            continue
-        exports.add(fields[0].split("@", 1)[0])
-    return exports
+    return _parse_elf_exports(result.stdout)
+
+
+def _self_test() -> int:
+    exports = _parse_elf_exports(
+        "XVRAM_0.1 A 0\n"
+        "xvram_get_api@@XVRAM_0.1 T 100\n"
+        "unexpected_absolute A 200\n"
+    )
+    expected = {"xvram_get_api", "unexpected_absolute"}
+    if exports != expected:
+        print(f"expected parsed exports {sorted(expected)}, got {sorted(exports)}")
+        return 1
+    return 0
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return _self_test()
     if len(sys.argv) != 2:
         print("usage: sdk_export_contract.py <shared-library>")
         return 64

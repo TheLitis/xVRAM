@@ -99,6 +99,10 @@ add_test(
   NAME xvram.sdk.export-contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/sdk_export_contract.py"
           "$<TARGET_FILE:xvram_sdk>")
+add_test(
+  NAME xvram.sdk.export-parser
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/sdk_export_contract.py"
+          --self-test)
 
 add_executable(xvram-residency-workload-tests unit/residency_workload_tests.cpp)
 target_link_libraries(xvram-residency-workload-tests PRIVATE xvram_residency)
