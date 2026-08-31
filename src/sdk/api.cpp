@@ -460,7 +460,8 @@ allocation_create_entry(const xvram_session session, const xvram_allocation_desc
     if (desc->size_bytes == 0U) {
       return invalid("allocation_create", "allocation size must be non-zero");
     }
-    if ((desc->flags & ~XVRAM_ALLOCATION_FLAG_ZERO_INITIALIZE) != 0U || desc->reserved0 != 0U ||
+    if ((desc->flags & ~static_cast<std::uint32_t>(XVRAM_ALLOCATION_FLAG_ZERO_INITIALIZE)) != 0U ||
+        desc->reserved0 != 0U ||
         !all_zero(desc->reserved, sizeof(desc->reserved) / sizeof(desc->reserved[0]))) {
       return invalid("allocation_create", "unknown flags or non-zero reserved field");
     }
