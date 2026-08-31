@@ -795,7 +795,7 @@ ProblemValidation validate_problem(const GemmProblem& problem) noexcept {
   if (!is_valid_compute_mode(problem.compute_mode)) {
     return {ProblemError::invalid_compute_mode};
   }
-  for (const auto [matrix, operand] : std::array{
+  for (const auto& [matrix, operand] : std::array{
            std::pair{&problem.a, 'A'}, std::pair{&problem.b, 'B'}, std::pair{&problem.c, 'C'}}) {
     const ProblemValidation validation = validate_matrix(*matrix, operand);
     if (!validation) {

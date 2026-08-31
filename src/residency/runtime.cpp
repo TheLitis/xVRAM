@@ -55,10 +55,6 @@ using Clock = std::chrono::steady_clock;
                                             : RuntimeStatus::cuda_failure;
 }
 
-[[nodiscard]] bool is_write(const AccessMode mode) noexcept {
-  return mode == AccessMode::read_write || mode == AccessMode::write_only;
-}
-
 } // namespace
 
 const char* runtime_status_name(const RuntimeStatus status) noexcept {
@@ -1329,8 +1325,9 @@ private:
     }
 
     if (observed_frames > frame_capacity_) {
-      if (++consecutive_growth_samples_ >= 10U && observed_frames >= frame_capacity_ + 2ULL) {
-        frame_capacity_ = std::min(observed_frames, frame_capacity_ + 2ULL);
+      if (++consecutive_growth_samples_ >= 10U &&
+          observed_frames >= frame_capacity_ + std::uint64_t{2}) {
+        frame_capacity_ = std::min(observed_frames, frame_capacity_ + std::uint64_t{2});
         telemetry_.target_bytes = std::min(observed_target, frame_capacity_ * config_.chunk_bytes +
                                                                 config_.workspace_reserve_bytes);
         telemetry_.target_maximum_bytes =
