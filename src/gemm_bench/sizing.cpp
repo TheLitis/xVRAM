@@ -31,7 +31,8 @@ std::optional<std::uint64_t> safe_host_logical_limit(const HostSizingInput& inpu
     return std::nullopt;
   }
   constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
-  const std::uint64_t headroom = std::max(minimum_headroom, input.physical_memory_bytes / 4ULL);
+  const std::uint64_t headroom =
+      std::max(minimum_headroom, input.physical_memory_bytes / std::uint64_t{4});
   const auto pinned = checked_multiply(input.chunk_bytes, input.staging_slots);
   const auto with_pinned = pinned.has_value() ? checked_add(headroom, *pinned) : std::nullopt;
   const auto reserved = with_pinned.has_value()

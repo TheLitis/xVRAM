@@ -72,11 +72,17 @@ def _elf_exports(path: Path) -> set[str]:
         capture_output=True,
         text=True,
     )
-    return {
-        fields[0].split("@", 1)[0]
-        for line in result.stdout.splitlines()
-        if (fields := line.split())
-    }
+    exports: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        # GNU/LLVM nm reports ELF symbol-version definitions as absolute dynamic symbols (for
+        # example ``XVRAM_0.1 A 0``). They are linker metadata, not callable/data exports.
+        if fields[1].upper() == "A":
+            continue
+        exports.add(fields[0].split("@", 1)[0])
+    return exports
 
 
 def main() -> int:

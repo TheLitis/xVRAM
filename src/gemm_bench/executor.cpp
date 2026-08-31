@@ -486,7 +486,8 @@ Report run_executor(const ExecutorOptions& options, const ProgressCallback& prog
   if (cuda.mem_get_allocation_granularity_ != nullptr) {
     cuda::abi::MemAllocationProp property{};
     property.type = cuda::abi::allocation_type_pinned;
-    property.location = cuda::abi::MemLocation{cuda::abi::location_device, device};
+    property.location.type = cuda::abi::location_device;
+    property.location.id = device;
     std::size_t minimum = 0;
     std::size_t recommended = 0;
     if (cuda.mem_get_allocation_granularity_(&minimum, &property, cuda::abi::granularity_minimum) ==

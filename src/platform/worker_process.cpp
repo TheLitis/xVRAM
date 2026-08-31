@@ -302,9 +302,9 @@ IsolatedWorkerResult run_isolated_worker_process(const IsolatedWorkerOptions& op
     }
   }
   if (!process_ended) {
-    TerminateJobObject(job, static_cast<unsigned int>(result.timed_out
-                                                          ? options.timeout_exit_code
-                                                          : options.failure_exit_code));
+    TerminateJobObject(job,
+                       static_cast<unsigned int>(result.timed_out ? options.timeout_exit_code
+                                                                  : options.failure_exit_code));
     WaitForSingleObject(process.hProcess, INFINITE);
   }
   DWORD exit_code = static_cast<DWORD>(options.failure_exit_code);
@@ -386,7 +386,12 @@ IsolatedWorkerResult run_isolated_worker_process(const IsolatedWorkerOptions& op
       process_ended = waitpid(child, &wait_status, 0) == child;
     } while (!process_ended && errno == EINTR);
   }
-  if (WIFEXITED(wait_status)) {
+  if (result.timed_out) {
+    // POSIX SIGKILL is observable as 128 + SIGKILL, unlike the caller-selected termination code
+    // used by Windows Job Objects. Expose the controller's versioned timeout code consistently;
+    // the process has already been synchronously reaped at this point.
+    result.process_exit_code = options.timeout_exit_code;
+  } else if (WIFEXITED(wait_status)) {
     result.process_exit_code = WEXITSTATUS(wait_status);
   } else if (WIFSIGNALED(wait_status)) {
     result.process_exit_code = 128 + WTERMSIG(wait_status);

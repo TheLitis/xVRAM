@@ -174,7 +174,8 @@ public:
 
     CUmemAllocationProp property{};
     property.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    property.location = CUmemLocation{CU_MEM_LOCATION_TYPE_DEVICE, device_};
+    property.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    property.location.id = device_;
     property.requestedHandleTypes = CU_MEM_HANDLE_TYPE_NONE;
     std::size_t minimum = 0;
     std::size_t recommended = 0;
@@ -787,17 +788,19 @@ public:
         });
     for (auto& [id, owner] : allocations_) {
       (void)id;
+      const Allocation* const registered_owner = owner.get();
       const bool live_mapping =
           unidentified_live_mapping ||
-          std::any_of(frames_.begin(), frames_.end(), [&](const Frame& frame) {
+          std::any_of(frames_.begin(), frames_.end(), [registered_owner](const Frame& frame) {
             if (!frame.mapped) {
               return false;
             }
-            if (frame.key.has_value() && frame.key->allocation_id == owner->id) {
+            if (frame.key.has_value() && frame.key->allocation_id == registered_owner->id) {
               return true;
             }
-            return frame.address >= owner->reservation &&
-                   frame.address - owner->reservation < owner->reservation_bytes;
+            return frame.address >= registered_owner->reservation &&
+                   frame.address - registered_owner->reservation <
+                       registered_owner->reservation_bytes;
           });
       if (live_mapping) {
         quarantine_mapping(*owner);
@@ -1167,7 +1170,8 @@ private:
   [[nodiscard]] RuntimeStatus create_handle(Frame& frame) {
     CUmemAllocationProp property{};
     property.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    property.location = CUmemLocation{CU_MEM_LOCATION_TYPE_DEVICE, device_};
+    property.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    property.location.id = device_;
     property.requestedHandleTypes = CU_MEM_HANDLE_TYPE_NONE;
     cuda::abi::Result code = api_.mem_create_(
         &frame.handle, static_cast<std::size_t>(config_.chunk_bytes), &property, 0);
@@ -1454,7 +1458,8 @@ private:
     ++frame.map_generation;
     record->frame_index = static_cast<std::uint64_t>(*frame_index);
     CUmemAccessDesc access{};
-    access.location = CUmemLocation{CU_MEM_LOCATION_TYPE_DEVICE, device_};
+    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = device_;
     access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     if (const cuda::abi::Result code = api_.mem_set_access_(
             address, static_cast<std::size_t>(config_.chunk_bytes), &access, 1);
