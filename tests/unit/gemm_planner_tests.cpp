@@ -1,3 +1,4 @@
+#include "gemm/executor.hpp"
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 
@@ -427,7 +428,15 @@ struct FakeLtState {
   int heuristic_calls = 0;
   int matmul_calls = 0;
   int core_gemm_calls = 0;
+  int core_m = 0;
+  int core_n = 0;
+  int core_k = 0;
+  const void* core_a = nullptr;
+  const void* core_b = nullptr;
+  void* core_c = nullptr;
+  xvram::cublas::abi::Stream core_stream = nullptr;
   xvram::cublas::abi::MathMode last_math_mode = xvram::cublas::abi::default_math;
+  xvram::cublas::abi::Status core_status = xvram::cublas::abi::success;
   xvram::cublas::abi::Status destroy_status = xvram::cublas::abi::success;
   std::uint64_t workspace_limit = 0;
   std::array<std::uint32_t, 4> alignments{};
@@ -568,7 +577,9 @@ xvram::cublas::abi::Status fake_matmul(xvram::cublas::abi::LtHandle,
   return xvram::cublas::abi::success;
 }
 
-xvram::cublas::abi::Status fake_set_stream(xvram::cublas::abi::Handle, xvram::cublas::abi::Stream) {
+xvram::cublas::abi::Status fake_set_stream(xvram::cublas::abi::Handle,
+                                           const xvram::cublas::abi::Stream stream) {
+  fake_lt.core_stream = stream;
   return xvram::cublas::abi::success;
 }
 
@@ -583,14 +594,21 @@ xvram::cublas::abi::Status fake_set_workspace(xvram::cublas::abi::Handle, void*,
 }
 
 xvram::cublas::abi::Status fake_gemm_ex(xvram::cublas::abi::Handle, xvram::cublas::abi::Operation,
-                                        xvram::cublas::abi::Operation, int, int, int, const void*,
-                                        const void*, xvram::cublas::abi::DataType, int, const void*,
-                                        xvram::cublas::abi::DataType, int, const void*, void*,
+                                        xvram::cublas::abi::Operation, const int m, const int n,
+                                        const int k, const void*, const void* a,
+                                        xvram::cublas::abi::DataType, int, const void* b,
+                                        xvram::cublas::abi::DataType, int, const void*, void* c,
                                         xvram::cublas::abi::DataType, int,
                                         xvram::cublas::abi::ComputeType,
                                         xvram::cublas::abi::GemmAlgorithm) {
   ++fake_lt.core_gemm_calls;
-  return xvram::cublas::abi::success;
+  fake_lt.core_m = m;
+  fake_lt.core_n = n;
+  fake_lt.core_k = k;
+  fake_lt.core_a = a;
+  fake_lt.core_b = b;
+  fake_lt.core_c = c;
+  return fake_lt.core_status;
 }
 
 xvram::cublas::abi::Status fake_dgemm(xvram::cublas::abi::Handle, xvram::cublas::abi::Operation,
@@ -764,6 +782,89 @@ void cublas_lt_executor_tests() {
   CHECK(fake_lt.destroy_calls == destroy_calls_before_abandon);
 }
 
+void shared_gemm_tile_executor_tests() {
+  using namespace xvram;
+  using namespace xvram::cublas;
+  fake_lt = {};
+  CublasDispatch dispatch;
+  dispatch.set_stream = &fake_set_stream;
+  dispatch.set_math_mode = &fake_set_math;
+  dispatch.set_workspace = &fake_set_workspace;
+  dispatch.gemm_ex = &fake_gemm_ex;
+  dispatch.dgemm = &fake_dgemm;
+
+  gemm::GemmProblem input = problem(2, 3, 4);
+  input.alpha = 1.25;
+  input.beta = 0.5;
+  input.compute_mode = gemm::ComputeMode::fast_tf32;
+  gemm::GemmTile tile;
+  tile.m_count = input.m;
+  tile.n_count = input.n;
+  tile.k_count = input.k;
+  tile.beta_mode = gemm::BetaMode::user_beta;
+  const std::array allocations{
+      gemm::ResolvedGemmAllocation{input.a.allocation_id, 0x10000U},
+      gemm::ResolvedGemmAllocation{input.b.allocation_id, 0x20000U},
+      gemm::ResolvedGemmAllocation{input.c.allocation_id, 0x30000U}};
+  const auto stream = reinterpret_cast<cublas::abi::Stream>(&fake_lt);
+  const gemm::ResolvedGemmTile resolved{allocations, 0x40000U, 4096U, stream};
+  const gemm::NativeGemmResources resources{dispatch,
+                                            reinterpret_cast<cublas::abi::Handle>(&fake_lt),
+                                            nullptr};
+  int algorithm_callbacks = 0;
+  const gemm::ExecutionResult completed = gemm::execute_resolved_gemm_tile(
+      resources, input, tile, resolved, [&](const PreferredGemmResult& result) {
+        ++algorithm_callbacks;
+        CHECK(result.path == PreferredGemmPath::cublas_core);
+      });
+  CHECK(completed);
+  CHECK(algorithm_callbacks == 1);
+  CHECK(fake_lt.core_gemm_calls == 1);
+  CHECK(fake_lt.core_m == 3);
+  CHECK(fake_lt.core_n == 2);
+  CHECK(fake_lt.core_k == 4);
+  CHECK(fake_lt.core_a == reinterpret_cast<const void*>(0x20000U));
+  CHECK(fake_lt.core_b == reinterpret_cast<const void*>(0x10000U));
+  CHECK(fake_lt.core_c == reinterpret_cast<void*>(0x30000U));
+  CHECK(fake_lt.core_stream == stream);
+  CHECK(fake_lt.last_math_mode == cublas::abi::tf32_tensor_op_math);
+
+  const gemm::ResolvedGemmTile missing_c{
+      std::span<const gemm::ResolvedGemmAllocation>(allocations.data(), 2), 0, 0, stream};
+  const gemm::ExecutionResult unresolved =
+      gemm::execute_resolved_gemm_tile(resources, input, tile, missing_c);
+  CHECK(unresolved.status == gemm::ExecutionStatus::internal_failure);
+  CHECK(unresolved.operation == "resolve_tile");
+  CHECK(fake_lt.core_gemm_calls == 1);
+
+  fake_lt.core_status = cublas::abi::execution_failed;
+  const gemm::ExecutionResult failed =
+      gemm::execute_resolved_gemm_tile(resources, input, tile, resolved);
+  CHECK(failed.status == gemm::ExecutionStatus::cublas_failure);
+  CHECK(failed.cublas_status == cublas::abi::execution_failed);
+  CHECK(fake_lt.core_gemm_calls == 2);
+  fake_lt.core_status = cublas::abi::success;
+
+  gemm::GemmProblem oversized = input;
+  oversized.a.leading_dimension =
+      static_cast<std::uint64_t>(std::numeric_limits<int>::max()) + 1U;
+  const gemm::ExecutionResult unsupported =
+      gemm::execute_resolved_gemm_tile(resources, oversized, tile, resolved);
+  CHECK(unsupported.status == gemm::ExecutionStatus::unsupported);
+  CHECK(unsupported.operation == "launch_tile");
+
+  gemm::GemmProblem strict_low_precision = input;
+  strict_low_precision.compute_mode = gemm::ComputeMode::strict_fp32;
+  strict_low_precision.c.element_type = gemm::ElementType::fp16;
+  CHECK(!gemm::is_cublas_lt_exact_proof_eligible(strict_low_precision));
+  strict_low_precision.compute_mode = gemm::ComputeMode::fast_tf32;
+  CHECK(gemm::is_cublas_lt_exact_proof_eligible(strict_low_precision));
+  CHECK(std::string_view{gemm::execution_status_name(gemm::ExecutionStatus::success)} ==
+        "success");
+  CHECK(std::string_view{gemm::execution_boundary_operation(
+            gemm::ExecutionBoundary::after_residency)} == "post_residency_deadline");
+}
+
 void cublas_optional_lt_loader_tests() {
   using namespace xvram::cublas;
 
@@ -817,6 +918,7 @@ int main() {
   planner_summary_equivalence_tests();
   signature_tests();
   cublas_lt_executor_tests();
+  shared_gemm_tile_executor_tests();
   cublas_optional_lt_loader_tests();
   return failures == 0 ? 0 : 1;
 }

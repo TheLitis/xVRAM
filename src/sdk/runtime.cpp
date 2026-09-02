@@ -1,6 +1,7 @@
 #include "sdk/backend.hpp"
 #include "sdk/deadline.hpp"
 
+#include "gemm/executor.hpp"
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
@@ -23,7 +24,6 @@
 #include <span>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -140,37 +140,6 @@ static_assert(to_compute_mode(XVRAM_COMPUTE_AUTO, XVRAM_DATA_BF16) ==
               gemm::ComputeMode::strict_fp32);
 static_assert(to_compute_mode(XVRAM_COMPUTE_AUTO, XVRAM_DATA_FP32) == gemm::ComputeMode::fast_tf32);
 static_assert(to_compute_mode(XVRAM_COMPUTE_AUTO, XVRAM_DATA_FP64) == gemm::ComputeMode::fp64);
-
-[[nodiscard]] cublas::abi::DataType to_cublas_type(const gemm::ElementType type) noexcept {
-  switch (type) {
-  case gemm::ElementType::fp16:
-    return cublas::abi::data_fp16;
-  case gemm::ElementType::bf16:
-    return cublas::abi::data_bf16;
-  case gemm::ElementType::fp64:
-    return cublas::abi::data_fp64;
-  case gemm::ElementType::fp32:
-  default:
-    return cublas::abi::data_fp32;
-  }
-}
-
-[[nodiscard]] bool fits_cublas_int(const std::uint64_t value) noexcept {
-  return value <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
-}
-
-[[nodiscard]] bool uses_low_precision_output(const gemm::GemmProblem& problem) noexcept {
-  return problem.c.element_type == gemm::ElementType::fp16 ||
-         problem.c.element_type == gemm::ElementType::bf16;
-}
-
-// cuBLASLt is free to select reduction trees whose final low-precision conversion differs by an
-// output ULP from the strict scalar reference. Keep the Phase 3 exact-proof path on the pedantic
-// cublasGemmEx implementation when FP32 accumulation is written to FP16/BF16 output.
-[[nodiscard]] bool cublas_lt_is_exact_proof_eligible(const gemm::GemmProblem& problem) noexcept {
-  return problem.compute_mode != gemm::ComputeMode::strict_fp32 ||
-         !uses_low_precision_output(problem);
-}
 
 class RuntimeSession;
 
@@ -1147,81 +1116,24 @@ public:
     if (Error error = owner->enqueue_progress(
             [owner, request = request_, problem = problem_,
              plan = plan_](RuntimeOperation& progress) {
-              if (Error deadline_error = progress.deadline_error("gemm", "pre_launch_deadline");
-                  deadline_error) {
-                return deadline_error;
-              }
-              if (!owner->cublas_ready()) {
-                return make_error(XVRAM_STATUS_UNAVAILABLE, "gemm", "load_cublas",
-                                  "cuBLAS/cuBLASLt runtime is unavailable");
-              }
-              for (std::size_t tile_index = 0; tile_index < plan.tiles.size(); ++tile_index) {
-                const gemm::GemmTile& tile = plan.tiles[tile_index];
-                // A submitted kernel is allowed to retire normally. The deadline is enforced only
-                // at a safe tile boundary, before the next CUDA launch.
-                if (Error deadline_error = progress.deadline_error("gemm", "tile_deadline");
-                    deadline_error) {
-                  return deadline_error;
-                }
-                const gemm::WorkingSetResult working_set =
-                    gemm::enumerate_tile_working_set(problem, tile, owner->runtime().chunk_bytes());
-                if (!working_set) {
-                  return make_error(XVRAM_STATUS_INTERNAL, "gemm", "enumerate_working_set",
-                                    std::string(gemm::working_set_error_name(working_set.error)));
-                }
-                Error cublas_error;
-                const residency::RuntimeStatus status = owner->runtime().execute(
-                    working_set.accesses, request.workspace_cap_bytes,
-                    [&](const residency::TransactionContext& context) {
-                      if (Error deadline_error =
-                              progress.deadline_error("gemm", "post_residency_deadline");
-                          deadline_error) {
-                        cublas_error = std::move(deadline_error);
-                        return residency::RuntimeStatus::callback_skipped;
-                      }
-                      cublas_error = launch_tile(*owner, request, problem, tile, context);
-                      return cublas_error ? residency::RuntimeStatus::callback_failed
-                                          : residency::RuntimeStatus::success;
-                    });
-                if (cublas_error) {
-                  return cublas_error;
-                }
-                if (status != residency::RuntimeStatus::success) {
-                  return runtime_error(owner->runtime(), status);
-                }
-                progress.advance_unit();
-                // If the deadline elapsed while this tile was in flight, report timeout only after
-                // the event-safe runtime transaction has retired. Progress remains truthful: this
-                // tile completed, and no later transfer or kernel is submitted.
-                if (Error deadline_error = progress.deadline_error("gemm", "tile_deadline");
-                    deadline_error) {
-                  return deadline_error;
-                }
-                for (std::uint32_t distance = 1; distance <= owner->config().prefetch_distance;
-                     ++distance) {
-                  if (distance > plan.tiles.size() - tile_index - 1U) {
-                    break;
-                  }
-                  const gemm::GemmTile& future = plan.tiles[tile_index + distance];
-                  const gemm::WorkingSetResult future_working_set =
-                      gemm::enumerate_tile_working_set(problem, future,
-                                                       owner->runtime().chunk_bytes());
-                  if (!future_working_set) {
-                    return make_error(
-                        XVRAM_STATUS_INTERNAL, "gemm", "enumerate_prefetch_working_set",
-                        std::string(gemm::working_set_error_name(future_working_set.error)));
-                  }
-                  const residency::RuntimeStatus prefetch_status =
-                      owner->runtime().prefetch(future_working_set.accesses);
-                  if (prefetch_status == residency::RuntimeStatus::budget_pressure) {
-                    break;
-                  }
-                  if (prefetch_status != residency::RuntimeStatus::success) {
-                    return runtime_error(owner->runtime(), prefetch_status);
-                  }
-                }
-              }
-              return Error{};
+              gemm::ExecutionHooks hooks;
+              hooks.boundary = [&](const gemm::ExecutionBoundary boundary, std::size_t) {
+                return progress.deadline_error("gemm",
+                                               gemm::execution_boundary_operation(boundary))
+                           ? gemm::ExecutionControl::deadline_expired
+                           : gemm::ExecutionControl::proceed;
+              };
+              hooks.progress = [&](std::size_t, std::size_t) { progress.advance_unit(); };
+              hooks.algorithm =
+                  [&](const cublas::PreferredGemmResult& result) { owner->record_algorithm(result); };
+              const gemm::TiledGemmResources resources{
+                  owner->runtime(),
+                  gemm::NativeGemmResources{owner->cublas_dispatch(), owner->cublas_handle(),
+                                            owner->cublas_lt()}};
+              const gemm::TiledGemmRequest execution{problem, plan, request.workspace_cap_bytes,
+                                                     owner->config().prefetch_distance};
+              return execution_error(*owner, progress,
+                                     gemm::execute_tiled_gemm(resources, execution, hooks));
             },
             operation, plan_.tiles.size(), request_.deadline_ms);
         error) {
@@ -1232,198 +1144,37 @@ public:
   }
 
 private:
-  [[nodiscard]] static std::uint64_t matrix_offset(const gemm::MatrixView& matrix,
-                                                   const std::uint64_t row,
-                                                   const std::uint64_t column) noexcept {
-    const std::uint64_t index = matrix.layout == gemm::MatrixLayout::row_major
-                                    ? row * matrix.leading_dimension + column
-                                    : column * matrix.leading_dimension + row;
-    return matrix.offset_bytes + index * *gemm::element_size_bytes(matrix.element_type);
-  }
-
-  [[nodiscard]] static cublas::abi::Operation
-  physical_operation(const gemm::MatrixView& matrix, const gemm::MatrixOperation logical_operation,
-                     const bool transpose_result) noexcept {
-    const bool logical_transpose = logical_operation == gemm::MatrixOperation::transpose;
-    const bool desired_transpose = transpose_result ? !logical_transpose : logical_transpose;
-    const bool physical_transpose = matrix.layout == gemm::MatrixLayout::row_major;
-    return desired_transpose != physical_transpose ? cublas::abi::operation_transpose
-                                                   : cublas::abi::operation_none;
-  }
-
-  [[nodiscard]] static Error launch_tile(RuntimeSession& owner, const GemmRequest& request,
-                                         const gemm::GemmProblem& problem,
-                                         const gemm::GemmTile& tile,
-                                         const residency::TransactionContext& context) {
-    std::unordered_map<std::uint64_t, std::uint64_t> bases;
-    for (const residency::ResolvedRange& range : context.ranges) {
-      bases.emplace(range.allocation_id.value,
-                    static_cast<std::uint64_t>(range.device_address) - range.offset_bytes);
-    }
-    const auto a_base = bases.find(problem.a.allocation_id.value);
-    const auto b_base = bases.find(problem.b.allocation_id.value);
-    const auto c_base = bases.find(problem.c.allocation_id.value);
-    if (a_base == bases.end() || b_base == bases.end() || c_base == bases.end()) {
-      return make_error(XVRAM_STATUS_INTERNAL, "gemm", "resolve_tile",
-                        "runtime did not resolve every GEMM allocation");
-    }
-    const std::uint64_t a_row =
-        problem.a_operation == gemm::MatrixOperation::none ? tile.m_begin : tile.k_begin;
-    const std::uint64_t a_column =
-        problem.a_operation == gemm::MatrixOperation::none ? tile.k_begin : tile.m_begin;
-    const std::uint64_t b_row =
-        problem.b_operation == gemm::MatrixOperation::none ? tile.k_begin : tile.n_begin;
-    const std::uint64_t b_column =
-        problem.b_operation == gemm::MatrixOperation::none ? tile.n_begin : tile.k_begin;
-    const std::uint64_t a_address = a_base->second + matrix_offset(problem.a, a_row, a_column);
-    const std::uint64_t b_address = b_base->second + matrix_offset(problem.b, b_row, b_column);
-    const std::uint64_t c_address =
-        c_base->second + matrix_offset(problem.c, tile.m_begin, tile.n_begin);
-    if (!fits_cublas_int(tile.m_count) || !fits_cublas_int(tile.n_count) ||
-        !fits_cublas_int(tile.k_count) || !fits_cublas_int(problem.a.leading_dimension) ||
-        !fits_cublas_int(problem.b.leading_dimension) ||
-        !fits_cublas_int(problem.c.leading_dimension)) {
-      return make_error(XVRAM_STATUS_UNSUPPORTED, "gemm", "launch_tile",
-                        "tile dimensions exceed the cuBLAS v1 integer ABI");
-    }
-
-    const cublas::abi::MathMode math_mode =
-        problem.compute_mode == gemm::ComputeMode::fast_tf32
-            ? cublas::abi::tf32_tensor_op_math
-            : (problem.compute_mode == gemm::ComputeMode::strict_fp32 ? cublas::abi::pedantic_math
-                                                                      : cublas::abi::default_math);
-    const bool transpose_result = problem.c.layout == gemm::MatrixLayout::row_major;
-    const gemm::MatrixView& first_matrix = transpose_result ? problem.b : problem.a;
-    const gemm::MatrixView& second_matrix = transpose_result ? problem.a : problem.b;
-    const gemm::MatrixOperation first_logical =
-        transpose_result ? problem.b_operation : problem.a_operation;
-    const gemm::MatrixOperation second_logical =
-        transpose_result ? problem.a_operation : problem.b_operation;
-    const std::uint64_t first_address = transpose_result ? b_address : a_address;
-    const std::uint64_t second_address = transpose_result ? a_address : b_address;
-    const int m = static_cast<int>(transpose_result ? tile.n_count : tile.m_count);
-    const int n = static_cast<int>(transpose_result ? tile.m_count : tile.n_count);
-    const int k = static_cast<int>(tile.k_count);
-    const cublas::abi::Operation op_first =
-        physical_operation(first_matrix, first_logical, transpose_result);
-    const cublas::abi::Operation op_second =
-        physical_operation(second_matrix, second_logical, transpose_result);
-    const int lda = static_cast<int>(first_matrix.leading_dimension);
-    const int ldb = static_cast<int>(second_matrix.leading_dimension);
-    const int ldc = static_cast<int>(problem.c.leading_dimension);
-    const double beta_double = tile.beta_mode == gemm::BetaMode::user_beta ? request.beta : 1.0;
-    const cublas::abi::ComputeType compute_type =
-        problem.compute_mode == gemm::ComputeMode::fp64
-            ? cublas::abi::compute_fp64
-            : (problem.compute_mode == gemm::ComputeMode::fast_tf32
-                   ? cublas::abi::compute_fast_tf32
-                   : (problem.compute_mode == gemm::ComputeMode::strict_fp32
-                          ? cublas::abi::compute_fp32_pedantic
-                          : cublas::abi::compute_fp32));
-    void* const workspace =
-        reinterpret_cast<void*>(static_cast<std::uintptr_t>(context.workspace_address));
-    cublas::CoreGemmRequest core;
-    core.operation_a = op_first;
-    core.operation_b = op_second;
-    core.m = m;
-    core.n = n;
-    core.k = k;
-    core.a = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(first_address));
-    core.a_type = to_cublas_type(first_matrix.element_type);
-    core.lda = lda;
-    core.b = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(second_address));
-    core.b_type = to_cublas_type(second_matrix.element_type);
-    core.ldb = ldb;
-    core.c = reinterpret_cast<void*>(static_cast<std::uintptr_t>(c_address));
-    core.c_type = to_cublas_type(problem.c.element_type);
-    core.ldc = ldc;
-    core.compute_type = compute_type;
-    core.math_mode = math_mode;
-    core.alpha = request.alpha;
-    core.beta = beta_double;
-    core.workspace = workspace;
-    core.workspace_bytes = context.workspace_bytes;
-    core.stream = reinterpret_cast<void*>(context.stream);
-
-    const auto lt_order = [](const gemm::MatrixLayout layout) {
-      return layout == gemm::MatrixLayout::row_major ? cublas::abi::lt_order_row_major
-                                                     : cublas::abi::lt_order_column_major;
-    };
-    const auto lt_matrix = [&](const gemm::MatrixView& matrix, const std::uint64_t rows,
-                               const std::uint64_t columns) {
-      return cublas::LtMatrixSignature{to_cublas_type(matrix.element_type),
-                                       lt_order(matrix.layout),
-                                       rows,
-                                       columns,
-                                       static_cast<std::int64_t>(matrix.leading_dimension),
-                                       0U};
-    };
-    const std::uint64_t a_rows =
-        problem.a_operation == gemm::MatrixOperation::none ? tile.m_count : tile.k_count;
-    const std::uint64_t a_columns =
-        problem.a_operation == gemm::MatrixOperation::none ? tile.k_count : tile.m_count;
-    const std::uint64_t b_rows =
-        problem.b_operation == gemm::MatrixOperation::none ? tile.k_count : tile.n_count;
-    const std::uint64_t b_columns =
-        problem.b_operation == gemm::MatrixOperation::none ? tile.n_count : tile.k_count;
-    cublas::LtMatmulSignature lt_signature;
-    lt_signature.compute_type = compute_type;
-    lt_signature.scale_type = problem.compute_mode == gemm::ComputeMode::fp64
-                                  ? cublas::abi::data_fp64
-                                  : cublas::abi::data_fp32;
-    lt_signature.operation_a = problem.a_operation == gemm::MatrixOperation::none
-                                   ? cublas::abi::operation_none
-                                   : cublas::abi::operation_transpose;
-    lt_signature.operation_b = problem.b_operation == gemm::MatrixOperation::none
-                                   ? cublas::abi::operation_none
-                                   : cublas::abi::operation_transpose;
-    lt_signature.a = lt_matrix(problem.a, a_rows, a_columns);
-    lt_signature.b = lt_matrix(problem.b, b_rows, b_columns);
-    lt_signature.c = lt_matrix(problem.c, tile.m_count, tile.n_count);
-    lt_signature.d = lt_signature.c;
-    lt_signature.workspace_limit_bytes = context.workspace_bytes;
-    const float alpha_float = static_cast<float>(request.alpha);
-    const float beta_float = static_cast<float>(beta_double);
-    const double alpha_double = request.alpha;
-    cublas::LtMatmulRequest lt_request;
-    lt_request.signature = lt_signature;
-    lt_request.alpha = problem.compute_mode == gemm::ComputeMode::fp64
-                           ? static_cast<const void*>(&alpha_double)
-                           : static_cast<const void*>(&alpha_float);
-    lt_request.a = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a_address));
-    lt_request.b = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(b_address));
-    lt_request.beta = problem.compute_mode == gemm::ComputeMode::fp64
-                          ? static_cast<const void*>(&beta_double)
-                          : static_cast<const void*>(&beta_float);
-    lt_request.c = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(c_address));
-    lt_request.d = reinterpret_cast<void*>(static_cast<std::uintptr_t>(c_address));
-    lt_request.workspace = workspace;
-    lt_request.workspace_bytes = context.workspace_bytes;
-    lt_request.stream = reinterpret_cast<void*>(context.stream);
-
-    cublas::PreferredGemmResult result;
-    if (cublas::LtMatmulExecutor* executor = owner.cublas_lt(); executor != nullptr) {
-      result = executor->execute_preferred(lt_request, owner.cublas_handle(), core);
-    } else {
-      result.path = cublas::PreferredGemmPath::cublas_core;
-      result.core = cublas::execute_core_gemm(owner.cublas_dispatch(), owner.cublas_handle(), core);
-    }
-    if (result) {
-      owner.record_algorithm(result);
+  [[nodiscard]] static Error execution_error(RuntimeSession& owner, RuntimeOperation& progress,
+                                             const gemm::ExecutionResult& result) {
+    switch (result.status) {
+    case gemm::ExecutionStatus::success:
       return {};
+    case gemm::ExecutionStatus::invalid_argument:
+      return make_error(XVRAM_STATUS_INVALID_ARGUMENT, result.stage, result.operation,
+                        result.message);
+    case gemm::ExecutionStatus::unavailable:
+      return make_error(XVRAM_STATUS_UNAVAILABLE, result.stage, result.operation, result.message);
+    case gemm::ExecutionStatus::unsupported:
+      return make_error(XVRAM_STATUS_UNSUPPORTED, result.stage, result.operation, result.message);
+    case gemm::ExecutionStatus::runtime_failure:
+      return runtime_error(owner.runtime(), result.runtime_status);
+    case gemm::ExecutionStatus::cublas_failure:
+      return make_native_error(XVRAM_STATUS_CUBLAS_ERROR, XVRAM_NATIVE_ERROR_CUBLAS,
+                               result.cublas_status, result.stage, result.operation,
+                               "CUBLAS_STATUS", result.message);
+    case gemm::ExecutionStatus::deadline_expired: {
+      Error deadline = progress.deadline_error(result.stage.c_str(), result.operation.c_str());
+      return deadline ? deadline
+                      : make_error(XVRAM_STATUS_TIMEOUT, result.stage, result.operation,
+                                   result.message);
     }
-    const cublas::abi::Status status = result.path == cublas::PreferredGemmPath::cublas_core
-                                           ? result.core.status
-                                           : result.lt.status;
-    const std::string_view operation = result.path == cublas::PreferredGemmPath::cublas_core
-                                           ? result.core.operation
-                                           : result.lt.operation;
-    const char* status_text = owner.cublas_dispatch().get_status_string != nullptr
-                                  ? owner.cublas_dispatch().get_status_string(status)
-                                  : "cuBLAS operation failed";
-    return make_native_error(XVRAM_STATUS_CUBLAS_ERROR, XVRAM_NATIVE_ERROR_CUBLAS, status, "gemm",
-                             operation, "CUBLAS_STATUS",
-                             status_text != nullptr ? status_text : "cuBLAS operation failed");
+    case gemm::ExecutionStatus::cancelled:
+      return make_error(XVRAM_STATUS_CANCELLED, result.stage, result.operation, result.message);
+    case gemm::ExecutionStatus::internal_failure:
+      return make_error(XVRAM_STATUS_INTERNAL, result.stage, result.operation, result.message);
+    }
+    return make_error(XVRAM_STATUS_INTERNAL, "gemm", "execute_plan",
+                      "unrecognized internal GEMM execution status");
   }
 
   std::weak_ptr<RuntimeSession> owner_;
@@ -1514,7 +1265,8 @@ Error RuntimeSession::create_gemm_plan(const GemmRequest& request,
             ? XVRAM_COMPUTE_FP64
             : (problem.compute_mode == gemm::ComputeMode::fast_tf32 ? XVRAM_COMPUTE_FP32_TF32
                                                                     : XVRAM_COMPUTE_FP32_STRICT);
-    const bool use_cublas_lt = cublas_lt_ready() && cublas_lt_is_exact_proof_eligible(problem);
+    const bool use_cublas_lt =
+        cublas_lt_ready() && gemm::is_cublas_lt_exact_proof_eligible(problem);
     output = std::make_shared<RuntimeGemmPlan>(shared_from_this(), std::move(normalized),
                                                std::move(problem), std::move(plan), effective,
                                                use_cublas_lt);

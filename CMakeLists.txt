@@ -380,10 +380,12 @@ xvram_enable_warnings(xvram-cache-bench)
 
 add_library(
   xvram_gemm_core STATIC
+  src/gemm/executor.cpp
   src/gemm/planner.cpp
   src/platform/cublas/cublas_api.cpp)
 target_compile_features(xvram_gemm_core PUBLIC cxx_std_20)
 target_include_directories(xvram_gemm_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_gemm_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
 target_link_libraries(xvram_gemm_core PRIVATE xvram_probe_lib xvram_residency_core)
 xvram_enable_warnings(xvram_gemm_core)
 
