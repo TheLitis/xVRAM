@@ -86,7 +86,7 @@ flag true while keeping their cache and workspace within the observed live targe
 checked-in `scripts/run-phase3-rtx3070-acceptance.ps1` command reproduces the complete
 format, planner, residency, correctness, cleanup, and process-isolation gate.
 
-## Phase 4: PyTorch — in progress (4a accepted; 4b local gate complete, CI pending)
+## Phase 4: PyTorch — complete
 
 ### Phase 4a: resident allocator boundary — complete
 
@@ -134,8 +134,10 @@ distance-two 31-layer reports recorded and retired non-zero prefetch work.
 Every oversubscribed report demonstrated eviction and frame reuse; event, view,
 mapping, cache, trace, and worker-isolation accounting reconciled; cleanup was complete;
 and diagnostics were empty. The implementation and local hardware gate are therefore
-complete. Final Phase 4b delivery remains pending until the full GitHub Actions run
-finishes successfully; this roadmap does not claim that CI result yet.
+complete. The full Windows/Linux Debug/Release, Clang ASan/UBSan, installed-package,
+and PyTorch Stable-ABI 2.11→2.13 matrix passed in
+[GitHub Actions run 33676882740](https://github.com/TheLitis/xVRAM/actions/runs/33676882740),
+completing Phase 4b within its stated scope.
 
 Phase 4b remains limited to static-shape, single-GPU, forward inference. Autograd,
 backward/optimizer scheduling, CUDA Graphs, dynamic control flow, distributed/NCCL,

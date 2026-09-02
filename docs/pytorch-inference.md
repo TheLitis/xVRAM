@@ -9,9 +9,9 @@ ATen region can touch.
 > [!IMPORTANT]
 > The lease runtime, strict planner, Python frontends, native Stable-ABI bridge,
 > controller/report contract, and hardware-gate script are implemented. As of
-> 2026-09-02, all six RTX 3070 scenarios validate locally. The implementation and local
-> hardware gate are complete; final Phase 4b delivery still awaits the full GitHub
-> Actions result.
+> 2026-09-02, all six RTX 3070 scenarios validate locally and the full Windows/Linux
+> GitHub Actions matrix passes, including Stable-ABI cross-version loading. Phase 4b is
+> complete within its stated static-inference scope.
 
 The feature is intentionally narrow: static-shape forward inference on one CUDA device.
 There is no eager fallback. Autograd, graph breaks, CUDA Graph capture, RNG, arbitrary
@@ -260,7 +260,7 @@ not attributed per allocation. Likewise, the resource-specific cleanup flags com
 successful native close with allocation/mapping/event reconciliation; they are contract
 checks, not an external driver leak detector.
 
-## RTX 3070 gate — local gate complete, CI pending
+## RTX 3070 gate — complete
 
 `scripts/run-phase4b-rtx3070-acceptance.ps1` runs the deterministic FP16 Llama-2-like
 decoder at 16, 23, and 31 layers; CLOCK and LRU at 31 layers; prefetch distances zero
@@ -282,5 +282,7 @@ the distance-two CLOCK/LRU runs report non-zero, fully retired prefetch work. Ev
 oversubscribed report shows eviction and frame reuse, all applicable proof flags are
 true, cleanup is complete, and diagnostics are empty.
 
-This completes implementation and the local hardware gate. Final delivery still waits
-for the full GitHub Actions run; no successful Actions result is claimed here.
+This completes implementation and the local hardware gate. The complete Windows/Linux
+Debug/Release, Clang ASan/UBSan, installed-package, and PyTorch Stable-ABI 2.11→2.13
+matrix also passed in
+[GitHub Actions run 33676882740](https://github.com/TheLitis/xVRAM/actions/runs/33676882740).

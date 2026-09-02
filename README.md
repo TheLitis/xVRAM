@@ -12,8 +12,8 @@ WDDM-aware budgeting, cache policy, and library-aware tiling.
 > [!WARNING]
 > xVRAM now exposes an experimental, versioned C ABI, tiled GEMM integration, and a
 > resident-only PyTorch MemPool adapter. A separate lease-scoped PyTorch inference
-> runtime is implemented and has passed its local six-scenario RTX 3070 gate; final
-> Phase 4b delivery still awaits the full GitHub Actions run. The SDK remains
+> runtime is implemented and has passed its local six-scenario RTX 3070 gate and the
+> complete Windows/Linux GitHub Actions matrix. The SDK remains
 > pre-release, does not transparently extend an arbitrary application's VRAM, and must
 > not be used for production workloads.
 
@@ -149,7 +149,7 @@ ranges, so Phase 4a never evicts or remaps a live tensor and does not claim PyTo
 oversubscription. See the [PyTorch MemPool guide](docs/pytorch-mempool.md) for setup,
 stream-lifetime rules, telemetry, tests, and exact limitations.
 
-## Phase 4b lease-scoped PyTorch inference — local gate complete, CI pending
+## Phase 4b lease-scoped PyTorch inference — complete
 
 `xvram.torch.InferenceRuntime` strictly exports one static, single-GPU forward graph and
 stores parameters, inputs, outputs, and planned activations in pageable xVRAM backing.
@@ -178,8 +178,9 @@ reports and passed schema, trace, and semantic checks—CLOCK 16/23/31, LRU 31, 
 with prefetch disabled, and the two-layer sequence-128 attention smoke. The three
 31-layer digests match; distance-zero recorded no prefetch while distance-two recorded
 and retired real prefetch work. Cleanup is complete and diagnostics are empty. The
-implementation and local hardware gate are complete; final delivery awaits the full
-GitHub Actions result.
+implementation and local hardware gate are complete. The full Windows/Linux build,
+sanitizer, installed-package, and Stable-ABI 2.11→2.13 matrix passed in
+[GitHub Actions run 33676882740](https://github.com/TheLitis/xVRAM/actions/runs/33676882740).
 
 ## Build
 
@@ -333,8 +334,8 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 2. Explicit CUDA VMM proof of concept with stable logical addresses.
 3. Event-safe residency cache with pinned staging pools and WDDM budget tracking.
 4. Stable C ABI and library-aware tiled operations, starting with GEMM.
-5. PyTorch resident allocator plus lease-scoped static inference; the Phase 4b local
-   hardware gate is complete and final CI delivery is pending.
+5. PyTorch resident allocator plus lease-scoped static inference; both Phase 4
+   boundaries and the Phase 4b oversubscription gate are complete.
 6. Adaptive transport compression based on measured cost.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
