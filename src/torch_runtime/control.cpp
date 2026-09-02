@@ -1,5 +1,8 @@
 #include "torch_runtime/control.hpp"
 
+#include "gemm/executor.hpp"
+#include "gemm/planner.hpp"
+#include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
 #include "residency/runtime.hpp"
 
@@ -7,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -91,6 +95,9 @@ struct SessionState {
   std::thread::id owner_thread;
   cuda::CudaApi api;
   std::unique_ptr<residency::Runtime> runtime;
+  cublas::CublasApi cublas;
+  cublas::abi::Handle cublas_handle = nullptr;
+  std::unique_ptr<cublas::LtMatmulExecutor> cublas_lt;
   std::unordered_map<xvram_torch_runtime_allocation, std::shared_ptr<AllocationState>> allocations;
   std::unordered_map<xvram_torch_runtime_lease, std::shared_ptr<LeaseState>> leases;
   xvram_torch_runtime_lease active_lease = XVRAM_TORCH_RUNTIME_INVALID_HANDLE;
@@ -375,6 +382,159 @@ void note_retired(SessionState& session, LeaseState& lease) noexcept {
   }
 }
 
+[[nodiscard]] std::optional<gemm::MatrixLayout>
+convert_gemm_layout(const xvram_torch_runtime_gemm_layout value) noexcept {
+  if (value == XVRAM_TORCH_RUNTIME_GEMM_ROW_MAJOR) {
+    return gemm::MatrixLayout::row_major;
+  }
+  if (value == XVRAM_TORCH_RUNTIME_GEMM_COLUMN_MAJOR) {
+    return gemm::MatrixLayout::column_major;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<gemm::MatrixOperation>
+convert_gemm_operation(const xvram_torch_runtime_gemm_operation value) noexcept {
+  if (value == XVRAM_TORCH_RUNTIME_GEMM_OPERATION_NONE) {
+    return gemm::MatrixOperation::none;
+  }
+  if (value == XVRAM_TORCH_RUNTIME_GEMM_OPERATION_TRANSPOSE) {
+    return gemm::MatrixOperation::transpose;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<gemm::ElementType>
+convert_gemm_dtype(const xvram_torch_runtime_gemm_dtype value) noexcept {
+  switch (value) {
+  case XVRAM_TORCH_RUNTIME_GEMM_FP16:
+    return gemm::ElementType::fp16;
+  case XVRAM_TORCH_RUNTIME_GEMM_BF16:
+    return gemm::ElementType::bf16;
+  case XVRAM_TORCH_RUNTIME_GEMM_FP32:
+    return gemm::ElementType::fp32;
+  case XVRAM_TORCH_RUNTIME_GEMM_FP64:
+    return gemm::ElementType::fp64;
+  default:
+    return std::nullopt;
+  }
+}
+
+[[nodiscard]] std::optional<gemm::ComputeMode>
+convert_gemm_compute(const xvram_torch_runtime_gemm_compute value) noexcept {
+  switch (value) {
+  case XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_STRICT_FP32:
+    return gemm::ComputeMode::strict_fp32;
+  case XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_FAST_TF32:
+    return gemm::ComputeMode::fast_tf32;
+  case XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_FP64:
+    return gemm::ComputeMode::fp64;
+  default:
+    return std::nullopt;
+  }
+}
+
+[[nodiscard]] xvram_torch_runtime_gemm_boundary
+gemm_boundary_from_operation(const std::string_view operation) noexcept {
+  if (operation == "pre_launch_deadline") {
+    return XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT;
+  }
+  if (operation == "tile_deadline") {
+    return XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_BEFORE_TILE;
+  }
+  if (operation == "post_residency_deadline") {
+    return XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_RESIDENCY;
+  }
+  if (operation == "make_plan" || operation == "execute_plan") {
+    return XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PLAN;
+  }
+  return XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_TILE;
+}
+
+[[nodiscard]] std::uint64_t counter_delta(const std::uint64_t after,
+                                          const std::uint64_t before) noexcept {
+  return after >= before ? after - before : 0U;
+}
+
+[[nodiscard]] xvram_torch_runtime_status
+map_cublas_status(const cublas::abi::Status status) noexcept {
+  return status == cublas::abi::allocation_failed ? XVRAM_TORCH_RUNTIME_DEVICE_OUT_OF_MEMORY
+                                                  : XVRAM_TORCH_RUNTIME_CUBLAS_ERROR;
+}
+
+[[nodiscard]] xvram_torch_runtime_status ensure_cublas(SessionState& session) {
+  if (session.cublas_handle != nullptr) {
+    return XVRAM_TORCH_RUNTIME_SUCCESS;
+  }
+  const cublas::CublasLoadResult load = session.cublas.load();
+  if (load.status != cublas::CublasLoadStatus::loaded) {
+    const std::string_view message = session.cublas.error().empty()
+                                         ? cublas::cublas_load_status_name(load.status)
+                                         : std::string_view(session.cublas.error());
+    set_error(session, XVRAM_TORCH_RUNTIME_UNAVAILABLE, "gemm", "load_cublas", message);
+    return XVRAM_TORCH_RUNTIME_UNAVAILABLE;
+  }
+  const cublas::CublasDispatch& dispatch = session.cublas.dispatch();
+  cublas::abi::Status status = cublas::abi::not_initialized;
+  if (dispatch.create != nullptr) {
+    status = dispatch.create(&session.cublas_handle);
+  }
+  if (status != cublas::abi::success || session.cublas_handle == nullptr) {
+    session.cublas_handle = nullptr;
+    const xvram_torch_runtime_status mapped = map_cublas_status(status);
+    set_error(session, mapped, "gemm", "cublasCreate_v2", "cuBLAS handle creation failed", status);
+    return mapped;
+  }
+  if (session.cublas.has_lt()) {
+    try {
+      auto executor = std::make_unique<cublas::LtMatmulExecutor>(dispatch);
+      if (executor->initialize() == cublas::abi::success) {
+        session.cublas_lt = std::move(executor);
+      }
+    } catch (const std::bad_alloc&) {
+      // The baseline cuBLAS path remains valid when the optional Lt cache cannot be allocated.
+    }
+  }
+  clear_error(session);
+  return XVRAM_TORCH_RUNTIME_SUCCESS;
+}
+
+[[nodiscard]] xvram_torch_runtime_status destroy_cublas(SessionState& session) noexcept {
+  cublas::abi::Status first_error = cublas::abi::success;
+  const char* operation = "";
+  if (session.cublas_lt != nullptr) {
+    const cublas::abi::Status status = session.cublas_lt->close();
+    if (status != cublas::abi::success) {
+      first_error = status;
+      operation = "cublasLtDestroy";
+    }
+    session.cublas_lt.reset();
+  }
+  if (session.cublas_handle != nullptr && session.cublas.dispatch().destroy != nullptr) {
+    const cublas::abi::Status status = session.cublas.dispatch().destroy(session.cublas_handle);
+    if (first_error == cublas::abi::success && status != cublas::abi::success) {
+      first_error = status;
+      operation = "cublasDestroy_v2";
+    }
+  }
+  session.cublas_handle = nullptr;
+  if (first_error == cublas::abi::success) {
+    return XVRAM_TORCH_RUNTIME_SUCCESS;
+  }
+  set_error(session, XVRAM_TORCH_RUNTIME_CLEANUP_FAILED, "cleanup", operation,
+            "cuBLAS handle destruction failed", first_error);
+  return XVRAM_TORCH_RUNTIME_CLEANUP_FAILED;
+}
+
+void abandon_cublas(SessionState& session) noexcept {
+  if (session.cublas_lt != nullptr) {
+    session.cublas_lt->abandon();
+    session.cublas_lt.reset();
+  }
+  session.cublas_handle = nullptr;
+  session.cublas.abandon();
+}
+
 [[nodiscard]] const char* XVRAM_TORCH_RUNTIME_CALL
 status_name_entry(const xvram_torch_runtime_status status) noexcept {
   static constexpr const char* names[] = {"success",
@@ -392,8 +552,9 @@ status_name_entry(const xvram_torch_runtime_status status) noexcept {
                                           "cuda_error",
                                           "quarantined",
                                           "cleanup_failed",
-                                          "internal_error"};
-  return status <= XVRAM_TORCH_RUNTIME_INTERNAL_ERROR ? names[status] : "unknown";
+                                          "internal_error",
+                                          "cublas_error"};
+  return status <= XVRAM_TORCH_RUNTIME_CUBLAS_ERROR ? names[status] : "unknown";
 }
 
 [[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL
@@ -917,6 +1078,302 @@ lease_wait_entry(const xvram_torch_runtime_lease handle, const std::uint64_t tim
   return observe_lease(handle, timeout, output);
 }
 
+[[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL
+gemm_execute_entry(const xvram_torch_runtime_session session_handle,
+                   const xvram_torch_runtime_gemm_problem_v1* description,
+                   xvram_torch_runtime_gemm_result_v1* output) noexcept {
+  xvram_torch_runtime_gemm_result_v1 result = XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT;
+  result.status = XVRAM_TORCH_RUNTIME_GEMM_INTERNAL_FAILED;
+  result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT;
+  constexpr std::size_t output_prefix = sizeof(std::uint32_t) * 2U;
+  if (output == nullptr || output->struct_size < output_prefix ||
+      output->abi_version != XVRAM_TORCH_RUNTIME_ABI_VERSION_1) {
+    return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+  }
+
+  const xvram_torch_runtime_status status = boundary([&]() -> xvram_torch_runtime_status {
+    constexpr std::size_t problem_minimum = offsetof(xvram_torch_runtime_gemm_problem_v1, reserved);
+    constexpr std::size_t matrix_minimum = offsetof(xvram_torch_runtime_gemm_matrix_v1, reserved);
+    if (!compatible(description, problem_minimum) ||
+        !compatible(description == nullptr ? nullptr : &description->a, matrix_minimum) ||
+        !compatible(description == nullptr ? nullptr : &description->b, matrix_minimum) ||
+        !compatible(description == nullptr ? nullptr : &description->c, matrix_minimum)) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    if (description->m == 0U || description->n == 0U || description->k == 0U ||
+        !std::isfinite(description->alpha) || !std::isfinite(description->beta) ||
+        description->beta != 0.0 || description->prefetch_distance > 8U) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+
+    const std::shared_ptr<SessionState> session = find_session(session_handle);
+    if (session == nullptr) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      return XVRAM_TORCH_RUNTIME_NOT_FOUND;
+    }
+    if (!on_owner_thread(*session)) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      return XVRAM_TORCH_RUNTIME_INVALID_STATE;
+    }
+    std::lock_guard lock(session->mutex);
+    if (session->closed || session->active_lease != XVRAM_TORCH_RUNTIME_INVALID_HANDLE ||
+        session->custom.views_live.load(std::memory_order_acquire) != 0U ||
+        session->custom.scratch_current.load(std::memory_order_acquire) != 0U) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_STATE, "gemm", "preflight",
+                "tiled GEMM requires an idle session with no external lease, tensor view, or "
+                "scratch allocation");
+      return XVRAM_TORCH_RUNTIME_INVALID_STATE;
+    }
+    if (description->workspace_bytes > session->scratch_arena_bytes) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_PLANNING_FAILED;
+      result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PLAN;
+      set_error(*session, XVRAM_TORCH_RUNTIME_BUDGET_PRESSURE, "gemm", "workspace_cap",
+                "requested GEMM workspace exceeds the session scratch reserve");
+      return XVRAM_TORCH_RUNTIME_BUDGET_PRESSURE;
+    }
+
+    const std::optional<gemm::ComputeMode> compute = convert_gemm_compute(description->compute);
+    if (!compute.has_value()) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT, "gemm", "compute_mode",
+                "unsupported GEMM compute mode");
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+
+    gemm::GemmProblem problem;
+    const auto convert_matrix = [&](const xvram_torch_runtime_gemm_matrix_v1& source,
+                                    gemm::MatrixView& destination,
+                                    gemm::MatrixOperation& operation) {
+      const std::optional<gemm::MatrixLayout> layout = convert_gemm_layout(source.layout);
+      const std::optional<gemm::MatrixOperation> converted_operation =
+          convert_gemm_operation(source.operation);
+      const std::optional<gemm::ElementType> dtype = convert_gemm_dtype(source.dtype);
+      const std::shared_ptr<AllocationState> allocation = find_allocation(source.allocation);
+      const std::shared_ptr<SessionState> owner =
+          allocation == nullptr ? nullptr : allocation->owner.lock();
+      if (!layout.has_value() || !converted_operation.has_value() || !dtype.has_value() ||
+          allocation == nullptr || owner.get() != session.get() || allocation->released) {
+        return false;
+      }
+      destination = gemm::MatrixView{allocation->runtime_id,
+                                     allocation->bytes,
+                                     source.byte_offset,
+                                     source.rows,
+                                     source.columns,
+                                     source.leading_dimension,
+                                     *layout,
+                                     *dtype};
+      operation = *converted_operation;
+      return true;
+    };
+    gemm::MatrixOperation c_operation = gemm::MatrixOperation::none;
+    if (!convert_matrix(description->a, problem.a, problem.a_operation) ||
+        !convert_matrix(description->b, problem.b, problem.b_operation) ||
+        !convert_matrix(description->c, problem.c, c_operation)) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT, "gemm", "matrix",
+                "GEMM matrix metadata or allocation handle is invalid");
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+    if (c_operation != gemm::MatrixOperation::none) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT, "gemm", "output_operation",
+                "GEMM output transpose is not supported");
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+    problem.m = description->m;
+    problem.n = description->n;
+    problem.k = description->k;
+    problem.alpha = description->alpha;
+    problem.beta = description->beta;
+    problem.compute_mode = *compute;
+    const gemm::ProblemValidation validation = gemm::validate_problem(problem);
+    if (!validation) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT, "gemm", "validate_problem",
+                gemm::problem_error_name(validation.error));
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+
+    const std::uint64_t chunk_bytes = session->runtime->chunk_bytes();
+    const std::uint64_t live_target = session->runtime->target_bytes();
+    const std::uint64_t frame_budget = live_target > session->scratch_arena_bytes
+                                           ? live_target - session->scratch_arena_bytes
+                                           : 0U;
+    const std::uint64_t frame_bytes =
+        chunk_bytes == 0U ? 0U : (frame_budget / chunk_bytes) * chunk_bytes;
+    if (chunk_bytes == 0U || frame_bytes / chunk_bytes < 2U) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_PLANNING_FAILED;
+      result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PLAN;
+      set_error(*session, XVRAM_TORCH_RUNTIME_BUDGET_PRESSURE, "gemm", "make_plan",
+                "live target leaves fewer than two complete cache frames");
+      return XVRAM_TORCH_RUNTIME_BUDGET_PRESSURE;
+    }
+    gemm::PlannerConfig planner;
+    planner.chunk_bytes = chunk_bytes;
+    planner.workspace_bytes = description->workspace_bytes;
+    planner.cache_target_bytes = frame_bytes + description->workspace_bytes;
+    planner.preferred_geometry = gemm::TileGeometry{
+        description->preferred_tile_m == 0U ? 4096U : description->preferred_tile_m,
+        description->preferred_tile_n == 0U ? 4096U : description->preferred_tile_n,
+        description->preferred_tile_k == 0U ? 1024U : description->preferred_tile_k};
+    const gemm::GemmPlan plan = gemm::make_plan(problem, planner);
+    if (!plan) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_PLANNING_FAILED;
+      result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PLAN;
+      const bool pressure = plan.error == gemm::PlanError::working_set_too_large ||
+                            plan.error == gemm::PlanError::invalid_cache_target ||
+                            plan.error == gemm::PlanError::workspace_exceeds_cache;
+      const xvram_torch_runtime_status mapped =
+          pressure ? XVRAM_TORCH_RUNTIME_BUDGET_PRESSURE : XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+      set_error(*session, mapped, "gemm", "make_plan", gemm::plan_error_name(plan.error));
+      return mapped;
+    }
+    result.tile_count = static_cast<std::uint64_t>(plan.tiles.size());
+    result.workspace_bytes = description->workspace_bytes;
+    result.maximum_working_set_bytes = plan.maximum_resident_bytes;
+    result.tile_m = plan.geometry.m;
+    result.tile_n = plan.geometry.n;
+    result.tile_k = plan.geometry.k;
+
+    const xvram_torch_runtime_status loaded = ensure_cublas(*session);
+    if (loaded != XVRAM_TORCH_RUNTIME_SUCCESS) {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_CUBLAS_UNAVAILABLE;
+      return loaded;
+    }
+
+    const residency::RuntimeTelemetry before = session->runtime->telemetry();
+    const auto started = std::chrono::steady_clock::now();
+    gemm::ExecutionHooks hooks;
+    hooks.boundary = [&](const gemm::ExecutionBoundary execution_boundary, std::size_t) {
+      switch (execution_boundary) {
+      case gemm::ExecutionBoundary::before_execution:
+        result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT;
+        break;
+      case gemm::ExecutionBoundary::before_tile:
+        result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_BEFORE_TILE;
+        break;
+      case gemm::ExecutionBoundary::after_residency:
+        result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_RESIDENCY;
+        break;
+      case gemm::ExecutionBoundary::after_tile:
+        result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_TILE;
+        break;
+      }
+      return gemm::ExecutionControl::proceed;
+    };
+    hooks.progress = [&](std::size_t completed, std::size_t) {
+      result.tiles_completed = static_cast<std::uint64_t>(completed);
+      result.maximum_kernel_milliseconds = std::max(
+          result.maximum_kernel_milliseconds, session->runtime->telemetry().last_transaction_ms);
+    };
+    hooks.algorithm = [&](const cublas::PreferredGemmResult& selection) {
+      ++result.tiles_submitted;
+      if (selection.path == cublas::PreferredGemmPath::cublas_core) {
+        ++result.cublas_core_tiles;
+      } else {
+        ++result.cublas_lt_tiles;
+        if (selection.lt.algorithm_cache_hit) {
+          ++result.algorithm_cache_hits;
+        }
+      }
+    };
+    cublas::LtMatmulExecutor* lt =
+        gemm::is_cublas_lt_exact_proof_eligible(problem) ? session->cublas_lt.get() : nullptr;
+    const gemm::TiledGemmResources resources{
+        *session->runtime,
+        gemm::NativeGemmResources{session->cublas.dispatch(), session->cublas_handle, lt}};
+    const gemm::TiledGemmRequest request{problem, plan, description->workspace_bytes,
+                                         description->prefetch_distance};
+    const gemm::ExecutionResult execution = gemm::execute_tiled_gemm(resources, request, hooks);
+    const residency::RuntimeTelemetry after = session->runtime->telemetry();
+    result.elapsed_milliseconds =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+    result.events_recorded =
+        counter_delta(after.transactions_submitted, before.transactions_submitted);
+    result.events_retired =
+        counter_delta(after.transactions_completed, before.transactions_completed);
+    result.maps = counter_delta(after.maps, before.maps);
+    result.set_access_calls = counter_delta(after.set_access, before.set_access);
+    result.h2d_bytes = counter_delta(after.h2d_bytes, before.h2d_bytes);
+    result.d2h_bytes = counter_delta(after.d2h_bytes, before.d2h_bytes);
+    result.clean_evictions = counter_delta(after.clean_evictions, before.clean_evictions);
+    result.dirty_evictions = counter_delta(after.dirty_evictions, before.dirty_evictions);
+    result.handles_reused = counter_delta(after.handles_reused, before.handles_reused);
+    result.prefetches = counter_delta(after.prefetches, before.prefetches);
+
+    switch (execution.status) {
+    case gemm::ExecutionStatus::success:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_COMPLETED;
+      result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_TILE;
+      clear_error(*session);
+      return XVRAM_TORCH_RUNTIME_SUCCESS;
+    case gemm::ExecutionStatus::invalid_argument:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT, execution.stage,
+                execution.operation, execution.message);
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    case gemm::ExecutionStatus::unavailable:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_CUBLAS_UNAVAILABLE;
+      set_error(*session, XVRAM_TORCH_RUNTIME_UNAVAILABLE, execution.stage, execution.operation,
+                execution.message);
+      return XVRAM_TORCH_RUNTIME_UNAVAILABLE;
+    case gemm::ExecutionStatus::unsupported:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM;
+      set_error(*session, XVRAM_TORCH_RUNTIME_UNSUPPORTED, execution.stage, execution.operation,
+                execution.message);
+      return XVRAM_TORCH_RUNTIME_UNSUPPORTED;
+    case gemm::ExecutionStatus::runtime_failure: {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_RUNTIME_FAILED;
+      const xvram_torch_runtime_status mapped =
+          record_runtime_error(*session, execution.runtime_status);
+      result.boundary = gemm_boundary_from_operation(execution.operation);
+      return mapped;
+    }
+    case gemm::ExecutionStatus::cublas_failure: {
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_CUBLAS_FAILED;
+      result.native_code = execution.cublas_status;
+      const xvram_torch_runtime_status mapped = map_cublas_status(execution.cublas_status);
+      set_error(*session, mapped, execution.stage, execution.operation, execution.message,
+                execution.cublas_status);
+      result.boundary = gemm_boundary_from_operation(execution.operation);
+      return mapped;
+    }
+    case gemm::ExecutionStatus::deadline_expired:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_CANCELLED;
+      set_error(*session, XVRAM_TORCH_RUNTIME_TIMEOUT, execution.stage, execution.operation,
+                execution.message);
+      result.boundary = gemm_boundary_from_operation(execution.operation);
+      return XVRAM_TORCH_RUNTIME_TIMEOUT;
+    case gemm::ExecutionStatus::cancelled:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_CANCELLED;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INVALID_STATE, execution.stage, execution.operation,
+                execution.message);
+      result.boundary = gemm_boundary_from_operation(execution.operation);
+      return XVRAM_TORCH_RUNTIME_INVALID_STATE;
+    case gemm::ExecutionStatus::internal_failure:
+      result.status = XVRAM_TORCH_RUNTIME_GEMM_INTERNAL_FAILED;
+      set_error(*session, XVRAM_TORCH_RUNTIME_INTERNAL_ERROR, execution.stage, execution.operation,
+                execution.message);
+      result.boundary = gemm_boundary_from_operation(execution.operation);
+      return XVRAM_TORCH_RUNTIME_INTERNAL_ERROR;
+    }
+    result.status = XVRAM_TORCH_RUNTIME_GEMM_INTERNAL_FAILED;
+    return XVRAM_TORCH_RUNTIME_INTERNAL_ERROR;
+  });
+
+  if (status == XVRAM_TORCH_RUNTIME_HOST_OUT_OF_MEMORY &&
+      result.status == XVRAM_TORCH_RUNTIME_GEMM_INTERNAL_FAILED) {
+    result.boundary = XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT;
+  }
+  const xvram_torch_runtime_status copied = copy_output(output, result);
+  return copied == XVRAM_TORCH_RUNTIME_SUCCESS ? status : copied;
+}
+
 [[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL session_close_entry(
     const xvram_torch_runtime_session handle, const std::uint64_t timeout) noexcept {
   return boundary([&]() -> xvram_torch_runtime_status {
@@ -956,7 +1413,19 @@ lease_wait_entry(const xvram_torch_runtime_lease handle, const std::uint64_t tim
         return XVRAM_TORCH_RUNTIME_VIEWS_LIVE;
       }
     }
+    const residency::RuntimeStatus drained = session->runtime->drain(true);
+    const bool quarantine = drained == residency::RuntimeStatus::poisoned ||
+                            session->runtime->async_completion_unknown();
+    const xvram_torch_runtime_status cublas_cleanup =
+        quarantine ? (abandon_cublas(*session), XVRAM_TORCH_RUNTIME_SUCCESS)
+                   : destroy_cublas(*session);
     const residency::RuntimeStatus status = session->runtime->close();
+    if (drained != residency::RuntimeStatus::success) {
+      return record_runtime_error(*session, drained);
+    }
+    if (cublas_cleanup != XVRAM_TORCH_RUNTIME_SUCCESS) {
+      return cublas_cleanup;
+    }
     if (status != residency::RuntimeStatus::success) {
       return record_runtime_error(*session, status);
     }
@@ -1189,6 +1658,7 @@ xvram_torch_runtime_get_api(const std::uint32_t requested_abi_version,
   value.lease_seal = &lease_seal_entry;
   value.lease_poll = &lease_poll_entry;
   value.lease_wait = &lease_wait_entry;
+  value.gemm_execute = &gemm_execute_entry;
   std::memcpy(output_api, &value, sizeof(value));
   return XVRAM_TORCH_RUNTIME_SUCCESS;
 }

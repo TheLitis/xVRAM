@@ -56,7 +56,8 @@ enum {
   XVRAM_TORCH_RUNTIME_CUDA_ERROR = 12,
   XVRAM_TORCH_RUNTIME_QUARANTINED = 13,
   XVRAM_TORCH_RUNTIME_CLEANUP_FAILED = 14,
-  XVRAM_TORCH_RUNTIME_INTERNAL_ERROR = 15
+  XVRAM_TORCH_RUNTIME_INTERNAL_ERROR = 15,
+  XVRAM_TORCH_RUNTIME_CUBLAS_ERROR = 16
 };
 
 typedef uint32_t xvram_torch_runtime_policy;
@@ -284,6 +285,145 @@ typedef struct xvram_torch_runtime_error_v1 {
    {0},                                                                                            \
    {0}}
 
+typedef uint32_t xvram_torch_runtime_gemm_layout;
+enum { XVRAM_TORCH_RUNTIME_GEMM_ROW_MAJOR = 1, XVRAM_TORCH_RUNTIME_GEMM_COLUMN_MAJOR = 2 };
+
+typedef uint32_t xvram_torch_runtime_gemm_operation;
+enum {
+  XVRAM_TORCH_RUNTIME_GEMM_OPERATION_NONE = 1,
+  XVRAM_TORCH_RUNTIME_GEMM_OPERATION_TRANSPOSE = 2
+};
+
+typedef uint32_t xvram_torch_runtime_gemm_dtype;
+enum {
+  XVRAM_TORCH_RUNTIME_GEMM_FP16 = 1,
+  XVRAM_TORCH_RUNTIME_GEMM_BF16 = 2,
+  XVRAM_TORCH_RUNTIME_GEMM_FP32 = 3,
+  XVRAM_TORCH_RUNTIME_GEMM_FP64 = 4
+};
+
+typedef uint32_t xvram_torch_runtime_gemm_compute;
+enum {
+  XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_STRICT_FP32 = 1,
+  XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_FAST_TF32 = 2,
+  XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_FP64 = 3
+};
+
+typedef uint32_t xvram_torch_runtime_gemm_result_status;
+enum {
+  XVRAM_TORCH_RUNTIME_GEMM_NOT_RUN = 0,
+  XVRAM_TORCH_RUNTIME_GEMM_COMPLETED = 1,
+  XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM = 2,
+  XVRAM_TORCH_RUNTIME_GEMM_PLANNING_FAILED = 3,
+  XVRAM_TORCH_RUNTIME_GEMM_CUBLAS_UNAVAILABLE = 4,
+  XVRAM_TORCH_RUNTIME_GEMM_CUBLAS_FAILED = 5,
+  XVRAM_TORCH_RUNTIME_GEMM_RUNTIME_FAILED = 6,
+  XVRAM_TORCH_RUNTIME_GEMM_CANCELLED = 7,
+  XVRAM_TORCH_RUNTIME_GEMM_INTERNAL_FAILED = 8
+};
+
+typedef uint32_t xvram_torch_runtime_gemm_boundary;
+enum {
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_NONE = 0,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT = 1,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PLAN = 2,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_BEFORE_TILE = 3,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_RESIDENCY = 4,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_AFTER_TILE = 5,
+  XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_CLEANUP = 6
+};
+
+typedef struct xvram_torch_runtime_gemm_matrix_v1 {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  xvram_torch_runtime_allocation allocation;
+  uint64_t byte_offset;
+  uint64_t rows;
+  uint64_t columns;
+  uint64_t leading_dimension;
+  xvram_torch_runtime_gemm_layout layout;
+  xvram_torch_runtime_gemm_operation operation;
+  xvram_torch_runtime_gemm_dtype dtype;
+  uint32_t reserved0;
+  uint64_t reserved[4];
+} xvram_torch_runtime_gemm_matrix_v1;
+
+#define XVRAM_TORCH_RUNTIME_GEMM_MATRIX_V1_INIT                                                    \
+  {                                                                                                \
+    (uint32_t)sizeof(xvram_torch_runtime_gemm_matrix_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1,       \
+        XVRAM_TORCH_RUNTIME_INVALID_HANDLE, UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),    \
+        XVRAM_TORCH_RUNTIME_GEMM_ROW_MAJOR, XVRAM_TORCH_RUNTIME_GEMM_OPERATION_NONE,               \
+        XVRAM_TORCH_RUNTIME_GEMM_FP16, UINT32_C(0), {                                              \
+      UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0)                                           \
+    }                                                                                              \
+  }
+
+typedef struct xvram_torch_runtime_gemm_problem_v1 {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  xvram_torch_runtime_gemm_matrix_v1 a;
+  xvram_torch_runtime_gemm_matrix_v1 b;
+  xvram_torch_runtime_gemm_matrix_v1 c;
+  uint64_t m;
+  uint64_t n;
+  uint64_t k;
+  double alpha;
+  double beta;
+  xvram_torch_runtime_gemm_compute compute;
+  uint32_t prefetch_distance;
+  uint64_t workspace_bytes;
+  uint64_t preferred_tile_m;
+  uint64_t preferred_tile_n;
+  uint64_t preferred_tile_k;
+  uint64_t reserved[6];
+} xvram_torch_runtime_gemm_problem_v1;
+
+#define XVRAM_TORCH_RUNTIME_GEMM_PROBLEM_V1_INIT                                                   \
+  {                                                                                                \
+    (uint32_t)sizeof(xvram_torch_runtime_gemm_problem_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1,      \
+        XVRAM_TORCH_RUNTIME_GEMM_MATRIX_V1_INIT, XVRAM_TORCH_RUNTIME_GEMM_MATRIX_V1_INIT,          \
+        XVRAM_TORCH_RUNTIME_GEMM_MATRIX_V1_INIT, UINT64_C(0), UINT64_C(0), UINT64_C(0), 1.0, 0.0,  \
+        XVRAM_TORCH_RUNTIME_GEMM_COMPUTE_STRICT_FP32, UINT32_C(0), UINT64_C(4194304),              \
+        UINT64_C(4096), UINT64_C(4096), UINT64_C(1024), {                                          \
+      UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0)                 \
+    }                                                                                              \
+  }
+
+typedef struct xvram_torch_runtime_gemm_result_v1 {
+  uint32_t struct_size;
+  uint32_t abi_version;
+  xvram_torch_runtime_gemm_result_status status;
+  xvram_torch_runtime_gemm_boundary boundary;
+  int64_t native_code;
+  uint64_t tile_count;
+  uint64_t tiles_submitted;
+  uint64_t tiles_completed;
+  uint64_t events_recorded;
+  uint64_t events_retired;
+  uint64_t maps;
+  uint64_t set_access_calls;
+  uint64_t h2d_bytes;
+  uint64_t d2h_bytes;
+  uint64_t clean_evictions;
+  uint64_t dirty_evictions;
+  uint64_t handles_reused;
+  uint64_t prefetches;
+  uint64_t cublas_core_tiles;
+  uint64_t cublas_lt_tiles;
+  uint64_t algorithm_cache_hits;
+  uint64_t workspace_bytes;
+  uint64_t maximum_working_set_bytes;
+  uint64_t tile_m;
+  uint64_t tile_n;
+  uint64_t tile_k;
+  double maximum_kernel_milliseconds;
+  double elapsed_milliseconds;
+  uint64_t reserved[8];
+} xvram_torch_runtime_gemm_result_v1;
+
+#define XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT                                                    \
+  {(uint32_t)sizeof(xvram_torch_runtime_gemm_result_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1}
+
 typedef struct xvram_torch_runtime_api_v1 {
   uint32_t struct_size;
   uint32_t abi_version;
@@ -322,7 +462,10 @@ typedef struct xvram_torch_runtime_api_v1 {
       xvram_torch_runtime_lease, xvram_torch_runtime_lease_info_v1*);
   xvram_torch_runtime_status(XVRAM_TORCH_RUNTIME_CALL* lease_wait)(
       xvram_torch_runtime_lease, uint64_t timeout_milliseconds, xvram_torch_runtime_lease_info_v1*);
-  uint64_t reserved[16];
+  xvram_torch_runtime_status(XVRAM_TORCH_RUNTIME_CALL* gemm_execute)(
+      xvram_torch_runtime_session, const xvram_torch_runtime_gemm_problem_v1*,
+      xvram_torch_runtime_gemm_result_v1*);
+  uint64_t reserved[15];
 } xvram_torch_runtime_api_v1;
 
 /* CUDAPluggableAllocator-compatible, lease-bounded scratch callbacks. */

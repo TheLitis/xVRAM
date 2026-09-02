@@ -51,7 +51,31 @@ int main() {
   CHECK(api->lease_seal != nullptr);
   CHECK(api->lease_poll != nullptr);
   CHECK(api->lease_wait != nullptr);
+  CHECK(api->gemm_execute != nullptr);
   CHECK(api->status_name(XVRAM_TORCH_RUNTIME_VIEWS_LIVE) != nullptr);
+  CHECK(api->status_name(XVRAM_TORCH_RUNTIME_CUBLAS_ERROR) != nullptr);
+
+  xvram_torch_runtime_gemm_problem_v1 problem = XVRAM_TORCH_RUNTIME_GEMM_PROBLEM_V1_INIT;
+  xvram_torch_runtime_gemm_result_v1 result = XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT;
+  problem.m = 1U;
+  problem.n = 1U;
+  problem.k = 1U;
+  problem.beta = 1.0;
+  CHECK(api->gemm_execute(UINT64_C(999), &problem, &result) ==
+        XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT);
+  CHECK(result.status == XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM);
+  CHECK(result.boundary == XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_PREFLIGHT);
+
+  problem.beta = 0.0;
+  result = XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT;
+  CHECK(api->gemm_execute(UINT64_C(999), &problem, &result) == XVRAM_TORCH_RUNTIME_NOT_FOUND);
+  CHECK(result.status == XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM);
+
+  result = XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT;
+  problem.abi_version = UINT32_C(999);
+  CHECK(api->gemm_execute(UINT64_C(999), &problem, &result) ==
+        XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI);
+  CHECK(result.status == XVRAM_TORCH_RUNTIME_GEMM_INVALID_PROBLEM);
 
   // Scratch allocation is deliberately impossible without a thread-local,
   // armed lease and therefore cannot silently fall back to cudaMalloc.

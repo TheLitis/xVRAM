@@ -552,7 +552,7 @@ if(XVRAM_TORCH_RUNTIME_ENABLED)
     xvram_torch_runtime SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}" ${XVRAM_TORCH_INCLUDE_DIRS})
   target_link_libraries(
     xvram_torch_runtime
-    PRIVATE xvram_residency_core Threads::Threads "${XVRAM_TORCH_LIBRARY}"
+    PRIVATE xvram_residency_core xvram_gemm_core Threads::Threads "${XVRAM_TORCH_LIBRARY}"
             "${XVRAM_TORCH_CPU_LIBRARY}" "${XVRAM_TORCH_C10_LIBRARY}")
   if(UNIX AND NOT APPLE)
     target_link_options(
