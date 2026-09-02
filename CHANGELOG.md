@@ -25,3 +25,6 @@ project intends to use semantic versioning once its public API is established.
 - `xvram-gemm-bench`, the `XVG1` isolated-worker protocol, strict
   `xvram.gemm_bench` report schema v1, SDK install/export support, and Phase 3 CI and
   RTX 3070 acceptance coverage.
+- Experimental PyTorch `CUDAPluggableAllocator`/`MemPool` integration backed by
+  stable, fully resident CUDA VMM segments, a size-tagged telemetry ABI, conservative
+  tensor-lifetime classification, and advisory FX next-use planning.

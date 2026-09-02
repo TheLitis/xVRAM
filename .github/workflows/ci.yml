@@ -31,6 +31,11 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --requirement tests/requirements.txt
 
+      - name: Build and install Phase 4 Python package
+        run: >-
+          python -m pip install ./python &&
+          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1"
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         run: >-
@@ -60,6 +65,12 @@ jobs:
           ctest --test-dir build --build-config ${{ matrix.build_type }}
           --output-on-failure --no-tests=error
           -R '^xvram[.](sdk|gemm)'
+
+      - name: Verify Phase 4 PyTorch adapter contracts
+        run: >-
+          ctest --test-dir build --build-config ${{ matrix.build_type }}
+          --output-on-failure --no-tests=error
+          -R '^xvram[.]torch'
 
       - name: Test complete no-GPU suite
         run: >-
@@ -121,6 +132,11 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --requirement tests/requirements.txt
 
+      - name: Build and install Phase 4 Python package
+        run: >-
+          python -m pip install ./python &&
+          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1"
+
       - name: Configure Clang ASan and UBSan
         env:
           CC: clang
@@ -151,6 +167,14 @@ jobs:
         run: >-
           ctest --test-dir build --output-on-failure --no-tests=error
           -R '^xvram[.](sdk|gemm)'
+
+      - name: Verify Phase 4 PyTorch adapter contracts with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: >-
+          ctest --test-dir build --output-on-failure --no-tests=error
+          -R '^xvram[.]torch'
 
       - name: Test complete no-GPU suite with sanitizers
         env:

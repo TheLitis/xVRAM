@@ -10,8 +10,9 @@ virtual addresses, asynchronous transfers, explicit working-set declarations,
 WDDM-aware budgeting, cache policy, and library-aware tiling.
 
 > [!WARNING]
-> xVRAM now exposes an experimental, versioned C ABI and a tiled GEMM integration,
-> but the SDK remains pre-release and does not transparently extend an arbitrary
+> xVRAM now exposes an experimental, versioned C ABI, tiled GEMM integration, and a
+> resident-only PyTorch MemPool adapter, but the SDK remains pre-release and does not
+> transparently extend an arbitrary
 > application's VRAM. It must not be used for production workloads.
 
 ## Memory model
@@ -131,6 +132,22 @@ validates every pass of tiled numerical output, reports algorithms, workspace,
 GEMM-only throughput, end-to-end residency timing, and residency telemetry, and writes
 the strict `xvram.gemm_bench` v1 report without serializing raw CUDA virtual addresses.
 
+## Phase 4a PyTorch resident allocator
+
+The experimental `xvram_torch_allocator` plugin can back a selected
+`torch.cuda.MemPool` with stable CUDA VMM segments. Each PyTorch caching-allocator
+segment receives one complete physical mapping, `cuMemSetAccess`, and an event-fenced
+full-range teardown. A size-tagged telemetry ABI reports callbacks, mapped padding,
+cleanup reconciliation, capture rejection, and quarantine without exposing raw virtual
+addresses.
+
+The Python package adds conservative tensor-role classification and static FX next-use
+hints. Those hints are advisory: `CUDAPluggableAllocator` does not expose operator access
+ranges, so Phase 4a never evicts or remaps a live tensor and does not claim PyTorch
+oversubscription. Connecting FX inference execution to the pageable Phase 2 cache is the
+next Phase 4 gate. See the [PyTorch MemPool guide](docs/pytorch-mempool.md) for setup,
+stream-lifetime rules, telemetry, tests, and exact limitations.
+
 ## Build
 
 Requirements:
@@ -216,8 +233,8 @@ cmake --install build\vs --config Release --prefix build\install
 ```
 
 An installed CMake consumer uses `find_package(xVRAM CONFIG REQUIRED)` and links
-`xVRAM::xvram`; plain C consumers can include `<xvram/xvram.h>` and dynamically resolve
-`xvram_get_api`.
+`xVRAM::xvram` or `xVRAM::torch_allocator`; plain C consumers can include
+`<xvram/xvram.h>` or `<xvram/torch_allocator.h>`.
 
 Run the Phase 3 GEMM gate on a CUDA/cuBLAS-capable device:
 
@@ -228,6 +245,17 @@ build\vs\Release\xvram-gemm-bench.exe --suite --json gemm-suite.json
 ```bash
 ./build/dev/xvram-gemm-bench --suite --json gemm-suite.json
 ```
+
+Install and smoke-test the Phase 4a Python adapter:
+
+```powershell
+python -m pip install .\python
+$env:XVRAM_TORCH_ALLOCATOR_LIBRARY = `
+  (Resolve-Path .\build\vs\Release\xvram_torch_allocator.dll).Path
+python .\tests\python\test_torch_allocator_integration.py -v
+```
+
+The reproducible Windows gate is `scripts/run-phase4-pytorch-acceptance.ps1`.
 
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set

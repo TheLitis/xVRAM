@@ -86,12 +86,21 @@ flag true while keeping their cache and workspace within the observed live targe
 checked-in `scripts/run-phase3-rtx3070-acceptance.ps1` command reproduces the complete
 format, planner, residency, correctness, cleanup, and process-isolation gate.
 
-## Phase 4: PyTorch
+## Phase 4: PyTorch — in progress (resident allocator boundary complete)
 
-- Pluggable allocator/MemPool integration.
-- Tensor classification and lifetime tracking.
-- FX/compile graph next-use hints.
+- Pluggable allocator/MemPool integration through stable, fully resident VMM segments.
+- Explicit tensor classification and conservative lifetime metadata.
+- Static FX graph next-use, release-candidate, and prefetch-candidate hints.
 - Inference, then backward and optimizer-state scheduling.
+
+The Phase 4a boundary has been validated on Windows with PyTorch 2.13/CUDA 13.0 and an
+RTX 3070: native segment callbacks, stable mappings, `SetAccess`, event-fenced teardown,
+pool caching, and cross-stream `record_stream` retirement complete without quarantine.
+This does not yet oversubscribe PyTorch tensors. The allocator API cannot see operator
+access ranges, so live tensor mappings remain resident and immutable until PyTorch
+releases their complete backing segment. The next gate is an inference scheduler that
+turns graph facts into explicit, stream-safe working sets before connecting tensors to
+the Phase 2 pageable backing/cache runtime.
 
 ## Phase 5: adaptive compression
 
