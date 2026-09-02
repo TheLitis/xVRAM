@@ -425,6 +425,50 @@ xvram_enable_warnings(xvram_sdk)
 
 add_library(xVRAM::xvram ALIAS xvram_sdk)
 
+add_library(xvram_torch_allocator_core STATIC src/torch/allocator.cpp)
+target_compile_features(xvram_torch_allocator_core PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_torch_allocator_core
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+target_include_directories(xvram_torch_allocator_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(xvram_torch_allocator_core PRIVATE xvram_probe_lib)
+xvram_enable_warnings(xvram_torch_allocator_core)
+
+add_library(xvram_torch_allocator SHARED src/torch/plugin.cpp)
+set_target_properties(
+  xvram_torch_allocator
+  PROPERTIES OUTPUT_NAME xvram_torch_allocator
+             EXPORT_NAME torch_allocator
+             VERSION "${PROJECT_VERSION}"
+             SOVERSION "${PROJECT_VERSION_MAJOR}"
+             CXX_VISIBILITY_PRESET hidden
+             VISIBILITY_INLINES_HIDDEN YES)
+target_compile_definitions(xvram_torch_allocator PRIVATE XVRAM_TORCH_BUILDING_LIBRARY
+                                                   INTERFACE XVRAM_TORCH_USING_LIBRARY)
+target_compile_features(xvram_torch_allocator PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_torch_allocator
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xvram_torch_allocator SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(xvram_torch_allocator PRIVATE xvram_torch_allocator_core)
+if(UNIX AND NOT APPLE)
+  target_link_options(
+    xvram_torch_allocator
+    PRIVATE
+      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram_torch_allocator.exports.map")
+  set_property(
+    TARGET xvram_torch_allocator
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram_torch_allocator.exports.map")
+endif()
+xvram_enable_warnings(xvram_torch_allocator)
+
+add_library(xVRAM::torch_allocator ALIAS xvram_torch_allocator)
+
 add_library(
   xvram_gemm_bench STATIC
   src/gemm_bench/executor.cpp
@@ -517,11 +561,13 @@ endif()
 
 install(
   TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench xvram-gemm-bench xvram_sdk
+          xvram_torch_allocator
   EXPORT xVRAMTargets
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-install(FILES include/xvram/xvram.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
+install(FILES include/xvram/xvram.h include/xvram/torch_allocator.h
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
               schemas/vmm-poc-report-v1.schema.json

@@ -1,0 +1,10 @@
+XVRAM_TORCH_ALLOCATOR_1.0 {
+  global:
+    xvram_torch_alloc;
+    xvram_torch_free;
+    xvram_torch_get_stats;
+    xvram_torch_reset_stats;
+    xvram_torch_get_last_error;
+  local:
+    *;
+};
