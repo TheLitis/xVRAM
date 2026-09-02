@@ -14,6 +14,7 @@ using Device = CUdevice;
 using DevicePointer = CUdeviceptr;
 using Context = CUcontext;
 using Stream = CUstream;
+using StreamCaptureStatus = CUstreamCaptureStatus;
 using Event = CUevent;
 using Module = CUmodule;
 using Function = CUfunction;
@@ -34,6 +35,9 @@ inline constexpr auto granularity_recommended = CU_MEM_ALLOC_GRANULARITY_RECOMME
 inline constexpr auto mem_access_none = CU_MEM_ACCESS_FLAGS_PROT_NONE;
 inline constexpr auto mem_access_read = CU_MEM_ACCESS_FLAGS_PROT_READ;
 inline constexpr auto mem_access_read_write = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+inline constexpr auto stream_capture_none = CU_STREAM_CAPTURE_STATUS_NONE;
+inline constexpr auto stream_capture_active = CU_STREAM_CAPTURE_STATUS_ACTIVE;
+inline constexpr auto stream_capture_invalidated = CU_STREAM_CAPTURE_STATUS_INVALIDATED;
 
 namespace attributes {
 inline constexpr auto max_threads_per_block = CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK;
@@ -139,6 +143,7 @@ using StreamCreate = CUresult(CUDAAPI*)(CUstream*, unsigned int);
 using StreamDestroy = CUresult(CUDAAPI*)(CUstream);
 using StreamSynchronize = CUresult(CUDAAPI*)(CUstream);
 using StreamWaitEvent = CUresult(CUDAAPI*)(CUstream, CUevent, unsigned int);
+using StreamIsCapturing = CUresult(CUDAAPI*)(CUstream, CUstreamCaptureStatus*);
 using EventCreate = CUresult(CUDAAPI*)(CUevent*, unsigned int);
 using EventDestroy = CUresult(CUDAAPI*)(CUevent);
 using EventRecord = CUresult(CUDAAPI*)(CUevent, CUstream);

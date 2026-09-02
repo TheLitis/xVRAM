@@ -58,6 +58,7 @@ CudaApi::LoadResult CudaApi::load() {
   resolve(stream_destroy_, {"cuStreamDestroy_v2", "cuStreamDestroy"});
   resolve(stream_synchronize_, {"cuStreamSynchronize"});
   resolve(stream_wait_event_, {"cuStreamWaitEvent"});
+  resolve(stream_is_capturing_, {"cuStreamIsCapturing"});
   resolve(event_create_, {"cuEventCreate"});
   resolve(event_destroy_, {"cuEventDestroy_v2", "cuEventDestroy"});
   resolve(event_record_, {"cuEventRecord"});

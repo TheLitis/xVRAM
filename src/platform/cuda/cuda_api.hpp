@@ -66,6 +66,7 @@ public:
   abi::StreamDestroy stream_destroy_ = nullptr;
   abi::StreamSynchronize stream_synchronize_ = nullptr;
   abi::StreamWaitEvent stream_wait_event_ = nullptr;
+  abi::StreamIsCapturing stream_is_capturing_ = nullptr;
   abi::EventCreate event_create_ = nullptr;
   abi::EventDestroy event_destroy_ = nullptr;
   abi::EventRecord event_record_ = nullptr;
