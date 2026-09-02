@@ -235,9 +235,9 @@ _BACKEND_TARGETS: Mapping[str, str] = MappingProxyType(
         "mm_out": "aten.mm.out",
         "addmm_out": "aten.addmm.out",
         "bmm_out": "aten.bmm.out",
-        "copy_out": "aten.copy.out",
-        "cast_copy_out": "aten.copy.out",
-        "reshape_copy": "aten.copy.out",
+        "copy_out": "aten.clone.out",
+        "cast_copy_out": "aten._to_copy.out",
+        "reshape_copy": "aten.view_copy.out",
         "rms_norm_scratch_copy": "aten.rms_norm.default+aten.copy.out",
         "sdpa_math_scratch_copy": "aten.scaled_dot_product_attention.default+aten.copy.out",
     }

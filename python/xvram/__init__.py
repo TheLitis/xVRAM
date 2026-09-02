@@ -3,6 +3,8 @@
 PyTorch is imported lazily only when an allocator is loaded.
 """
 
+import importlib
+
 from .fx import (
     FxNextUsePlan,
     FxReadHint,
@@ -53,4 +55,13 @@ __all__ = [
     "classify_tensor",
     "create_mem_pool",
     "load",
+    "torch",
 ]
+
+
+def __getattr__(name):
+    if name == "torch":
+        module = importlib.import_module(".torch", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError("module {!r} has no attribute {!r}".format(__name__, name))

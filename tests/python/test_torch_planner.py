@@ -182,7 +182,9 @@ class TorchPlannerTests(unittest.TestCase):
         self.assertEqual(backend["mm_out"], "aten.mm.out")
         self.assertEqual(backend["addmm_out"], "aten.addmm.out")
         self.assertEqual(backend["bmm_out"], "aten.bmm.out")
-        self.assertEqual(backend["cast_copy_out"], "aten.copy.out")
+        self.assertEqual(backend["copy_out"], "aten.clone.out")
+        self.assertEqual(backend["cast_copy_out"], "aten._to_copy.out")
+        self.assertEqual(backend["reshape_copy"], "aten.view_copy.out")
 
     def test_embedding_plan_is_strict_and_hash_is_address_independent(self):
         first = build_inference_plan(_embedding_linear_program(pointer=100))
