@@ -57,6 +57,10 @@ if(TARGET xvram_torch_runtime)
   set_tests_properties(
     xvram.torch-runtime.export-contract xvram.torch-runtime.stable-load
     PROPERTIES TIMEOUT 30)
+  set_tests_properties(
+    xvram.torch-runtime.stable-load
+    PROPERTIES ENVIRONMENT_MODIFICATION
+               "PATH=path_list_prepend:$<TARGET_FILE_DIR:xvram_torch_runtime>;PATH=path_list_prepend:${XVRAM_TORCH_PRIMARY_LIBRARY_DIR}")
 endif()
 
 add_test(

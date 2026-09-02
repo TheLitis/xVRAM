@@ -86,21 +86,61 @@ flag true while keeping their cache and workspace within the observed live targe
 checked-in `scripts/run-phase3-rtx3070-acceptance.ps1` command reproduces the complete
 format, planner, residency, correctness, cleanup, and process-isolation gate.
 
-## Phase 4: PyTorch — in progress (resident allocator boundary complete)
+## Phase 4: PyTorch — in progress (4a accepted; 4b local gate complete, CI pending)
+
+### Phase 4a: resident allocator boundary — complete
 
 - Pluggable allocator/MemPool integration through stable, fully resident VMM segments.
 - Explicit tensor classification and conservative lifetime metadata.
 - Static FX graph next-use, release-candidate, and prefetch-candidate hints.
-- Inference, then backward and optimizer-state scheduling.
 
 The Phase 4a boundary has been validated on Windows with PyTorch 2.13/CUDA 13.0 and an
 RTX 3070: native segment callbacks, stable mappings, `SetAccess`, event-fenced teardown,
 pool caching, and cross-stream `record_stream` retirement complete without quarantine.
-This does not yet oversubscribe PyTorch tensors. The allocator API cannot see operator
-access ranges, so live tensor mappings remain resident and immutable until PyTorch
-releases their complete backing segment. The next gate is an inference scheduler that
-turns graph facts into explicit, stream-safe working sets before connecting tensors to
-the Phase 2 pageable backing/cache runtime.
+This boundary does not oversubscribe PyTorch tensors. The allocator API cannot see
+operator access ranges, so live tensor mappings remain resident and immutable until
+PyTorch releases their complete backing segment.
+
+### Phase 4b: lease-scoped static inference — implementation and local gate complete
+
+- Two-phase external leases over the Phase 2 pageable residency runtime, with one
+  runtime-owned compute stream, monotonically generated events, live-view accounting,
+  event-safe dirty retirement, prefetch, and proven-dead activation discard.
+- Private, size-tagged native control table and Stable-ABI
+  `xvram_internal::_wrap_resolved_v1` bridge; the public Phase 3 and Phase 4a ABIs remain
+  unchanged.
+- Strict `torch.export` planner for static shapes, aliases, tied weights, activation-slot
+  coloring, embedding ranges, bounded scratch, and a deliberately limited operator
+  allowlist with no eager fallback.
+- `xvram.torch.InferenceRuntime`, a `torch.compile` backend adapter strictly validated
+  against the canonical export plan, CPU and chunked/meta state providers, CPU output by
+  default, and explicit bounded CUDA materialization.
+- Private synchronous tiled-GEMM route for oversized `mm` and bias-free `linear`, using
+  the shared Phase 3 planner/executor and event-safe residency operations. Other
+  oversized operators remain unsupported.
+- Isolated `xvram-torch-bench` controller/worker, bounded `XVT1` protocol, strict
+  `xvram.pytorch_inference` v1 report, optional `xvram.pytorch_trace` v1 JSONL trace,
+  controller watchdog, schema/semantic checks, and worker reaping.
+- Windows/Linux Stable-ABI build/load coverage with pinned CPU PyTorch 2.11, plus native,
+  planner, fake-backend, protocol, report, and no-driver test targets.
+
+The local Phase 4b hardware criterion completed on 2026-09-02. All six RTX 3070
+scenarios exited zero and passed schema, JSONL trace, and semantic validation: CLOCK at
+16, 23, and 31 layers; LRU at 31 layers; CLOCK at 31 layers with prefetch distance zero;
+and the two-layer sequence-128 attention smoke. The three 31-layer output digests agree.
+The distance-zero report recorded zero submitted/retired prefetches, while both
+distance-two 31-layer reports recorded and retired non-zero prefetch work.
+
+Every oversubscribed report demonstrated eviction and frame reuse; event, view,
+mapping, cache, trace, and worker-isolation accounting reconciled; cleanup was complete;
+and diagnostics were empty. The implementation and local hardware gate are therefore
+complete. Final Phase 4b delivery remains pending until the full GitHub Actions run
+finishes successfully; this roadmap does not claim that CI result yet.
+
+Phase 4b remains limited to static-shape, single-GPU, forward inference. Autograd,
+backward/optimizer scheduling, CUDA Graphs, dynamic control flow, distributed/NCCL,
+arbitrary extensions, and transparent execution of unsupported oversized operators are
+future work.
 
 ## Phase 5: adaptive compression
 
@@ -115,4 +155,4 @@ the Phase 2 pageable backing/cache runtime.
 - Access-range profiling, PTX indirection, and automatic tiling research.
 
 Transparent support for an arbitrary unchanged CUDA executable is a long-term research
-goal, not a Phase 1, Phase 2, or Phase 3 promise.
+goal, not a Phase 1, Phase 2, Phase 3, or Phase 4b promise.

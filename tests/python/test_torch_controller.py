@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
 from argparse import ArgumentTypeError
 from pathlib import Path
+from unittest import mock
 
 import jsonschema
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = ROOT / "python"
+sys.path.insert(0, str(PYTHON_ROOT))
 
 from xvram.torch_bench import parse_size, run_controller
 from xvram.torch_report import EXIT_COMPLETED, EXIT_RUNTIME, EXIT_TIMEOUT
 
 
-ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "tests" / "helpers" / "torch_worker_test_helper.py"
 SCHEMA = json.loads(
     (ROOT / "schemas" / "pytorch-inference-report-v1.schema.json").read_text(
@@ -46,6 +52,15 @@ def plan() -> dict[str, object]:
 
 
 class TorchControllerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        inherited = os.environ.get("PYTHONPATH")
+        local_pythonpath = str(PYTHON_ROOT)
+        if inherited:
+            local_pythonpath += os.pathsep + inherited
+        self._pythonpath = mock.patch.dict(os.environ, {"PYTHONPATH": local_pythonpath})
+        self._pythonpath.start()
+        self.addCleanup(self._pythonpath.stop)
+
     def command(self, mode: str) -> list[str]:
         return [sys.executable, str(HELPER), mode]
 

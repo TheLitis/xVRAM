@@ -11,9 +11,11 @@ WDDM-aware budgeting, cache policy, and library-aware tiling.
 
 > [!WARNING]
 > xVRAM now exposes an experimental, versioned C ABI, tiled GEMM integration, and a
-> resident-only PyTorch MemPool adapter, but the SDK remains pre-release and does not
-> transparently extend an arbitrary
-> application's VRAM. It must not be used for production workloads.
+> resident-only PyTorch MemPool adapter. A separate lease-scoped PyTorch inference
+> runtime is implemented and has passed its local six-scenario RTX 3070 gate; final
+> Phase 4b delivery still awaits the full GitHub Actions run. The SDK remains
+> pre-release, does not transparently extend an arbitrary application's VRAM, and must
+> not be used for production workloads.
 
 ## Memory model
 
@@ -144,9 +146,40 @@ addresses.
 The Python package adds conservative tensor-role classification and static FX next-use
 hints. Those hints are advisory: `CUDAPluggableAllocator` does not expose operator access
 ranges, so Phase 4a never evicts or remaps a live tensor and does not claim PyTorch
-oversubscription. Connecting FX inference execution to the pageable Phase 2 cache is the
-next Phase 4 gate. See the [PyTorch MemPool guide](docs/pytorch-mempool.md) for setup,
+oversubscription. See the [PyTorch MemPool guide](docs/pytorch-mempool.md) for setup,
 stream-lifetime rules, telemetry, tests, and exact limitations.
+
+## Phase 4b lease-scoped PyTorch inference — local gate complete, CI pending
+
+`xvram.torch.InferenceRuntime` strictly exports one static, single-GPU forward graph and
+stores parameters, inputs, outputs, and planned activations in pageable xVRAM backing.
+Before each ATen region, the residency runtime makes the declared chunks resident and
+returns non-owning CUDA views only for the lifetime of an event-fenced compute lease.
+Python never receives a CUDA virtual address, only one runtime-owned stream may submit
+the region, and mappings cannot be removed or reused until the completion generation
+retires.
+
+The private `xvram_torch_runtime` bridge uses PyTorch's Stable ABI and attaches to the
+current primary CUDA context. The strict planner rejects graph breaks, dynamic shapes,
+RNG, hidden streams, unsupported mutation/aliasing, and operators outside its allowlist
+before launch. `mm` and bias-free `linear` whose declared working set exceeds the live
+cache target use the shared event-safe tiled GEMM executor; other oversized operators
+are rejected instead of falling back to eager execution.
+
+`xvram-torch-bench` isolates CUDA work behind the `XVT1` controller/worker protocol and
+emits the strict `xvram.pytorch_inference` v1 report plus an optional
+`xvram.pytorch_trace` v1 JSONL trace. The implementation, CI Stable-ABI build/load job,
+and RTX 3070 acceptance script are present. See the
+[lease-scoped inference guide](docs/pytorch-inference.md) for the supported graph,
+safety invariants, CLI, proof semantics, current limitations, and delivery status.
+
+Current status (2026-09-02): all six local RTX 3070 scenarios have produced exit-0
+reports and passed schema, trace, and semantic checks—CLOCK 16/23/31, LRU 31, CLOCK 31
+with prefetch disabled, and the two-layer sequence-128 attention smoke. The three
+31-layer digests match; distance-zero recorded no prefetch while distance-two recorded
+and retired real prefetch work. Cleanup is complete and diagnostics are empty. The
+implementation and local hardware gate are complete; final delivery awaits the full
+GitHub Actions result.
 
 ## Build
 
@@ -257,13 +290,33 @@ python .\tests\python\test_torch_allocator_integration.py -v
 
 The reproducible Windows gate is `scripts/run-phase4-pytorch-acceptance.ps1`.
 
+Build and locate the private Phase 4b runtime with the same Python interpreter that
+provides compatible PyTorch Stable-ABI headers and libraries:
+
+```powershell
+python -m pip install .\python
+cmake -S . -B build\vs -A x64 `
+  -DXVRAM_BUILD_TESTS=ON -DXVRAM_BUILD_TORCH_RUNTIME=ON
+cmake --build build\vs --config Release `
+  --target xvram_torch_runtime xvram-torch-runtime-control-tests
+$env:XVRAM_TORCH_RUNTIME_LIBRARY = `
+  (Resolve-Path .\build\vs\Release\xvram_torch_runtime.dll).Path
+python -m xvram.torch_bench --help
+```
+
+The reproducible Windows hardware matrix is encoded by
+`scripts/run-phase4b-rtx3070-acceptance.ps1`. Running the script is intentionally not
+part of a normal build: it constructs and verifies multi-gigabyte models and requires
+the specified RTX 3070/PyTorch/CUDA environment.
+
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
-Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`, and
-`xvram-gemm-bench --help` for the complete CLI contracts.
+Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`,
+`xvram-gemm-bench --help`, and `xvram-torch-bench --help` for the complete CLI
+contracts.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -280,14 +333,17 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 2. Explicit CUDA VMM proof of concept with stable logical addresses.
 3. Event-safe residency cache with pinned staging pools and WDDM budget tracking.
 4. Stable C ABI and library-aware tiled operations, starting with GEMM.
-5. PyTorch allocator and graph-scheduling adapter.
+5. PyTorch resident allocator plus lease-scoped static inference; the Phase 4b local
+   hardware gate is complete and final CI delivery is pending.
 6. Adaptive transport compression based on measured cost.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
 [correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md),
 [residency cache](docs/residency-cache.md), and [roadmap](docs/roadmap.md) for the design
-contract.
+contract. The [PyTorch MemPool](docs/pytorch-mempool.md) and
+[lease-scoped inference](docs/pytorch-inference.md) guides describe the two distinct
+Phase 4 integration boundaries.
 
 ## Performance expectations
 
