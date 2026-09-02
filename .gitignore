@@ -29,6 +29,9 @@ compile_commands.json
 .python-version
 __pycache__/
 *.py[cod]
+*.egg-info/
+dist/
+python/build/
 *.dmp
 core
 core.*
