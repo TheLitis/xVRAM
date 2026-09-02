@@ -679,6 +679,8 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/residency-cache-report-v1.schema.json
               schemas/residency-trace-record-v1.schema.json
               schemas/gemm-bench-report-v1.schema.json
+              schemas/pytorch-inference-report-v1.schema.json
+              schemas/pytorch-inference-trace-record-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 configure_package_config_file(

@@ -12,7 +12,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .torch_planner import (
     AccessMode,
@@ -390,6 +390,480 @@ def compile_exported_inference(
     return InferenceRuntime(plan, selected, state_provider)
 
 
+def run_benchmark_plan(
+    configuration: Mapping[str, Any],
+    *,
+    progress: Optional[Callable[[Mapping[str, Any]], None]] = None,
+    trace: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+) -> Dict[str, Any]:
+    """Execute one isolated Phase 4b acceptance plan and build its v1 report.
+
+    Imports that can initialize PyTorch or CUDA stay inside this worker-only
+    entry point.  The controller can therefore import :mod:`xvram.torch_runtime`
+    while remaining completely CUDA-free.
+    """
+
+    import time
+
+    from .torch_acceptance import (
+        output_digest,
+        output_error,
+        prepare_meta_llama,
+        run_layer_streamed_reference,
+    )
+    from .torch_native import (
+        NativeInferenceBackend,
+        NativeRuntimeConfig,
+        NativeTorchUnavailableError,
+    )
+    from .torch_report import (
+        EXIT_COMPLETED,
+        EXIT_CORRUPTION,
+        EXIT_RUNTIME,
+        EXIT_USAGE,
+        empty_report,
+        finalize_proof,
+        validate_report_envelope,
+    )
+    from .torch_workload import Llama2LikeConfig
+
+    emit_progress = progress or (lambda _event: None)
+    emit_trace_batch = trace or (lambda _records: None)
+    config = dict(configuration)
+    report = empty_report(
+        config,
+        exit_code=EXIT_RUNTIME,
+        status="failed",
+        message="inference worker failed",
+        include_identifiers=bool(config.get("include_identifiers", False)),
+    )
+    # Validating the empty envelope also validates every untrusted plan field.
+    try:
+        validate_report_envelope(report)
+    except (TypeError, ValueError) as error:
+        report["outcome"].update(
+            status="failed", exit_code=EXIT_USAGE, message=str(error)
+        )
+        report["diagnostics"].append(
+            {"stage": "plan", "code": "invalid_worker_plan", "message": str(error)}
+        )
+        return finalize_proof(report)
+
+    trace_sequence = 0
+
+    def worker_event(
+        *,
+        kind: str,
+        operation: str,
+        bytes_value: int = 0,
+        region_id: Optional[int] = None,
+        reason: str = "",
+        progress_fields: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        nonlocal trace_sequence
+        payload: Dict[str, Any] = {
+            "stage": kind,
+            "operation": operation,
+            "bytes": max(0, int(bytes_value)),
+        }
+        if region_id is not None:
+            payload["region_id"] = int(region_id)
+        if progress_fields:
+            payload.update(dict(progress_fields))
+        emit_progress(payload)
+        trace_sequence += 1
+        emit_trace_batch(
+            [
+                {
+                    "schema_version": 1,
+                    "record_type": "xvram.pytorch_trace",
+                    "sequence": trace_sequence,
+                    "monotonic_ns": time.monotonic_ns(),
+                    "kind": kind,
+                    "region_id": int(region_id) if region_id is not None else None,
+                    "allocation_id": None,
+                    "operation": operation,
+                    "bytes": max(0, int(bytes_value)),
+                    "reason": str(reason),
+                }
+            ]
+        )
+
+    def native_progress(event: Mapping[str, Any]) -> None:
+        stage = str(event.get("stage", "transition"))
+        kind = {
+            "region": "lease",
+            "prefetch": "prefetch",
+            "discard": "discard",
+            "scratch": "scratch",
+        }.get(stage, "transition")
+        region = event.get("region_id")
+        worker_event(
+            kind=kind,
+            operation="{}_{}".format(stage, event.get("operation", "retired")),
+            bytes_value=int(event.get("bytes", 0)),
+            region_id=int(region) if isinstance(region, int) and region > 0 else None,
+            reason=str(event.get("adapter", "runtime")),
+            progress_fields={
+                key: value
+                for key, value in event.items()
+                if key
+                not in {
+                    "stage",
+                    "operation",
+                    "bytes",
+                    "storage_id",
+                }
+                and isinstance(value, (str, int, float, bool))
+            },
+        )
+
+    backend: Optional[NativeInferenceBackend] = None
+    runtime: Optional[InferenceRuntime] = None
+    telemetry: Dict[str, Any] = {}
+    output: Any = None
+    primary_error: Optional[BaseException] = None
+    cleanup_error: Optional[BaseException] = None
+    persistent_read_only = False
+
+    try:
+        import torch
+
+        if not bool(torch.cuda.is_available()):
+            raise NativeTorchUnavailableError("cuda_preflight", 7, "PyTorch CUDA is unavailable")
+        device = int(config["device"])
+        if device >= int(torch.cuda.device_count()):
+            raise NativeTorchUnavailableError(
+                "cuda_preflight", 7, "requested CUDA device does not exist"
+            )
+        torch.cuda.set_device(device)
+        torch.cuda.init()
+        properties = torch.cuda.get_device_properties(device)
+        report["build"].update(
+            torch_version=str(torch.__version__),
+            cuda_version=str(getattr(torch.version, "cuda", None) or "unavailable"),
+        )
+        report["device"].update(
+            ordinal=device,
+            name=(
+                str(properties.name)
+                if bool(config.get("include_identifiers", False))
+                else "redacted"
+            ),
+            total_vram_bytes=int(properties.total_memory),
+            compute_capability="{}.{}".format(
+                int(properties.major), int(properties.minor)
+            ),
+            identifiers_included=bool(config.get("include_identifiers", False)),
+        )
+        worker_event(kind="transition", operation="cuda_preflight", reason="ready")
+
+        dtype_name = str(config["dtype"])
+        dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }[dtype_name]
+        model_config = Llama2LikeConfig(
+            layers=int(config["layers"]),
+            hidden=int(config["hidden"]),
+            intermediate=int(config["intermediate"]),
+            heads=int(config["heads"]),
+            batch=int(config["batch"]),
+            sequence=int(config["sequence"]),
+        )
+        prepared = prepare_meta_llama(
+            model_config,
+            seed=int(str(config["seed"]), 16),
+            dtype=dtype,
+            chunk_bytes=int(config["chunk_size_bytes"]),
+        )
+        worker_event(kind="transition", operation="state_plan", reason="prepared")
+        captured = capture_inference(
+            prepared.module,
+            prepared.example_inputs,
+            state_provider=prepared.state_provider,
+            torch_module=torch,
+        )
+        plan = captured.plan
+        worker_event(kind="transition", operation="strict_export", reason="captured")
+
+        persistent_storages = {
+            value.storage_id for value in plan.values.values() if value.is_persistent
+        }
+        persistent_read_only = all(
+            access.mode is AccessMode.READ
+            for node in plan.nodes
+            for access in node.accesses
+            if access.storage_id in persistent_storages
+        )
+        if not persistent_read_only:
+            raise PlanError("persistent model state contains a write-capable access")
+
+        non_state_storages: Dict[str, int] = {}
+        for value in plan.values.values():
+            if not value.is_persistent:
+                non_state_storages[value.storage_id] = int(value.storage_bytes)
+        activation_bytes = sum(non_state_storages.values())
+        if int(plan.logical_state_bytes) != int(prepared.state_provider.logical_state_bytes):
+            raise PlanError("planner and streaming state byte counts do not reconcile")
+        report["model"].update(
+            kind=str(config["model"]),
+            layers=model_config.layers,
+            batch=model_config.batch,
+            sequence=model_config.sequence,
+            hidden=model_config.hidden,
+            intermediate=model_config.intermediate,
+            heads=model_config.heads,
+            parameter_bytes=int(prepared.state_provider.parameter_bytes),
+            activation_bytes=activation_bytes,
+            logical_bytes=int(plan.logical_state_bytes) + activation_bytes,
+        )
+        region_count = sum(1 for node in plan.nodes if node.kind is NodeKind.COMPUTE)
+        report["graph"].update(
+            hash=plan.graph_hash,
+            backend_hash=plan.graph_hash,
+            allowlist_hash=plan.allowlist_hash,
+            node_count=len(plan.nodes),
+            region_count=region_count,
+            unsupported_nodes=[],
+        )
+
+        native_config = NativeRuntimeConfig(
+            device=device,
+            policy=str(config["policy"]),
+            chunk_size=int(config["chunk_size_bytes"]),
+            cache_target=int(config["cache_target_bytes"]),
+            device_headroom=int(config["device_headroom_bytes"]),
+            scratch_cap=int(config["scratch_cap_bytes"]),
+            prefetch_distance=int(config["prefetch_distance"]),
+            sdpa_backend=str(config["sdpa_backend"]),
+        )
+        backend = NativeInferenceBackend(
+            config=native_config,
+            _torch_module=torch,
+            _progress_callback=native_progress,
+        )
+        runtime = InferenceRuntime(plan, backend, prepared.state_provider)
+        output = runtime.run(*prepared.example_inputs)
+        if isinstance(output, tuple):
+            raise BackendContractError("acceptance graph produced multiple outputs")
+        output_hash = output_digest(output)
+        worker_event(kind="verification", operation="managed_output", reason=output_hash)
+
+        runtime.close()
+        telemetry = backend.telemetry_snapshot()
+        torch.cuda.empty_cache()
+
+        def reference_progress(item: Any) -> None:
+            worker_event(
+                kind="verification",
+                operation="reference_{}".format(str(item.stage).replace(":", "_")),
+                region_id=None,
+                reason="{}/{}".format(int(item.completed), int(item.total)),
+            )
+
+        reference = run_layer_streamed_reference(
+            prepared,
+            device="cuda:{}".format(device),
+            sdpa_backend=str(config["sdpa_backend"]),
+            progress=reference_progress,
+        )
+        comparison = output_error(output, reference.output)
+        reference_hash = reference.digest
+        exact_match = output_hash == reference_hash
+        report["verification"].update(
+            reference_digest=reference_hash,
+            output_digest=output_hash,
+            max_abs_error=_finite_report_number(comparison.max_absolute),
+            max_rel_error=_finite_report_number(comparison.max_relative),
+            mismatch_count=(
+                int(comparison.mismatch_count)
+                if exact_match
+                else max(1, int(comparison.mismatch_count))
+            ),
+        )
+        if exact_match and comparison.within_tolerance:
+            report["outcome"].update(
+                status="completed",
+                exit_code=EXIT_COMPLETED,
+                message="lease-scoped PyTorch inference proof completed",
+            )
+        else:
+            report["outcome"].update(
+                status="corruption",
+                exit_code=EXIT_CORRUPTION,
+                message="managed output differs from the streamed PyTorch reference",
+            )
+            report["diagnostics"].append(
+                {
+                    "stage": "verification",
+                    "code": "reference_mismatch",
+                    "message": "{} mismatched elements; exact digest match={}".format(
+                        comparison.mismatch_count, exact_match
+                    ),
+                }
+            )
+    except BaseException as error:
+        primary_error = error
+    finally:
+        if runtime is not None and runtime.state is not RuntimeState.CLOSED:
+            try:
+                runtime.close()
+            except BaseException as error:
+                cleanup_error = error
+        elif backend is not None and not backend.close_succeeded:
+            try:
+                backend.close()
+            except BaseException as error:
+                cleanup_error = error
+        if backend is not None:
+            try:
+                telemetry = backend.telemetry_snapshot()
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+
+    if backend is not None:
+        _apply_benchmark_telemetry(
+            report,
+            telemetry,
+            close_succeeded=backend.close_succeeded,
+            persistent_read_only=persistent_read_only,
+        )
+    report["execution"]["trace_records"] = trace_sequence
+
+    failure = cleanup_error or primary_error
+    if failure is not None:
+        exit_code, status, code = _classify_benchmark_failure(failure)
+        if cleanup_error is not None:
+            exit_code, status, code = EXIT_RUNTIME, "failed", "cleanup_failure"
+        report["outcome"].update(
+            status=status, exit_code=exit_code, message=str(failure)
+        )
+        report["diagnostics"].append(
+            {
+                "stage": "cleanup" if cleanup_error is not None else "worker",
+                "code": code,
+                "message": str(failure),
+            }
+        )
+    return finalize_proof(report)
+
+
+def _finite_report_number(value: Any) -> float:
+    import math
+    import sys
+
+    converted = float(value)
+    return converted if math.isfinite(converted) and converted >= 0.0 else sys.float_info.max
+
+
+def _classify_benchmark_failure(error: BaseException) -> Tuple[int, str, str]:
+    from .torch_native import NativeTorchRuntimeError, NativeTorchUnavailableError
+    from .torch_report import (
+        EXIT_INTERNAL,
+        EXIT_PRESSURE,
+        EXIT_PREREQUISITE,
+        EXIT_RUNTIME,
+        EXIT_TIMEOUT,
+    )
+
+    if isinstance(error, NativeTorchUnavailableError):
+        return EXIT_PREREQUISITE, "skipped", "prerequisite_unavailable"
+    if isinstance(error, NativeTorchRuntimeError):
+        if error.status in {8, 9, 10}:
+            return EXIT_PRESSURE, "oom", "memory_pressure"
+        if error.status == 11:
+            return EXIT_TIMEOUT, "timeout", "runtime_timeout"
+        if error.status in {1, 2, 3, 6, 7}:
+            return EXIT_PREREQUISITE, "skipped", "prerequisite_unavailable"
+        return EXIT_RUNTIME, "failed", "native_runtime_failure"
+    if isinstance(error, (PlanError, BackendContractError, ValueError)):
+        return EXIT_PREREQUISITE, "skipped", "unsupported_or_invalid_plan"
+    if isinstance(error, MemoryError):
+        return EXIT_PRESSURE, "oom", "host_out_of_memory"
+    if isinstance(error, (AssertionError, TypeError, KeyError)):
+        return EXIT_INTERNAL, "failed", "internal_error"
+    return EXIT_RUNTIME, "failed", "runtime_failure"
+
+
+def _apply_benchmark_telemetry(
+    report: Dict[str, Any],
+    telemetry: Mapping[str, Any],
+    *,
+    close_succeeded: bool,
+    persistent_read_only: bool,
+) -> None:
+    value = lambda name, default=0: int(telemetry.get(name, default))
+    gemm_tiles_submitted = value("gemm_tiles_submitted")
+    gemm_tiles_completed = value("gemm_tiles_completed")
+    leases_acquired = value("leases_acquired")
+    leases_retired = value("leases_retired")
+    events_recorded = value("events_recorded") + value("gemm_events_recorded")
+    events_retired = value("events_retired") + value("gemm_events_retired")
+    timings = [
+        _finite_report_number(item)
+        for item in telemetry.get("region_timings_ms", [])
+    ]
+    report["execution"].update(
+        leases_acquired=leases_acquired,
+        leases_sealed=value("leases_sealed"),
+        leases_retired=leases_retired,
+        tiled_gemm_regions=value("gemm_calls"),
+        tiled_gemm_tiles=gemm_tiles_completed,
+        events_recorded=events_recorded,
+        events_retired=events_retired,
+        live_views_peak=value("tensor_views_peak"),
+        live_views_final=value("tensor_views_live"),
+        regions_completed=value("nodes_retired"),
+        region_timings_ms=timings,
+        scratch_peak_bytes=value("scratch_bytes_peak"),
+    )
+    report["cache"].update(
+        target_bytes=value("cache_target_bytes", report["cache"]["target_bytes"]),
+        resident_bytes=value("resident_bytes"),
+        resident_peak_bytes=value("resident_peak_bytes"),
+        maps=value("maps"),
+        set_access=value("set_access_calls"),
+        unmaps=value("unmaps"),
+        hits=value("cache_hits"),
+        misses=value("cache_misses"),
+        h2d_bytes=value("h2d_bytes"),
+        d2h_bytes=value("d2h_bytes"),
+        weight_d2h_bytes=0 if persistent_read_only else value("d2h_bytes"),
+        evictions=value("clean_evictions") + value("dirty_evictions"),
+        frame_reuses=value("handles_reused"),
+        prefetch_submitted=value("prefetches"),
+        prefetch_retired=value("prefetches") if close_succeeded else 0,
+        unsafe_remaps=value("unsafe_remaps"),
+        unsafe_transitions=value("unsafe_transitions"),
+    )
+    report["proof"]["stable_addresses"] = bool(
+        telemetry.get("stable_addresses", False)
+    ) and bool(telemetry.get("no_physical_aliases", False))
+    allocations_reconciled = value("allocations_created") == value("allocations_released")
+    mappings_reconciled = value("maps") == value("unmaps") and value("resident_bytes") == 0
+    leases_reconciled = (
+        leases_acquired == value("leases_sealed") == leases_retired
+        and gemm_tiles_submitted == gemm_tiles_completed
+        and events_recorded == events_retired
+    )
+    cleanup = report["cleanup"]
+    cleanup.update(
+        leases_drained=leases_reconciled,
+        views_released=value("tensor_views_live") == 0,
+        mappings_unmapped=mappings_reconciled,
+        handles_released=bool(close_succeeded and mappings_reconciled),
+        reservations_released=bool(close_succeeded and allocations_reconciled),
+        streams_destroyed=bool(close_succeeded),
+        context_released=bool(close_succeeded),
+    )
+    cleanup["complete"] = all(
+        bool(item) for name, item in cleanup.items() if name != "complete"
+    )
+
+
 def _select_backend(
     plan: InferencePlan,
     backend: Optional[InferenceBackend],
@@ -464,4 +938,5 @@ __all__ = [
     "StateProvider",
     "compile_exported_inference",
     "compile_inference",
+    "run_benchmark_plan",
 ]

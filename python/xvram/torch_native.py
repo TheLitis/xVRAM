@@ -20,10 +20,11 @@ import gc
 import importlib
 import os
 import threading
+import time
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .torch_planner import AccessMode, InferencePlan, ManagedRange, ManagedValue, ValueKind, ValueReference
 from .torch_runtime import (
@@ -436,6 +437,29 @@ _GEMM_RESULT_COUNTERS = (
     "tile_k",
 )
 
+_GEMM_SUM_COUNTERS = frozenset(
+    {
+        "tile_count",
+        "tiles_submitted",
+        "tiles_completed",
+        "events_recorded",
+        "events_retired",
+        "maps",
+        "set_access_calls",
+        "h2d_bytes",
+        "d2h_bytes",
+        "clean_evictions",
+        "dirty_evictions",
+        "handles_reused",
+        "prefetches",
+        "cublas_core_tiles",
+        "cublas_lt_tiles",
+        "algorithm_cache_hits",
+    }
+)
+_GEMM_MAX_COUNTERS = frozenset({"workspace_bytes", "maximum_working_set_bytes"})
+_GEMM_GEOMETRY_COUNTERS = frozenset({"tile_m", "tile_n", "tile_k"})
+
 
 class _GemmResultV1(ctypes.Structure):
     _fields_ = (
@@ -779,6 +803,7 @@ class NativeInferenceBackend(InferenceBackend):
         _control: Any = None,
         _library_owner: Any = None,
         _scratch_allocator: Any = None,
+        _progress_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self.config = (config or NativeRuntimeConfig()).validate()
         self._library_path = library_path
@@ -786,6 +811,7 @@ class NativeInferenceBackend(InferenceBackend):
         self._control = _control
         self._library_owner = _library_owner
         self._scratch_allocator = _scratch_allocator
+        self._progress_callback = _progress_callback
         self._plan: Optional[InferencePlan] = None
         self._session = 0
         self._owner_thread = 0
@@ -796,6 +822,12 @@ class NativeInferenceBackend(InferenceBackend):
         self._discarded_storages: set[str] = set()
         self._active_token: Optional[Union[NativeLeaseToken, NativeGemmToken]] = None
         self._gemm_results: List[Mapping[str, Union[int, float]]] = []
+        self._region_timings_ms: List[float] = []
+        self._active_region_started_ns = 0
+        self._active_region_bytes = 0
+        self._active_region_adapter = ""
+        self._final_telemetry: Optional[Dict[str, Any]] = None
+        self._close_succeeded = False
         self._closed = False
         self._prepared = False
         self._local_metrics: Dict[str, int] = {
@@ -811,6 +843,12 @@ class NativeInferenceBackend(InferenceBackend):
         """Opaque session identity, suitable only for the private custom op."""
 
         return self._session
+
+    @property
+    def close_succeeded(self) -> bool:
+        """Whether every native cleanup stage completed without an error."""
+
+        return self._close_succeeded
 
     def prepare(self, plan: InferencePlan, state_provider: StateProvider) -> None:
         if self._prepared:
@@ -846,6 +884,12 @@ class NativeInferenceBackend(InferenceBackend):
         self._control.write(allocation, value.storage_offset_bytes, pointer, length)
         self._bound_inputs.add(value.name)
         self._discarded_storages.discard(value.storage_id)
+        self._emit_progress(
+            stage="input",
+            operation="write",
+            bytes_value=length,
+            value_name=value.name,
+        )
 
     def prefetch(self, ranges: Tuple[ManagedRange, ...]) -> None:
         self._require_ready()
@@ -854,12 +898,20 @@ class NativeInferenceBackend(InferenceBackend):
         if native:
             self._control.prefetch(self._session, native)
             self._local_metrics["prefetch_calls"] += 1
+            self._emit_progress(
+                stage="prefetch",
+                operation="submitted",
+                bytes_value=sum(int(item[2]) for item in native),
+            )
 
     def submit(self, request: ExecutionRequest) -> NativeLeaseToken:
         self._require_ready()
         self._require_no_active_lease()
         self._reject_capture()
         node = request.node
+        self._active_region_started_ns = time.perf_counter_ns()
+        self._active_region_bytes = sum(int(item.length_bytes) for item in request.ranges)
+        self._active_region_adapter = str(node.adapter)
         if node.adapter in {"linear_out", "mm_out"} and self._requires_tiled_gemm(request):
             return self._submit_tiled_gemm(request)
         native_ranges = self._convert_ranges(request.ranges, widen_activation_writes=True)
@@ -899,6 +951,10 @@ class NativeInferenceBackend(InferenceBackend):
         if isinstance(token, NativeGemmToken):
             self._active_token = None
             self._local_metrics["nodes_retired"] += 1
+            elapsed = float(token.result.get("elapsed_milliseconds", 0.0))
+            if elapsed <= 0.0:
+                elapsed = self._active_region_elapsed_ms()
+            self._retire_region_progress(token.sequence, elapsed, tiled=True)
             return
         if not isinstance(token, NativeLeaseToken):
             raise BackendContractError("retire token has an invalid native generation type")
@@ -911,16 +967,33 @@ class NativeInferenceBackend(InferenceBackend):
             )
         self._active_token = None
         self._local_metrics["nodes_retired"] += 1
+        elapsed = float(info.elapsed_milliseconds)
+        if elapsed <= 0.0:
+            elapsed = self._active_region_elapsed_ms()
+        self._retire_region_progress(token.sequence, elapsed, tiled=False)
 
     def release_values(self, names: Tuple[str, ...]) -> None:
         self._require_ready()
         self._require_no_active_lease()
         if self._plan is None:
             raise BackendContractError("backend has no plan")
+        # A later oversized mm/linear can route through the tiled executor.
+        # Its beta-zero output is produced tile by tile, so a discarded slot
+        # would have invalid host bytes outside the current C tile.  Retaining
+        # these bounded activation slots is the conservative Phase 4b rule.
+        tiled_output_storages = {
+            self._plan.value(node.output_value).storage_id
+            for node in self._plan.nodes
+            if node.adapter in {"linear_out", "mm_out"}
+        }
         storages: set[str] = set()
         for name in names:
             value = self._plan.value(name)
-            if value.kind is ValueKind.ACTIVATION and not value.is_alias:
+            if (
+                value.kind is ValueKind.ACTIVATION
+                and not value.is_alias
+                and value.storage_id not in tiled_output_storages
+            ):
                 storages.add(value.storage_id)
         for storage_id in sorted(storages):
             if storage_id in self._discarded_storages:
@@ -931,6 +1004,12 @@ class NativeInferenceBackend(InferenceBackend):
             self._control.discard(self._allocation(storage_id), 0, length)
             self._discarded_storages.add(storage_id)
             self._local_metrics["discard_calls"] += 1
+            self._emit_progress(
+                stage="discard",
+                operation="retired",
+                bytes_value=length,
+                storage_id=storage_id,
+            )
 
     def read_output(self, value: ManagedValue) -> Any:
         self._require_ready()
@@ -954,18 +1033,35 @@ class NativeInferenceBackend(InferenceBackend):
             value.spec.span_bytes,
         )
         self._local_metrics["outputs_materialized"] += 1
+        self._emit_progress(
+            stage="output",
+            operation="read",
+            bytes_value=value.spec.span_bytes,
+            value_name=value.name,
+        )
         return output
 
-    def telemetry_snapshot(self) -> Dict[str, Union[int, bool]]:
+    def telemetry_snapshot(self) -> Dict[str, Any]:
         self._require_owner_thread()
-        native: Dict[str, Union[int, bool]] = {}
+        if self._final_telemetry is not None and not self._session:
+            return dict(self._final_telemetry)
+        return self._collect_telemetry()
+
+    def _collect_telemetry(self) -> Dict[str, Any]:
+        native: Dict[str, Any] = {}
         if self._session:
             native.update(self._control.telemetry(self._session))
         native.update(self._local_metrics)
+        native["region_timings_ms"] = list(self._region_timings_ms)
         if self._gemm_results:
             native["gemm_calls"] = len(self._gemm_results)
-            for name in _GEMM_RESULT_COUNTERS:
+            for name in _GEMM_SUM_COUNTERS:
                 native["gemm_" + name] = sum(int(item[name]) for item in self._gemm_results)
+            for name in _GEMM_MAX_COUNTERS:
+                native["gemm_" + name] = max(int(item[name]) for item in self._gemm_results)
+            for name in _GEMM_GEOMETRY_COUNTERS:
+                values = {int(item[name]) for item in self._gemm_results}
+                native["gemm_" + name] = values.pop() if len(values) == 1 else 0
             native["gemm_maximum_kernel_milliseconds"] = max(
                 float(item["maximum_kernel_milliseconds"]) for item in self._gemm_results
             )
@@ -993,6 +1089,11 @@ class NativeInferenceBackend(InferenceBackend):
                 self._allocations.pop(storage_id, None)
         if self._session:
             try:
+                self._final_telemetry = self._collect_telemetry()
+            except BaseException as error:
+                errors.append(error)
+        if self._session:
+            try:
                 self._control.close_session(self._session, int(self.config.close_timeout_ms))
             except BaseException as error:
                 errors.append(error)
@@ -1000,8 +1101,44 @@ class NativeInferenceBackend(InferenceBackend):
         self._closed = True
         self._prepared = False
         self._scratch_allocator = None
+        self._close_succeeded = not errors
+        if self._final_telemetry is None:
+            self._final_telemetry = self._collect_telemetry()
         if errors:
             raise errors[0]
+
+    def _active_region_elapsed_ms(self) -> float:
+        if self._active_region_started_ns <= 0:
+            return 0.0
+        return max(0.0, (time.perf_counter_ns() - self._active_region_started_ns) / 1_000_000.0)
+
+    def _retire_region_progress(self, sequence: int, elapsed_ms: float, *, tiled: bool) -> None:
+        elapsed = max(0.0, float(elapsed_ms))
+        self._region_timings_ms.append(elapsed)
+        self._emit_progress(
+            stage="region",
+            operation="retired",
+            bytes_value=self._active_region_bytes,
+            region_id=int(sequence),
+            adapter=self._active_region_adapter,
+            elapsed_milliseconds=elapsed,
+            tiled=bool(tiled),
+        )
+        self._active_region_started_ns = 0
+        self._active_region_bytes = 0
+        self._active_region_adapter = ""
+
+    def _emit_progress(self, *, stage: str, operation: str, bytes_value: int = 0, **fields: Any) -> None:
+        callback = self._progress_callback
+        if callback is None:
+            return
+        event: Dict[str, Any] = {
+            "stage": str(stage),
+            "operation": str(operation),
+            "bytes": max(0, int(bytes_value)),
+        }
+        event.update(fields)
+        callback(event)
 
     def _ensure_torch_and_control(self) -> None:
         if self._torch is None:
@@ -1073,6 +1210,12 @@ class NativeInferenceBackend(InferenceBackend):
                 self._control.write(
                     self._allocation(storage_id), 0, pointer, int(first_info.storage_bytes)
                 )
+                self._emit_progress(
+                    stage="state",
+                    operation="write",
+                    bytes_value=int(first_info.storage_bytes),
+                    storage_id=storage_id,
+                )
                 continue
             self._write_chunked_state_storage(
                 storage_id,
@@ -1125,6 +1268,12 @@ class NativeInferenceBackend(InferenceBackend):
                         begin,
                         pointer + (begin - chunk_begin),
                         end - begin,
+                    )
+                    self._emit_progress(
+                        stage="state",
+                        operation="write",
+                        bytes_value=end - begin,
+                        storage_id=storage_id,
                     )
                     covered = _add_covered(covered, begin, end)
         if covered != [(0, storage_bytes)]:

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/pytorch-inference-trace-record-v1.schema.json",
+  "title": "xVRAM PyTorch inference trace record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_type", "sequence", "monotonic_ns", "kind", "region_id", "allocation_id", "operation", "bytes", "reason"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "record_type": { "const": "xvram.pytorch_trace" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "monotonic_ns": { "type": "integer", "minimum": 0 },
+    "kind": { "enum": ["lease", "transition", "prefetch", "discard", "scratch", "verification"] },
+    "region_id": { "type": ["integer", "null"], "minimum": 1 },
+    "allocation_id": { "type": ["integer", "null"], "minimum": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "reason": { "type": "string" }
+  }
+}

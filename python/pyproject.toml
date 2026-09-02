@@ -8,6 +8,9 @@ version = "0.1.0.dev0"
 description = "Conservative PyTorch integration for the xVRAM CUDA memory runtime"
 requires-python = ">=3.9"
 
+[project.scripts]
+xvram-torch-bench = "xvram.torch_bench:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["xvram*"]

@@ -14,6 +14,7 @@ EXPECTED = (
     "7b998a8a2b50d5e1eec056d4844e572200297a443c85e0d7ee87c75966b9feeb",
     "70ef270bcff4e0b32c412d40cfd44e8b38108677de45951437ed77120d603980",
     "d2fbc19f2175f4922dc4b36b9653384b3bab40bed3e6daa345b5bdc8b084705c",
+    "99c632f1511a7aa8fe57f59458c755f2cc03f3b413136ed3d95fb968d69bfe39",
 )
 
 
@@ -21,7 +22,7 @@ def main() -> int:
     if len(sys.argv) != len(EXPECTED) + 1:
         print(
             "usage: schema_hash_contract.py <capability-v1> <capability-v2> "
-            "<vmm-poc-v1> <residency-report-v1> <residency-trace-v1>"
+            "<vmm-poc-v1> <residency-report-v1> <residency-trace-v1> <gemm-report-v1>"
         )
         return 64
 

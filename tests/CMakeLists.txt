@@ -69,6 +69,16 @@ set_tests_properties(
              "PYTHONPATH=${PROJECT_SOURCE_DIR}/python;XVRAM_TORCH_ALLOCATOR_LIBRARY=$<TARGET_FILE:xvram_torch_allocator>"
              TIMEOUT 60)
 
+add_test(
+  NAME xvram.torch-inference.help
+  COMMAND "${Python3_EXECUTABLE}" -m xvram.torch_bench --help)
+add_test(
+  NAME xvram.torch-inference.version
+  COMMAND "${Python3_EXECUTABLE}" -m xvram.torch_bench --version)
+set_tests_properties(
+  xvram.torch-inference.help xvram.torch-inference.version
+  PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)
+
 add_executable(xvram-vmm-poc-unit-tests unit/vmm_poc_tests.cpp
                                           "${PROJECT_SOURCE_DIR}/src/vmm_poc/workload.cpp")
 target_include_directories(xvram-vmm-poc-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -349,4 +359,27 @@ add_test(
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/capability-report-v2.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/vmm-poc-report-v1.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-cache-report-v1.schema.json"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-trace-record-v1.schema.json")
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-trace-record-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/gemm-bench-report-v1.schema.json")
+
+add_test(
+  NAME xvram.abi.hash-contract
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/abi_hash_contract.py"
+          "${PROJECT_SOURCE_DIR}/include/xvram/xvram.h"
+          "${PROJECT_SOURCE_DIR}/include/xvram/torch_allocator.h")
+
+add_test(
+  NAME xvram.torch-inference.json-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_inference_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v1.schema.json")
+set_tests_properties(
+  xvram.torch-inference.json-contract
+  PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)
+
+add_test(
+  NAME xvram.torch-inference.cli-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_inference_cli_contract.py")
+set_tests_properties(xvram.torch-inference.cli-contract PROPERTIES TIMEOUT 20)
