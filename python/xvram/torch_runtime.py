@@ -176,6 +176,8 @@ class InferenceRuntime:
         plan: InferencePlan,
         backend: InferenceBackend,
         state_provider: StateProvider,
+        *,
+        prefetch_distance: Optional[int] = None,
     ) -> None:
         if not isinstance(plan, InferencePlan):
             raise TypeError("plan must be an InferencePlan")
@@ -186,6 +188,18 @@ class InferenceRuntime:
         self._plan = plan
         self._backend = backend
         self._state_provider = state_provider
+        if prefetch_distance is None:
+            backend_config = getattr(backend, "config", None)
+            prefetch_distance = int(getattr(backend_config, "prefetch_distance", 2))
+        if isinstance(prefetch_distance, bool) or not 0 <= int(prefetch_distance) <= 8:
+            raise ValueError("prefetch_distance must be in [0, 8]")
+        self._prefetch_distance = int(prefetch_distance)
+        self._compute_nodes = tuple(
+            node for node in self._plan.nodes if node.kind is NodeKind.COMPUTE
+        )
+        self._compute_positions = {
+            node.index: position for position, node in enumerate(self._compute_nodes)
+        }
         self._state = RuntimeState.NEW
         self._lock = threading.RLock()
         self._run_count = 0
@@ -298,13 +312,35 @@ class InferenceRuntime:
     def _prefetch_ranges(
         self, node: PlannedNode, host_inputs: Mapping[str, Any]
     ) -> Tuple[ManagedRange, ...]:
+        if self._prefetch_distance == 0:
+            return ()
         ranges: List[ManagedRange] = []
         embedding_by_weight = {
             candidate.embedding_range.weight_value: candidate.embedding_range
             for candidate in self._plan.nodes
             if candidate.embedding_range is not None
         }
-        for name in node.prefetch_values:
+        try:
+            position = self._compute_positions[node.index]
+        except KeyError as error:
+            raise BackendContractError("compute node is absent from the static schedule") from error
+        current_inputs = set(node.input_values)
+        future_reads: Dict[str, int] = {}
+        future_nodes = self._compute_nodes[
+            position + 1 : position + 1 + self._prefetch_distance
+        ]
+        for future_position, future in enumerate(future_nodes, start=position + 1):
+            for name in future.input_values:
+                candidate = self._plan.value(name)
+                if candidate.is_persistent and name not in current_inputs:
+                    future_reads.setdefault(name, future_position)
+        ordered_names = (
+            name
+            for name, _position in sorted(
+                future_reads.items(), key=lambda item: (item[1], item[0])
+            )
+        )
+        for name in ordered_names:
             template = embedding_by_weight.get(name)
             if template is not None and template.indices_value in host_inputs:
                 ranges.extend(

@@ -86,13 +86,18 @@ class _Factory(InferenceBackendFactory):
 
 
 class TorchRuntimeTests(unittest.TestCase):
-    def _runtime(self, backend=None):
+    def _runtime(self, backend=None, *, prefetch_distance=None):
         exported = _embedding_linear_program()
         module = _Module()
         provider = CpuModuleStateProvider(module)
         plan = build_inference_plan(exported, state_provider=provider)
         selected = backend or _RecordingBackend()
-        return InferenceRuntime(plan, selected, provider), selected
+        return (
+            InferenceRuntime(
+                plan, selected, provider, prefetch_distance=prefetch_distance
+            ),
+            selected,
+        )
 
     def test_scheduler_retires_every_generation_before_release(self):
         runtime, backend = self._runtime()
@@ -132,6 +137,14 @@ class TorchRuntimeTests(unittest.TestCase):
         self.assertFalse(any(item[0] == "release" for item in backend.events))
         with self.assertRaisesRegex(RuntimeError, "poisoned"):
             runtime.run(tokens)
+
+    def test_zero_prefetch_distance_submits_no_speculation(self):
+        runtime, backend = self._runtime(prefetch_distance=0)
+        tokens = _Tensor(
+            (4,), dtype="torch.int64", element_size=8, data=[1, 2, 3, 5]
+        )
+        runtime.run(tokens)
+        self.assertFalse(any(item[0] == "prefetch" for item in backend.events))
 
     def test_static_input_contract_is_checked_before_submission(self):
         runtime, backend = self._runtime()

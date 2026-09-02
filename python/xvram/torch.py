@@ -202,7 +202,12 @@ class InferenceRuntime:
                 torch_module=self._torch_module,
             )
             backend = self._create_backend(captured.plan)
-            scheduler = _Scheduler(captured.plan, backend, provider)
+            scheduler = _Scheduler(
+                captured.plan,
+                backend,
+                provider,
+                prefetch_distance=self.config.prefetch_distance,
+            )
             compiled = CompiledInference(
                 self, scheduler, backend, captured.exported_program
             )
