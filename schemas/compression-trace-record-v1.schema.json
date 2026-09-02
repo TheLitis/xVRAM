@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/compression-trace-record-v1.schema.json",
+  "title": "xVRAM adaptive compression trace record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_type", "sequence", "monotonic_time_ns", "event",
+    "allocation_id", "chunk_index", "operation_id", "source_generation",
+    "target_generation", "slot_generation", "from_representation", "to_representation",
+    "path", "logical_bytes", "physical_bytes", "reason", "speculative"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "report_type": { "const": "xvram.compression_trace" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "monotonic_time_ns": { "type": "integer", "minimum": 0 },
+    "event": {
+      "enum": [
+        "backing_transition", "codec_decision", "encode_submit", "encode_retire",
+        "decode_submit", "decode_retire", "h2d_submit", "h2d_retire", "d2h_submit",
+        "d2h_retire", "generation_commit", "generation_discard", "spill_reserve",
+        "spill_release", "budget_sample", "target_change", "operation_retired", "diagnostic"
+      ]
+    },
+    "allocation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "chunk_index": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "operation_id": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "source_generation": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "target_generation": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "slot_generation": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "from_representation": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/representation" }] },
+    "to_representation": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/representation" }] },
+    "path": {
+      "type": ["string", "null"],
+      "enum": ["raw", "cpu_lz4_gpu_decode", "nvcomp_gpu_codec", null]
+    },
+    "logical_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "physical_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "reason": { "type": ["string", "null"] },
+    "speculative": { "type": ["boolean", "null"] }
+  },
+  "$defs": {
+    "nullableNonNegativeInteger": { "type": ["integer", "null"], "minimum": 0 },
+    "representation": { "enum": ["invalid", "implicit_zero", "raw", "lz4_blocks"] }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "enum": [
+              "backing_transition", "codec_decision", "encode_submit", "encode_retire",
+              "decode_submit", "decode_retire", "h2d_submit", "h2d_retire",
+              "d2h_submit", "d2h_retire", "generation_commit", "generation_discard"
+            ]
+          }
+        },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "allocation_id": { "type": "integer", "minimum": 0 },
+        "chunk_index": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "backing_transition" } }, "required": ["event"] },
+      "then": { "properties": {
+        "source_generation": { "type": "integer", "minimum": 0 },
+        "target_generation": { "type": "integer", "minimum": 1 },
+        "from_representation": { "$ref": "#/$defs/representation" },
+        "to_representation": { "$ref": "#/$defs/representation" }
+      } }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": { "enum": ["encode_submit", "encode_retire", "decode_submit", "decode_retire"] }
+        },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "slot_generation": { "type": "integer", "minimum": 1 },
+        "path": { "enum": ["cpu_lz4_gpu_decode", "nvcomp_gpu_codec"] },
+        "logical_bytes": { "type": "integer", "minimum": 1 },
+        "physical_bytes": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "operation_retired" } }, "required": ["event"] },
+      "then": { "properties": { "operation_id": { "type": "integer", "minimum": 1 } } }
+    }
+  ]
+}

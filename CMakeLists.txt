@@ -425,6 +425,19 @@ target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib lz4)
 xvram_enable_warnings(xvram_residency_core)
 
 add_library(
+  xvram_compression_contract STATIC
+  src/compression_bench/report.cpp
+  src/compression_bench/report_json.cpp
+  src/compression_bench/report_text.cpp
+  src/compression_bench/worker_protocol.cpp)
+target_compile_features(xvram_compression_contract PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_compression_contract PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(xvram_compression_contract PUBLIC xvram_probe_lib)
+xvram_enable_warnings(xvram_compression_contract)
+
+add_library(
   xvram_vmm_poc STATIC
   src/vmm_poc/executor.cpp
   src/vmm_poc/outcome.cpp
@@ -782,6 +795,8 @@ if(XVRAM_TORCH_RUNTIME_ENABLED)
 endif()
 install(FILES include/xvram/xvram.h include/xvram/torch_allocator.h
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
+install(FILES include/xvram/compression/report.hpp
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram/compression")
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
               schemas/vmm-poc-report-v1.schema.json
@@ -790,6 +805,8 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/gemm-bench-report-v1.schema.json
               schemas/pytorch-inference-report-v1.schema.json
               schemas/pytorch-inference-trace-record-v1.schema.json
+              schemas/adaptive-compression-report-v1.schema.json
+              schemas/compression-trace-record-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 configure_package_config_file(
