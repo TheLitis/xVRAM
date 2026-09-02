@@ -6,6 +6,34 @@ xvram_enable_warnings(xvram-unit-tests)
 
 add_test(NAME xvram.unit COMMAND xvram-unit-tests)
 
+add_executable(xvram-torch-allocator-tests unit/torch_allocator_tests.cpp)
+target_link_libraries(xvram-torch-allocator-tests PRIVATE xvram_torch_allocator_core)
+target_include_directories(xvram-torch-allocator-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(xvram-torch-allocator-tests SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+target_compile_features(xvram-torch-allocator-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-torch-allocator-tests)
+add_test(NAME xvram.torch-allocator.unit COMMAND xvram-torch-allocator-tests)
+
+add_test(
+  NAME xvram.torch-allocator.export-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_allocator_export_contract.py"
+          "$<TARGET_FILE:xvram_torch_allocator>")
+add_test(
+  NAME xvram.torch-allocator.export-parser
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_allocator_export_contract.py" --self-test)
+
+add_test(
+  NAME xvram.torch-python.unit
+  COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
+          "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "test_*.py")
+set_tests_properties(
+  xvram.torch-python.unit
+  PROPERTIES ENVIRONMENT
+             "PYTHONPATH=${PROJECT_SOURCE_DIR}/python;XVRAM_TORCH_ALLOCATOR_LIBRARY=$<TARGET_FILE:xvram_torch_allocator>"
+             TIMEOUT 60)
+
 add_executable(xvram-vmm-poc-unit-tests unit/vmm_poc_tests.cpp
                                           "${PROJECT_SOURCE_DIR}/src/vmm_poc/workload.cpp")
 target_include_directories(xvram-vmm-poc-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
