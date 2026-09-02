@@ -30,6 +30,12 @@ option(XVRAM_FETCH_CUBLAS_REDIST
        "Download and stage NVIDIA's hash-pinned cuBLAS redistributable beside the SDK" OFF)
 set(XVRAM_CUBLAS_REDIST_ROOT "" CACHE PATH
     "Existing official cuBLAS redistributable root to stage beside the SDK")
+option(XVRAM_FETCH_NVCOMP_REDIST
+       "Download and stage NVIDIA's hash-pinned nvCOMP redistributable beside compression-enabled runtimes"
+       ON)
+set(XVRAM_NVCOMP_REDIST_ROOT "" CACHE PATH
+    "Existing official nvCOMP redistributable root to stage beside xVRAM")
+option(XVRAM_FETCH_LZ4 "Download the hash-pinned upstream LZ4 1.10.0 sources" ON)
 option(XVRAM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 set(XVRAM_BUILD_TORCH_RUNTIME "AUTO" CACHE STRING
     "Build the private Phase 4b PyTorch Stable-ABI runtime (AUTO, ON, or OFF)")
@@ -259,6 +265,91 @@ endif()
 
 message(STATUS "Using NVML headers: ${XVRAM_NVML_INCLUDE_DIR}")
 
+if(XVRAM_FETCH_LZ4)
+  FetchContent_Declare(
+    xvram_lz4
+    URL "https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz"
+    URL_HASH "SHA256=537512904744B35E232912055CCF8EC66D768639FF3ABE5788D90D792EC5F48B"
+    # Populate the official source archive without enabling its C-only subproject. xVRAM's
+    # toolchain remains C++-only and compiles the C-compatible implementation as C++.
+    SOURCE_SUBDIR xvram-no-cmake-subdirectory
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(xvram_lz4)
+  add_library(xvram_lz4 STATIC "${xvram_lz4_SOURCE_DIR}/lib/lz4.c")
+  set_source_files_properties("${xvram_lz4_SOURCE_DIR}/lib/lz4.c" PROPERTIES LANGUAGE CXX)
+  target_include_directories(xvram_lz4 SYSTEM PUBLIC "${xvram_lz4_SOURCE_DIR}/lib")
+  set_target_properties(xvram_lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  add_library(lz4 ALIAS xvram_lz4)
+elseif(NOT TARGET lz4)
+  find_package(lz4 1.10 CONFIG REQUIRED)
+endif()
+
+if(XVRAM_FETCH_NVCOMP_REDIST AND NOT XVRAM_NVCOMP_REDIST_ROOT)
+  if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
+    set(XVRAM_NVCOMP_REDIST_URL
+        "https://files.pythonhosted.org/packages/7c/02/61dbc3791452e9aa402815e44073cc846c51e8ddca8b2d01b360095b5380/nvidia_libnvcomp_cu13-5.3.0.16-py3-none-win_amd64.whl")
+    set(XVRAM_NVCOMP_REDIST_HASH
+        "SHA256=34824F687625A48F1FCAeed9B4BD08935D88583FF5FC4811BECA1C9A50E343B9")
+  elseif(UNIX AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(XVRAM_NVCOMP_REDIST_URL
+        "https://files.pythonhosted.org/packages/8d/50/df4132c3e4171462130ddfc793e042fb8724d68249f14c16eff44236d5d2/nvidia_libnvcomp_cu13-5.3.0.16-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl")
+    set(XVRAM_NVCOMP_REDIST_HASH
+        "SHA256=8BF2594C9A3D83BF485C95BFFA8AC6406D98B5407CA9E8D9BEF5E8FB5D6F5116")
+  else()
+    message(FATAL_ERROR
+            "Automatic nvCOMP staging supports Windows/Linux x86-64 only; set XVRAM_NVCOMP_REDIST_ROOT or disable XVRAM_FETCH_NVCOMP_REDIST")
+  endif()
+  FetchContent_Declare(
+    xvram_nvcomp_redist
+    URL "${XVRAM_NVCOMP_REDIST_URL}"
+    URL_HASH "${XVRAM_NVCOMP_REDIST_HASH}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(xvram_nvcomp_redist)
+  set(XVRAM_NVCOMP_REDIST_ROOT
+      "${xvram_nvcomp_redist_SOURCE_DIR}/nvidia/libnvcomp")
+endif()
+
+if(NOT XVRAM_NVCOMP_REDIST_ROOT)
+  message(FATAL_ERROR
+          "nvCOMP 5.3 headers/runtime are required; enable XVRAM_FETCH_NVCOMP_REDIST or set XVRAM_NVCOMP_REDIST_ROOT")
+endif()
+find_path(
+  XVRAM_NVCOMP_INCLUDE_DIR
+  NAMES nvcomp/lz4.h
+  PATHS "${XVRAM_NVCOMP_REDIST_ROOT}"
+  PATH_SUFFIXES include
+  NO_DEFAULT_PATH)
+if(NOT XVRAM_NVCOMP_INCLUDE_DIR)
+  message(FATAL_ERROR "XVRAM_NVCOMP_REDIST_ROOT does not contain nvcomp/lz4.h")
+endif()
+message(STATUS "Using nvCOMP headers/runtime: ${XVRAM_NVCOMP_REDIST_ROOT}")
+
+if(WIN32)
+  file(GLOB_RECURSE XVRAM_NVCOMP_RUNTIME_LIBRARIES LIST_DIRECTORIES FALSE
+       "${XVRAM_NVCOMP_REDIST_ROOT}/nvcomp64_5.dll"
+       "${XVRAM_NVCOMP_REDIST_ROOT}/nvcomp_cpu64_5.dll")
+  set(XVRAM_NVCOMP_INSTALL_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+else()
+  file(GLOB_RECURSE XVRAM_NVCOMP_RUNTIME_LIBRARIES LIST_DIRECTORIES FALSE
+       "${XVRAM_NVCOMP_REDIST_ROOT}/libnvcomp.so.5"
+       "${XVRAM_NVCOMP_REDIST_ROOT}/libnvcomp_cpu.so.5")
+  set(XVRAM_NVCOMP_INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endif()
+list(LENGTH XVRAM_NVCOMP_RUNTIME_LIBRARIES XVRAM_NVCOMP_RUNTIME_COUNT)
+if(NOT XVRAM_NVCOMP_RUNTIME_COUNT EQUAL 2)
+  message(FATAL_ERROR "nvCOMP redistributable must contain the GPU and CPU runtime pair")
+endif()
+
+function(xvram_stage_nvcomp target)
+  foreach(runtime_library IN LISTS XVRAM_NVCOMP_RUNTIME_LIBRARIES)
+    add_custom_command(
+      TARGET ${target} POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${runtime_library}"
+              "$<TARGET_FILE_DIR:${target}>"
+      VERBATIM)
+  endforeach()
+endfunction()
+
 function(xvram_enable_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /EHsc /permissive- /Zc:__cplusplus /utf-8)
@@ -319,6 +410,7 @@ xvram_enable_warnings(xvram_worker_process)
 
 add_library(
   xvram_residency_core STATIC
+  src/platform/nvcomp/nvcomp_api.cpp
   src/residency/budget.cpp
   src/residency/core.cpp
   src/residency/metrics.cpp
@@ -327,8 +419,9 @@ add_library(
   src/residency/scenario.cpp)
 target_compile_features(xvram_residency_core PUBLIC cxx_std_20)
 target_include_directories(xvram_residency_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_include_directories(xvram_residency_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
-target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib)
+target_include_directories(
+  xvram_residency_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}" "${XVRAM_NVCOMP_INCLUDE_DIR}")
+target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib lz4)
 xvram_enable_warnings(xvram_residency_core)
 
 add_library(
@@ -430,6 +523,7 @@ if(UNIX AND NOT APPLE)
     PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram.exports.map")
 endif()
 xvram_enable_warnings(xvram_sdk)
+xvram_stage_nvcomp(xvram_sdk)
 
 add_library(xVRAM::xvram ALIAS xvram_sdk)
 
@@ -565,6 +659,7 @@ if(XVRAM_TORCH_RUNTIME_ENABLED)
       PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram_torch_runtime.exports.map")
   endif()
   xvram_enable_warnings(xvram_torch_runtime)
+  xvram_stage_nvcomp(xvram_torch_runtime)
 endif()
 
 add_library(
@@ -655,6 +750,20 @@ if(XVRAM_CUBLAS_REDIST_ROOT)
   install(FILES "${XVRAM_CUBLAS_REDIST_ROOT}/LICENSE"
           DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
           RENAME LICENSE.cublas.txt)
+endif()
+
+install(FILES ${XVRAM_NVCOMP_RUNTIME_LIBRARIES}
+        DESTINATION "${XVRAM_NVCOMP_INSTALL_DESTINATION}")
+install(FILES "${XVRAM_NVCOMP_REDIST_ROOT}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
+        RENAME LICENSE.nvcomp.txt)
+install(FILES "${XVRAM_NVCOMP_REDIST_ROOT}/NOTICE"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
+        RENAME NOTICE.nvcomp.txt)
+if(XVRAM_FETCH_LZ4)
+  install(FILES "${xvram_lz4_SOURCE_DIR}/LICENSE"
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
+          RENAME LICENSE.lz4.txt)
 endif()
 
 install(

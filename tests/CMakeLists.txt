@@ -120,6 +120,16 @@ xvram_enable_warnings(xvram-residency-core-tests)
 
 add_test(NAME xvram.residency.core COMMAND xvram-residency-core-tests)
 
+add_executable(xvram-nvcomp-dispatch-tests unit/nvcomp_dispatch_tests.cpp)
+target_link_libraries(xvram-nvcomp-dispatch-tests PRIVATE xvram_residency_core)
+target_include_directories(xvram-nvcomp-dispatch-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(
+  xvram-nvcomp-dispatch-tests SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
+                                               "${XVRAM_NVCOMP_INCLUDE_DIR}")
+target_compile_features(xvram-nvcomp-dispatch-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-nvcomp-dispatch-tests)
+add_test(NAME xvram.nvcomp.dispatch COMMAND xvram-nvcomp-dispatch-tests)
+
 add_executable(xvram-gemm-planner-tests unit/gemm_planner_tests.cpp)
 target_link_libraries(xvram-gemm-planner-tests PRIVATE xvram_gemm_core)
 target_include_directories(xvram-gemm-planner-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
