@@ -262,7 +262,19 @@ typedef struct xvram_torch_runtime_telemetry_v1 {
 } xvram_torch_runtime_telemetry_v1;
 
 #define XVRAM_TORCH_RUNTIME_TELEMETRY_V1_INIT                                                      \
-  {(uint32_t)sizeof(xvram_torch_runtime_telemetry_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1}
+  {                                                                                                \
+    (uint32_t)sizeof(xvram_torch_runtime_telemetry_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1,         \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT32_C(0), UINT32_C(0), UINT32_C(0), UINT32_C(0), {           \
+      UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),   \
+          UINT64_C(0)                                                                              \
+    }                                                                                              \
+  }
 
 typedef struct xvram_torch_runtime_error_v1 {
   uint32_t struct_size;
@@ -422,7 +434,17 @@ typedef struct xvram_torch_runtime_gemm_result_v1 {
 } xvram_torch_runtime_gemm_result_v1;
 
 #define XVRAM_TORCH_RUNTIME_GEMM_RESULT_V1_INIT                                                    \
-  {(uint32_t)sizeof(xvram_torch_runtime_gemm_result_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1}
+  {                                                                                                \
+    (uint32_t)sizeof(xvram_torch_runtime_gemm_result_v1), XVRAM_TORCH_RUNTIME_ABI_VERSION_1,       \
+        XVRAM_TORCH_RUNTIME_GEMM_NOT_RUN, XVRAM_TORCH_RUNTIME_GEMM_BOUNDARY_NONE, INT64_C(0),     \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),             \
+        UINT64_C(0), UINT64_C(0), UINT64_C(0), 0.0, 0.0, {                                        \
+      UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),   \
+          UINT64_C(0)                                                                              \
+    }                                                                                              \
+  }
 
 typedef struct xvram_torch_runtime_api_v1 {
   uint32_t struct_size;

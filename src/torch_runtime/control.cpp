@@ -788,8 +788,10 @@ allocation_transfer(const xvram_torch_runtime_allocation handle, const std::uint
     const residency::RuntimeStatus status =
         Write ? session->runtime->write(allocation->runtime_id, offset, memory, bytes)
               : session->runtime->read(allocation->runtime_id, offset, memory, bytes);
-    return status == residency::RuntimeStatus::success ? XVRAM_TORCH_RUNTIME_SUCCESS
-                                                       : record_runtime_error(*session, status);
+    if (status == residency::RuntimeStatus::success) {
+      return XVRAM_TORCH_RUNTIME_SUCCESS;
+    }
+    return record_runtime_error(*session, status);
   });
 }
 
@@ -868,8 +870,10 @@ allocation_discard_entry(const xvram_torch_runtime_allocation handle, const std:
       return built;
     }
     const residency::RuntimeStatus status = session->runtime->prefetch(ranges);
-    return status == residency::RuntimeStatus::success ? XVRAM_TORCH_RUNTIME_SUCCESS
-                                                       : record_runtime_error(*session, status);
+    if (status == residency::RuntimeStatus::success) {
+      return XVRAM_TORCH_RUNTIME_SUCCESS;
+    }
+    return record_runtime_error(*session, status);
   });
 }
 
@@ -1416,9 +1420,12 @@ gemm_execute_entry(const xvram_torch_runtime_session session_handle,
     const residency::RuntimeStatus drained = session->runtime->drain(true);
     const bool quarantine = drained == residency::RuntimeStatus::poisoned ||
                             session->runtime->async_completion_unknown();
-    const xvram_torch_runtime_status cublas_cleanup =
-        quarantine ? (abandon_cublas(*session), XVRAM_TORCH_RUNTIME_SUCCESS)
-                   : destroy_cublas(*session);
+    xvram_torch_runtime_status cublas_cleanup = XVRAM_TORCH_RUNTIME_SUCCESS;
+    if (quarantine) {
+      abandon_cublas(*session);
+    } else {
+      cublas_cleanup = destroy_cublas(*session);
+    }
     const residency::RuntimeStatus status = session->runtime->close();
     if (drained != residency::RuntimeStatus::success) {
       return record_runtime_error(*session, drained);
