@@ -142,6 +142,7 @@ using MemcpyDtoHAsync = CUresult(CUDAAPI*)(void*, CUdeviceptr, std::size_t, CUst
 using StreamCreate = CUresult(CUDAAPI*)(CUstream*, unsigned int);
 using StreamDestroy = CUresult(CUDAAPI*)(CUstream);
 using StreamSynchronize = CUresult(CUDAAPI*)(CUstream);
+using StreamGetContext = CUresult(CUDAAPI*)(CUstream, CUcontext*);
 using StreamWaitEvent = CUresult(CUDAAPI*)(CUstream, CUevent, unsigned int);
 using StreamIsCapturing = CUresult(CUDAAPI*)(CUstream, CUstreamCaptureStatus*);
 using EventCreate = CUresult(CUDAAPI*)(CUevent*, unsigned int);

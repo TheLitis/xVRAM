@@ -4,6 +4,7 @@
 #include "residency/core.hpp"
 
 #include <chrono>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -83,6 +84,52 @@ struct TransactionContext {
 
 using TransactionCallback = std::function<RuntimeStatus(const TransactionContext&)>;
 
+struct ExternalLeaseId {
+  std::uint64_t value = 0;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return value != 0;
+  }
+
+  [[nodiscard]] auto operator<=>(const ExternalLeaseId&) const noexcept = default;
+};
+
+enum class ExternalSealMode {
+  success,
+  cancelled_before_submission,
+  failed_after_possible_submission,
+};
+
+enum class ExternalLeaseState {
+  armed,
+  submitted,
+  completed,
+  cancelled,
+  failed,
+  quarantined,
+};
+
+struct ExternalLeaseRequest {
+  std::span<const AccessRange> ranges;
+  std::uint64_t workspace_bytes = 0;
+};
+
+struct ExternalLease {
+  ExternalLeaseId id;
+  std::vector<ResolvedRange> ranges;
+  cuda::abi::DevicePointer workspace_address = 0;
+  std::uint64_t workspace_bytes = 0;
+  // Runtime-owned and non-owning for the caller. All leased work must be submitted here.
+  cuda::abi::Stream stream = nullptr;
+};
+
+struct ExternalLeasePoll {
+  ExternalLeaseId id;
+  ExternalLeaseState state = ExternalLeaseState::armed;
+  RuntimeStatus result = RuntimeStatus::success;
+  double elapsed_ms = 0.0;
+};
+
 struct RuntimeTelemetry {
   std::uint64_t allocations_created = 0;
   std::uint64_t allocations_released = 0;
@@ -141,11 +188,23 @@ public:
   [[nodiscard]] RuntimeStatus allocate(std::uint64_t bytes, ResidencyHint hint,
                                        RuntimeAllocation& output);
   [[nodiscard]] RuntimeStatus release(AllocationId allocation_id);
+  [[nodiscard]] RuntimeStatus discard_dead(AllocationId allocation_id);
+  [[nodiscard]] RuntimeStatus discard_dead(AllocationId allocation_id,
+                                           std::uint64_t offset_bytes,
+                                           std::uint64_t length_bytes);
   [[nodiscard]] RuntimeStatus write(AllocationId allocation_id, std::uint64_t offset,
                                     const void* source, std::uint64_t bytes);
   [[nodiscard]] RuntimeStatus read(AllocationId allocation_id, std::uint64_t offset,
                                    void* destination, std::uint64_t bytes);
   [[nodiscard]] RuntimeStatus prefetch(std::span<const AccessRange> ranges);
+  [[nodiscard]] RuntimeStatus acquire_external(const ExternalLeaseRequest& request,
+                                               ExternalLease& output);
+  [[nodiscard]] RuntimeStatus seal_external(ExternalLeaseId lease_id, ExternalSealMode mode);
+  [[nodiscard]] RuntimeStatus poll_external(ExternalLeaseId lease_id,
+                                            ExternalLeasePoll& output);
+  [[nodiscard]] RuntimeStatus wait_external(ExternalLeaseId lease_id,
+                                            std::chrono::milliseconds timeout,
+                                            ExternalLeasePoll& output);
   [[nodiscard]] RuntimeStatus execute(std::span<const AccessRange> ranges,
                                       std::uint64_t workspace_bytes,
                                       const TransactionCallback& callback);

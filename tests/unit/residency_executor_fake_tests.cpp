@@ -146,6 +146,8 @@ struct FakeCuda {
 
   struct StreamState {
     std::optional<DevicePointer> pending_mapping;
+    Context context = nullptr;
+    CUstreamCaptureStatus capture = CU_STREAM_CAPTURE_STATUS_NONE;
   };
 
   struct EventState {
@@ -181,6 +183,7 @@ struct FakeCuda {
   std::map<DevicePointer, LinearAllocation> linear;
   std::map<void*, std::unique_ptr<std::byte[]>, std::less<void*>> pinned;
   std::map<Stream, StreamState, std::less<Stream>> streams;
+  std::vector<Stream> stream_creation_order;
   std::map<Event, EventState, std::less<Event>> events;
   std::map<std::uint64_t, DevicePointer> stable_addresses;
   std::uint64_t next_token = 1;
@@ -200,6 +203,7 @@ struct FakeCuda {
   std::uint64_t event_query_calls = 0;
   std::uint64_t kernel_calls = 0;
   std::uint64_t d2h_mapping_calls = 0;
+  float event_elapsed_ms = 0.05F;
 
   void violation(std::string message) {
     violations.push_back(std::move(message));
@@ -705,7 +709,9 @@ Result CUDAAPI fake_d2h(void* destination, const DevicePointer source, const std
 
 Result CUDAAPI fake_stream_create(Stream* stream, unsigned int) {
   const Stream created = fake().make_token<Stream>();
-  fake().streams.emplace(created, FakeCuda::StreamState{});
+  fake().streams.emplace(created, FakeCuda::StreamState{{}, fake().current_context,
+                                                        CU_STREAM_CAPTURE_STATUS_NONE});
+  fake().stream_creation_order.push_back(created);
   *stream = created;
   return CUDA_SUCCESS;
 }
@@ -722,10 +728,28 @@ Result CUDAAPI fake_stream_synchronize(const Stream stream) {
   return fake().streams.contains(stream) ? CUDA_SUCCESS : CUDA_ERROR_INVALID_HANDLE;
 }
 
+Result CUDAAPI fake_stream_get_context(const Stream stream, Context* context) {
+  const auto found = fake().streams.find(stream);
+  if (context == nullptr || found == fake().streams.end()) {
+    return CUDA_ERROR_INVALID_HANDLE;
+  }
+  *context = found->second.context;
+  return CUDA_SUCCESS;
+}
+
 Result CUDAAPI fake_stream_wait_event(const Stream stream, const Event event, unsigned int) {
   return fake().streams.contains(stream) && fake().events.contains(event)
              ? CUDA_SUCCESS
              : CUDA_ERROR_INVALID_HANDLE;
+}
+
+Result CUDAAPI fake_stream_is_capturing(const Stream stream, CUstreamCaptureStatus* status) {
+  const auto found = fake().streams.find(stream);
+  if (status == nullptr || found == fake().streams.end()) {
+    return CUDA_ERROR_INVALID_HANDLE;
+  }
+  *status = found->second.capture;
+  return CUDA_SUCCESS;
 }
 
 Result CUDAAPI fake_event_create(Event* event, unsigned int) {
@@ -801,7 +825,7 @@ Result CUDAAPI fake_event_elapsed(float* milliseconds, const Event start, const 
   if (!fake().events.contains(start) || !fake().events.contains(end)) {
     return CUDA_ERROR_INVALID_HANDLE;
   }
-  *milliseconds = 0.05F;
+  *milliseconds = fake().event_elapsed_ms;
   return CUDA_SUCCESS;
 }
 
@@ -929,7 +953,9 @@ void FakeCuda::install(CudaApi& api) {
   api.stream_create_ = fake_stream_create;
   api.stream_destroy_ = fake_stream_destroy;
   api.stream_synchronize_ = fake_stream_synchronize;
+  api.stream_get_context_ = fake_stream_get_context;
   api.stream_wait_event_ = fake_stream_wait_event;
+  api.stream_is_capturing_ = fake_stream_is_capturing;
   api.event_create_ = fake_event_create;
   api.event_destroy_ = fake_event_destroy;
   api.event_record_ = fake_event_record;
@@ -1177,6 +1203,206 @@ void runtime_safe_callback_skip_keeps_session_reusable_test() {
     return xvram::residency::RuntimeStatus::success;
   }) == xvram::residency::RuntimeStatus::success);
   CHECK(runtime.telemetry().transactions_completed == 1U);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_external_lease_and_discard_dead_test() {
+  const CheckContext context("runtime external lease and dead allocation discard");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  CHECK(cuda.stream_creation_order.size() >= 3U);
+  const Stream runtime_compute_stream = cuda.stream_creation_order[1];
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array read_write{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read_write}};
+
+  const Context original_stream_context = cuda.streams.at(runtime_compute_stream).context;
+  cuda.streams.at(runtime_compute_stream).context = nullptr;
+  xvram::residency::ExternalLease rejected;
+  CHECK(runtime.acquire_external({read_write, 0}, rejected) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+  cuda.streams.at(runtime_compute_stream).context = original_stream_context;
+  cuda.streams.at(runtime_compute_stream).capture = CU_STREAM_CAPTURE_STATUS_ACTIVE;
+  CHECK(runtime.acquire_external({read_write, 0}, rejected) ==
+        xvram::residency::RuntimeStatus::unsupported);
+  cuda.streams.at(runtime_compute_stream).capture = CU_STREAM_CAPTURE_STATUS_NONE;
+
+  xvram::residency::ExternalLease lease;
+  CHECK(runtime.acquire_external({read_write, 0}, lease) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(lease.id);
+  CHECK(lease.stream == runtime_compute_stream);
+  CHECK(lease.ranges.size() == 1U);
+  CHECK(lease.ranges.front().device_address != 0U);
+  const DevicePointer stable_address = lease.ranges.front().device_address;
+  xvram::residency::ExternalLeasePoll poll;
+  CHECK(runtime.poll_external(lease.id, poll) == xvram::residency::RuntimeStatus::success);
+  CHECK(poll.state == xvram::residency::ExternalLeaseState::armed);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::invalid_argument);
+  CHECK(runtime.discard_dead(allocation.id, 0, chunk_bytes) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+  xvram::residency::ExternalLease overlapping;
+  CHECK(runtime.acquire_external({read_write, 0}, overlapping) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+
+  CHECK(runtime.seal_external(lease.id, xvram::residency::ExternalSealMode::success) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.wait_external(lease.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(poll.state == xvram::residency::ExternalLeaseState::completed);
+  CHECK(runtime.telemetry().transactions_completed == 1U);
+  const std::uint64_t d2h_before_discard = cuda.d2h_mapping_calls;
+  CHECK(runtime.discard_dead(allocation.id, 1, chunk_bytes - 1U) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+  CHECK(runtime.discard_dead(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.d2h_mapping_calls == d2h_before_discard);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(runtime.allocation_size(allocation.id).has_value());
+  std::byte byte{};
+  CHECK(runtime.read(allocation.id, 0, &byte, 1) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+  CHECK(runtime.acquire_external({read_write, 0}, rejected) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+
+  const std::array rewrite{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  xvram::residency::ExternalLease rewritten;
+  CHECK(runtime.acquire_external({rewrite, 0}, rewritten) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(rewritten.ranges.front().device_address == stable_address);
+  CHECK(runtime.seal_external(rewritten.id, xvram::residency::ExternalSealMode::success) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.wait_external(rewritten.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array resident_read{xvram::residency::AccessRange{
+      allocation.id, 0, 1, xvram::residency::AccessMode::read}};
+  xvram::residency::ExternalLease read_after_rewrite;
+  CHECK(runtime.acquire_external({resident_read, 0}, read_after_rewrite) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.seal_external(read_after_rewrite.id,
+                              xvram::residency::ExternalSealMode::success) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.wait_external(read_after_rewrite.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.discard_dead(allocation.id, 0, chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.d2h_mapping_calls == d2h_before_discard);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.reservations.empty());
+
+  xvram::residency::RuntimeAllocation cancelled_allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal,
+                         cancelled_allocation) == xvram::residency::RuntimeStatus::success);
+  const std::array write_only{xvram::residency::AccessRange{
+      cancelled_allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  xvram::residency::ExternalLease cancelled;
+  CHECK(runtime.acquire_external({write_only, 0}, cancelled) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(cancelled.id.value > lease.id.value);
+  CHECK(runtime.seal_external(
+            cancelled.id,
+            xvram::residency::ExternalSealMode::cancelled_before_submission) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.wait_external(cancelled.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::callback_skipped);
+  CHECK(poll.state == xvram::residency::ExternalLeaseState::cancelled);
+  CHECK(cuda.mappings.empty());
+  CHECK(runtime.release(cancelled_allocation.id) == xvram::residency::RuntimeStatus::success);
+
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_external_poll_not_ready_test() {
+  const CheckContext context("runtime external lease nonblocking poll");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array access{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read}};
+  xvram::residency::ExternalLease lease;
+  CHECK(runtime.acquire_external({access, 0}, lease) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.seal_external(lease.id, xvram::residency::ExternalSealMode::success) ==
+        xvram::residency::RuntimeStatus::success);
+
+  cuda.injection.site = FaultSite::event_query;
+  cuda.injection.result = CUDA_ERROR_NOT_READY;
+  cuda.injection.persistent = true;
+  xvram::residency::ExternalLeasePoll poll;
+  CHECK(runtime.poll_external(lease.id, poll) == xvram::residency::RuntimeStatus::success);
+  CHECK(poll.state == xvram::residency::ExternalLeaseState::submitted);
+  CHECK(cuda.injection.triggered);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::invalid_argument);
+  cuda.injection.site = FaultSite::none;
+  CHECK(runtime.wait_external(lease.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(poll.state == xvram::residency::ExternalLeaseState::completed);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_external_duration_guard_test() {
+  const CheckContext context("runtime external lease duration guard");
+  FakeCuda cuda;
+  cuda.event_elapsed_ms = 300.0F;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.maximum_transaction_duration = std::chrono::milliseconds(250);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array access{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read}};
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::timeout);
+  CHECK(runtime.telemetry().transactions_completed == 1U);
+  CHECK(runtime.telemetry().watchdog_rejections == 1U);
+  CHECK(!runtime.async_completion_unknown());
+  CHECK(runtime.execute(access, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::invalid_argument);
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
   CHECK(cuda.violations.empty());
 }
@@ -1954,6 +2180,9 @@ int main() {
   completed_sequential_test();
   runtime_allocation_release_unmaps_test();
   runtime_safe_callback_skip_keeps_session_reusable_test();
+  runtime_external_lease_and_discard_dead_test();
+  runtime_external_poll_not_ready_test();
+  runtime_external_duration_guard_test();
   runtime_failed_callback_retires_before_poison_test();
   runtime_set_access_rollback_test();
   runtime_set_access_rollback_quarantine_test();

@@ -57,6 +57,7 @@ CudaApi::LoadResult CudaApi::load() {
   // These legacy exports are retained only where the official signatures are ABI-identical.
   resolve(stream_destroy_, {"cuStreamDestroy_v2", "cuStreamDestroy"});
   resolve(stream_synchronize_, {"cuStreamSynchronize"});
+  resolve(stream_get_context_, {"cuStreamGetCtx"});
   resolve(stream_wait_event_, {"cuStreamWaitEvent"});
   resolve(stream_is_capturing_, {"cuStreamIsCapturing"});
   resolve(event_create_, {"cuEventCreate"});

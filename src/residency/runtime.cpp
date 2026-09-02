@@ -104,6 +104,9 @@ public:
     cuda::abi::DevicePointer logical_base = 0;
     std::unique_ptr<platform::PageableMemory> backing;
     std::vector<ChunkRecord> chunks;
+    // False means the pageable copy was intentionally discarded after liveness was proven.
+    // Such a chunk may only be made resident by a full write-only access until write-back.
+    std::vector<std::uint8_t> host_valid;
     ResidencyHint hint = ResidencyHint::normal;
     bool reservation_quarantined = false;
   };
@@ -120,6 +123,20 @@ public:
   struct StagingSlot {
     void* memory = nullptr;
     cuda::abi::Event done = nullptr;
+  };
+
+  struct LeaseChunk {
+    ChunkKey key;
+    std::uint64_t generation = 0;
+    bool marks_dirty = false;
+    bool provisional_full_write = false;
+  };
+
+  struct ActiveExternalLease {
+    ExternalLeaseId id;
+    ExternalLeaseState state = ExternalLeaseState::armed;
+    ExternalSealMode seal_mode = ExternalSealMode::success;
+    std::vector<LeaseChunk> chunks;
   };
 
   [[nodiscard]] RuntimeStatus setup() {
@@ -268,6 +285,7 @@ public:
     if (!create_stream(h2d_stream_, "cuStreamCreate(h2d)") ||
         !create_stream(compute_stream_, "cuStreamCreate(compute)") ||
         !create_stream(d2h_stream_, "cuStreamCreate(d2h)") ||
+        !create_event(compute_ready_, "cuEventCreate(compute_ready)") ||
         !create_event(compute_started_, "cuEventCreate(compute_start)") ||
         !create_event(compute_done_, "cuEventCreate(compute_done)")) {
       return error_.status;
@@ -320,6 +338,7 @@ public:
     }
     try {
       owner->chunks.resize(static_cast<std::size_t>(*chunk_count));
+      owner->host_valid.resize(static_cast<std::size_t>(*chunk_count), 1U);
     } catch (const std::bad_alloc&) {
       return fail(RuntimeStatus::host_oom, "allocation", "allocate_chunk_metadata",
                   "chunk metadata allocation failed");
@@ -389,6 +408,10 @@ public:
       return fail(RuntimeStatus::invalid_argument, "allocation", "release",
                   "allocation handle is unknown");
     }
+    if (active_lease_references(id)) {
+      return fail(RuntimeStatus::invalid_argument, "allocation", "release",
+                  "allocation is referenced by an active external lease");
+    }
     Allocation& owner = *found->second;
     for (ChunkRecord& record : owner.chunks) {
       if (record.state == ChunkState::resident_dirty &&
@@ -417,10 +440,68 @@ public:
     return RuntimeStatus::success;
   }
 
+  [[nodiscard]] RuntimeStatus discard_dead(const AllocationId id) {
+    const Allocation* owner = allocation(id);
+    if (!ready() || owner == nullptr) {
+      return fail(RuntimeStatus::invalid_argument, "allocation", "discard_dead",
+                  "allocation handle is unknown");
+    }
+    return discard_dead(id, 0, owner->logical_bytes);
+  }
+
+  [[nodiscard]] RuntimeStatus discard_dead(const AllocationId id, const std::uint64_t offset,
+                                           const std::uint64_t bytes) {
+    Allocation* owner = allocation(id);
+    if (!ready() || owner == nullptr || bytes == 0 || offset > owner->logical_bytes ||
+        bytes > owner->logical_bytes - offset) {
+      return fail(RuntimeStatus::invalid_argument, "allocation", "discard_dead",
+                  "dead allocation range is invalid");
+    }
+    const std::uint64_t end = offset + bytes;
+    if (offset % config_.chunk_bytes != 0 ||
+        (end != owner->logical_bytes && end % config_.chunk_bytes != 0)) {
+      return fail(RuntimeStatus::invalid_argument, "allocation", "discard_dead",
+                  "dead ranges must cover complete logical chunks");
+    }
+    const std::uint64_t first = offset / config_.chunk_bytes;
+    const std::uint64_t last = (end - 1U) / config_.chunk_bytes;
+
+    for (std::uint64_t index = first; index <= last; ++index) {
+      const ChunkRecord& record = owner->chunks[static_cast<std::size_t>(index)];
+      if (record.state == ChunkState::host_clean && record.pin_count == 0 &&
+          !record.in_current_working_set && !record.staging_slot.has_value() &&
+          validate_chunk_record(record) == ChunkInvariantError::none) {
+        continue;
+      }
+      if ((record.state != ChunkState::resident_clean &&
+           record.state != ChunkState::resident_dirty) ||
+          !is_victim_eligible(record) || record.event_generation == 0 ||
+          record.completed_generation != record.event_generation) {
+        return fail(RuntimeStatus::invalid_argument, "allocation", "discard_dead",
+                    "dead range still has pinned or in-flight users");
+      }
+    }
+
+    for (std::uint64_t index = first; index <= last; ++index) {
+      ChunkRecord& record = owner->chunks[static_cast<std::size_t>(index)];
+      RuntimeStatus status = RuntimeStatus::success;
+      if (record.state == ChunkState::resident_clean) {
+        status = unmap(record.key);
+      } else if (record.state == ChunkState::resident_dirty) {
+        status = discard_dirty_mapping(record.key);
+      }
+      if (status != RuntimeStatus::success) {
+        return status;
+      }
+      owner->host_valid[static_cast<std::size_t>(index)] = 0U;
+    }
+    return RuntimeStatus::success;
+  }
+
   [[nodiscard]] RuntimeStatus write(const AllocationId id, const std::uint64_t offset,
                                     const void* source, const std::uint64_t bytes) {
     Allocation* owner = allocation(id);
-    if (!valid_host_range(owner, offset, source, bytes)) {
+    if (!valid_host_range(owner, offset, source, bytes) || active_lease_references(id)) {
       return fail(RuntimeStatus::invalid_argument, "host_access", "write",
                   "host write range is invalid");
     }
@@ -428,21 +509,30 @@ public:
         status != RuntimeStatus::success) {
       return status;
     }
+    if (!host_write_covers_invalid_chunks(*owner, offset, bytes)) {
+      return fail(RuntimeStatus::invalid_argument, "host_access", "write",
+                  "host writes must fully replace every discarded chunk they overlap");
+    }
     std::memcpy(static_cast<std::byte*>(owner->backing->data()) + offset, source,
                 static_cast<std::size_t>(bytes));
+    mark_host_chunks_valid(*owner, offset, bytes);
     return RuntimeStatus::success;
   }
 
   [[nodiscard]] RuntimeStatus read(const AllocationId id, const std::uint64_t offset,
                                    void* destination, const std::uint64_t bytes) {
     Allocation* owner = allocation(id);
-    if (!valid_host_range(owner, offset, destination, bytes)) {
+    if (!valid_host_range(owner, offset, destination, bytes) || active_lease_references(id)) {
       return fail(RuntimeStatus::invalid_argument, "host_access", "read",
                   "host read range is invalid");
     }
     if (const RuntimeStatus status = flush_overlapping(*owner, offset, bytes, false);
         status != RuntimeStatus::success) {
       return status;
+    }
+    if (!host_range_is_valid(*owner, offset, bytes)) {
+      return fail(RuntimeStatus::invalid_argument, "host_access", "read",
+                  "host read overlaps liveness-discarded data");
     }
     std::memcpy(destination, static_cast<const std::byte*>(owner->backing->data()) + offset,
                 static_cast<std::size_t>(bytes));
@@ -457,6 +547,10 @@ public:
       return fail(RuntimeStatus::invalid_argument, "transaction", "prefetch",
                   std::string("invalid access ranges: ") +
                       std::string(access_plan_error_name(plan.error)));
+    }
+    if (!plan_has_valid_host_sources(plan.chunks)) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "prefetch",
+                  "prefetch cannot read a liveness-discarded host chunk");
     }
     if (const RuntimeStatus status = refresh_budget(plan.chunks.size(), 0, false);
         status != RuntimeStatus::success) {
@@ -477,22 +571,66 @@ public:
     return RuntimeStatus::success;
   }
 
-  [[nodiscard]] RuntimeStatus execute(const std::span<const AccessRange> ranges,
-                                      const std::uint64_t workspace_bytes,
-                                      const TransactionCallback& callback) {
-    if (!ready() || !callback) {
-      return fail(RuntimeStatus::invalid_argument, "transaction", "execute",
-                  "transaction callback or runtime state is invalid");
+  [[nodiscard]] RuntimeStatus acquire_external(const ExternalLeaseRequest& request,
+                                               ExternalLease& output) {
+    output = {};
+    if (!ready() || request.ranges.empty() || active_external_lease_.has_value() ||
+        !next_external_lease_id_) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "acquire_external",
+                  "runtime state, access ranges, or lease identifier is invalid");
     }
+
+    cuda::abi::Context current_context = nullptr;
+    if (const cuda::abi::Result code = api_.context_get_current_(&current_context);
+        code != cuda::abi::success) {
+      return fail_cuda("transaction", "cuCtxGetCurrent", code);
+    }
+    if (current_context != context_) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "context",
+                  "external lease must be acquired with the runtime CUDA context current");
+    }
+    cuda::abi::Device current_device = -1;
+    if (const cuda::abi::Result code = api_.context_get_device_(&current_device);
+        code != cuda::abi::success) {
+      return fail_cuda("transaction", "cuCtxGetDevice", code);
+    }
+    if (current_device != device_) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "device",
+                  "external lease CUDA device does not match the runtime device");
+    }
+    cuda::abi::Context stream_context = nullptr;
+    if (const cuda::abi::Result code = api_.stream_get_context_(compute_stream_, &stream_context);
+        code != cuda::abi::success) {
+      return fail_cuda("transaction", "cuStreamGetCtx", code);
+    }
+    if (stream_context != context_) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "stream_context",
+                  "runtime compute stream belongs to a different CUDA context");
+    }
+    cuda::abi::StreamCaptureStatus capture = cuda::abi::stream_capture_invalidated;
+    if (const cuda::abi::Result code = api_.stream_is_capturing_(compute_stream_, &capture);
+        code != cuda::abi::success) {
+      return fail_cuda("transaction", "cuStreamIsCapturing", code);
+    }
+    if (capture != cuda::abi::stream_capture_none) {
+      return fail(RuntimeStatus::unsupported, "transaction", "stream_capture",
+                  "external VMM leases are not supported during CUDA stream capture");
+    }
+
     std::vector<AllocationLayout> layouts = allocation_layouts();
     const AccessPlanResult plan =
-        normalize_and_split_accesses(layouts, ranges, config_.chunk_bytes);
+        normalize_and_split_accesses(layouts, request.ranges, config_.chunk_bytes);
     if (!plan || plan.chunks.empty()) {
       return fail(RuntimeStatus::invalid_argument, "transaction", "normalize_accesses",
                   std::string("invalid access ranges: ") +
                       std::string(access_plan_error_name(plan.error)));
     }
-    if (const RuntimeStatus status = refresh_budget(plan.chunks.size(), workspace_bytes, false);
+    if (!plan_has_valid_host_sources(plan.chunks)) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "acquire_external",
+                  "discarded chunks require a full write-only replacement");
+    }
+    if (const RuntimeStatus status =
+            refresh_budget(plan.chunks.size(), request.workspace_bytes, false);
         status != RuntimeStatus::success) {
       return status;
     }
@@ -500,179 +638,423 @@ public:
       return fail(RuntimeStatus::budget_pressure, "transaction", "working_set",
                   "declared working set exceeds the live cache target");
     }
-    if (const RuntimeStatus status = ensure_workspace(workspace_bytes);
+    if (const RuntimeStatus status = ensure_workspace(request.workspace_bytes);
         status != RuntimeStatus::success) {
       return status;
     }
 
-    ++telemetry_.transactions_submitted;
-    std::vector<ChunkRecord*> pinned;
-    pinned.reserve(plan.chunks.size());
-    const auto retire_prelaunch_generations = [&]() noexcept {
-      bool retired = true;
-      for (ChunkRecord* record : pinned) {
-        if (record != nullptr && complete_event_generation(*record, record->event_generation) !=
-                                     EventGenerationResult::success) {
-          retired = false;
-        }
-      }
-      unpin(pinned);
-      return retired;
-    };
-    for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
-      bool hit = false;
-      if (const RuntimeStatus status = ensure_resident(chunk_plan, false, hit);
-          status != RuntimeStatus::success) {
-        if (!retire_prelaunch_generations()) {
-          return poison("transaction", "prepare_rollback",
-                        "pre-launch working-set generations could not retire");
-        }
-        if (status == RuntimeStatus::budget_pressure) {
-          const RuntimeStatus shrink_status = refresh_budget(0, workspace_bytes_, true);
-          if (shrink_status != RuntimeStatus::success &&
-              shrink_status != RuntimeStatus::budget_pressure) {
-            return shrink_status;
-          }
-        }
-        return status;
-      }
-      ChunkRecord* record = chunk(chunk_plan.key);
-      if (record == nullptr || begin_event_generation(*record) != EventGenerationResult::success) {
-        (void)retire_prelaunch_generations();
-        return poison("transaction", "pin_working_set", "chunk event generation cannot be started");
-      }
-      ++record->pin_count;
-      record->in_current_working_set = true;
-      pinned.push_back(record);
-    }
-
     std::vector<ResolvedRange> resolved;
+    ActiveExternalLease lease;
+    lease.id = next_external_lease_id_;
     try {
       resolved.reserve(plan.normalized_ranges.size());
       for (const AccessRange& range : plan.normalized_ranges) {
         const Allocation* owner = allocation(range.allocation_id);
         if (owner == nullptr) {
-          (void)retire_prelaunch_generations();
           return poison("transaction", "resolve_range", "normalized allocation disappeared");
         }
         resolved.push_back(ResolvedRange{range.allocation_id, range.offset_bytes,
                                          range.length_bytes, range.mode,
                                          owner->logical_base + range.offset_bytes});
       }
-    } catch (const std::bad_alloc&) {
-      if (!retire_prelaunch_generations()) {
-        return poison("transaction", "resolve_rollback",
-                      "pre-launch generations could not retire after host OOM");
+      lease.chunks.reserve(plan.chunks.size());
+      for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
+        lease.chunks.push_back(
+            LeaseChunk{chunk_plan.key, 0, chunk_plan.marks_dirty, false});
       }
-      return fail(RuntimeStatus::host_oom, "transaction", "resolve_ranges",
-                  "resolved range allocation failed");
+    } catch (const std::bad_alloc&) {
+      return fail(RuntimeStatus::host_oom, "transaction", "prepare_lease",
+                  "external lease metadata allocation failed");
+    } catch (...) {
+      return fail(RuntimeStatus::internal_failure, "transaction", "prepare_lease",
+                  "external lease metadata allocation raised an unexpected exception");
+    }
+    if (next_external_lease_id_.value == std::numeric_limits<std::uint64_t>::max()) {
+      next_external_lease_id_ = {};
+    } else {
+      ++next_external_lease_id_.value;
     }
 
-    if (const cuda::abi::Result code = api_.event_record_(compute_started_, compute_stream_);
-        code != cuda::abi::success) {
-      if (!retire_prelaunch_generations()) {
-        return poison("transaction", "compute_start_rollback",
-                      "pre-launch generations could not retire after event failure");
+    const auto rollback = [&]() noexcept {
+      bool retired = true;
+      for (LeaseChunk& use : lease.chunks) {
+        if (use.generation == 0) {
+          continue;
+        }
+        ChunkRecord* record = chunk(use.key);
+        if (record == nullptr ||
+            complete_event_generation(*record, use.generation) !=
+                EventGenerationResult::success) {
+          retired = false;
+        }
       }
-      return poison_cuda("transaction", "cuEventRecord(compute_start)", code);
-    }
-    RuntimeStatus callback_status = RuntimeStatus::internal_failure;
-    try {
-      callback_status =
-          callback(TransactionContext{resolved, workspace_, workspace_bytes, compute_stream_});
-    } catch (...) {
-      callback_status = RuntimeStatus::callback_failed;
-    }
-    const cuda::abi::Result record_result = api_.event_record_(compute_done_, compute_stream_);
-    if (record_result != cuda::abi::success) {
-      async_resources_quarantined_ = true;
-      unpin(pinned);
-      return poison_cuda("transaction", "cuEventRecord(compute_done)", record_result);
-    }
-    if (callback_status == RuntimeStatus::callback_skipped) {
-      const RuntimeStatus drain_status = wait_event(compute_done_, "callback_skip_drain");
-      if (drain_status == RuntimeStatus::success) {
-        for (ChunkRecord* record : pinned) {
-          if (complete_event_generation(*record, record->event_generation) !=
-              EventGenerationResult::success) {
-            unpin(pinned);
-            return poison("transaction", "callback_skip_retire",
-                          "skipped callback generation could not retire");
+      for (LeaseChunk& use : lease.chunks) {
+        if (use.generation == 0) {
+          continue;
+        }
+        ChunkRecord* record = chunk(use.key);
+        if (record == nullptr) {
+          retired = false;
+          continue;
+        }
+        if (record->pin_count != 0) {
+          --record->pin_count;
+        }
+        record->in_current_working_set = false;
+        if (record->state == ChunkState::resident_clean ||
+            record->state == ChunkState::resident_dirty) {
+          policy_->touch(record->key, ++policy_sequence_, record->sequential_one_touch);
+        }
+      }
+      for (LeaseChunk& use : lease.chunks) {
+        if (!use.provisional_full_write) {
+          continue;
+        }
+        ChunkRecord* record = chunk(use.key);
+        if (record != nullptr && record->state == ChunkState::resident_clean &&
+            unmap(use.key) != RuntimeStatus::success) {
+          retired = false;
+        }
+      }
+      return retired;
+    };
+
+    ++telemetry_.transactions_submitted;
+    for (std::size_t index = 0; index < plan.chunks.size(); ++index) {
+      const ChunkAccessPlan& chunk_plan = plan.chunks[index];
+      LeaseChunk& use = lease.chunks[index];
+      ChunkRecord* record = chunk(chunk_plan.key);
+      const bool provisional_full_write =
+          record != nullptr && record->state == ChunkState::host_clean &&
+          chunk_plan.full_write_only;
+      bool hit = false;
+      const RuntimeStatus resident_status = ensure_resident(chunk_plan, false, hit);
+      if (resident_status != RuntimeStatus::success) {
+        if (!rollback()) {
+          return poison("transaction", "prepare_rollback",
+                        "pre-launch working-set generations could not retire");
+        }
+        if (resident_status == RuntimeStatus::budget_pressure) {
+          const RuntimeStatus shrink_status = refresh_budget(0, workspace_bytes_, true);
+          if (shrink_status != RuntimeStatus::success &&
+              shrink_status != RuntimeStatus::budget_pressure) {
+            return shrink_status;
           }
         }
+        return resident_status;
       }
-      unpin(pinned);
-      return drain_status == RuntimeStatus::success ? RuntimeStatus::callback_skipped
-                                                    : drain_status;
-    }
-    if (callback_status != RuntimeStatus::success) {
-      const RuntimeStatus drain_status = wait_event(compute_done_, "callback_drain");
-      if (drain_status != RuntimeStatus::success) {
-        unpin(pinned);
-        return drain_status;
-      }
-      for (ChunkRecord* record : pinned) {
-        if (complete_event_generation(*record, record->event_generation) !=
-            EventGenerationResult::success) {
-          unpin(pinned);
-          return poison("transaction", "callback_failure_retire",
-                        "failed callback generation could not retire");
+      use.provisional_full_write = provisional_full_write;
+      record = chunk(chunk_plan.key);
+      if (record == nullptr || begin_event_generation(*record) != EventGenerationResult::success) {
+        if (!rollback()) {
+          return poison("transaction", "pin_rollback",
+                        "working-set generations could not retire after pin failure");
         }
+        return poison("transaction", "pin_working_set",
+                      "chunk event generation cannot be started");
       }
-      unpin(pinned);
-      return poison("transaction", "callback", "transaction callback rejected submission",
-                    RuntimeStatus::callback_failed);
+      use.generation = record->event_generation;
+      ++record->pin_count;
+      record->in_current_working_set = true;
     }
-    for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
-      if (!chunk_plan.marks_dirty) {
-        continue;
+
+    if (const cuda::abi::Result code = api_.event_record_(compute_ready_, h2d_stream_);
+        code != cuda::abi::success) {
+      if (!rollback()) {
+        return poison("transaction", "ready_rollback",
+                      "working-set generations could not retire after ready-event failure");
       }
-      ChunkRecord* record = chunk(chunk_plan.key);
-      if (record != nullptr && record->state == ChunkState::resident_clean) {
-        if (transition_chunk_state(record->state, ChunkState::resident_dirty) !=
-            StateTransitionResult::success) {
-          unpin(pinned);
+      return fail_cuda("transaction", "cuEventRecord(compute_ready)", code);
+    }
+    if (const cuda::abi::Result code = api_.stream_wait_event_(compute_stream_, compute_ready_, 0U);
+        code != cuda::abi::success) {
+      if (!rollback()) {
+        return poison("transaction", "stream_wait_rollback",
+                      "working-set generations could not retire after stream-wait failure");
+      }
+      return fail_cuda("transaction", "cuStreamWaitEvent(compute_ready)", code);
+    }
+    if (const cuda::abi::Result code = api_.event_record_(compute_started_, compute_stream_);
+        code != cuda::abi::success) {
+      active_external_lease_ = std::move(lease);
+      async_resources_quarantined_ = true;
+      return poison_cuda("transaction", "cuEventRecord(compute_start)", code);
+    }
+
+    output.id = lease.id;
+    output.ranges = std::move(resolved);
+    output.workspace_address = workspace_;
+    output.workspace_bytes = request.workspace_bytes;
+    output.stream = compute_stream_;
+    active_external_lease_ = std::move(lease);
+    return RuntimeStatus::success;
+  }
+
+  [[nodiscard]] RuntimeStatus seal_external(const ExternalLeaseId lease_id,
+                                            const ExternalSealMode mode) {
+    if (!lease_id || !active_external_lease_.has_value() ||
+        active_external_lease_->id != lease_id ||
+        active_external_lease_->state != ExternalLeaseState::armed) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "seal_external",
+                  "external lease is unknown or is not armed");
+    }
+    ActiveExternalLease& lease = *active_external_lease_;
+    if (const cuda::abi::Result code = api_.event_record_(compute_done_, compute_stream_);
+        code != cuda::abi::success) {
+      lease.state = ExternalLeaseState::quarantined;
+      async_resources_quarantined_ = true;
+      return poison_cuda("transaction", "cuEventRecord(compute_done)", code);
+    }
+    lease.state = ExternalLeaseState::submitted;
+    lease.seal_mode = mode;
+    if (mode != ExternalSealMode::cancelled_before_submission) {
+      for (const LeaseChunk& use : lease.chunks) {
+        if (!use.marks_dirty) {
+          continue;
+        }
+        ChunkRecord* record = chunk(use.key);
+        if (record == nullptr) {
+          return poison("transaction", "mark_dirty", "leased chunk disappeared after sealing");
+        }
+        if (record->state == ChunkState::resident_clean &&
+            transition_chunk_state(record->state, ChunkState::resident_dirty) !=
+                StateTransitionResult::success) {
           return poison_transition("transaction", "mark_dirty", "illegal dirty transition");
         }
+        if (record->state != ChunkState::resident_dirty) {
+          return poison_transition("transaction", "mark_dirty",
+                                   "write-capable leased chunk is not resident");
+        }
       }
     }
-    if (const RuntimeStatus status = wait_event(compute_done_, "transaction_complete");
-        status != RuntimeStatus::success) {
-      unpin(pinned);
-      return status;
+    return RuntimeStatus::success;
+  }
+
+  [[nodiscard]] RuntimeStatus poll_external(const ExternalLeaseId lease_id,
+                                            ExternalLeasePoll& output) {
+    if (!lease_id) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "poll_external",
+                  "external lease identifier is invalid");
     }
+    if (last_external_lease_.has_value() && last_external_lease_->id == lease_id) {
+      output = *last_external_lease_;
+      return RuntimeStatus::success;
+    }
+    if (!active_external_lease_.has_value() || active_external_lease_->id != lease_id) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "poll_external",
+                  "external lease is unknown");
+    }
+    ActiveExternalLease& lease = *active_external_lease_;
+    output = ExternalLeasePoll{lease.id, lease.state, RuntimeStatus::success, 0.0};
+    if (lease.state == ExternalLeaseState::armed) {
+      return RuntimeStatus::success;
+    }
+    if (lease.state == ExternalLeaseState::quarantined) {
+      output.result = RuntimeStatus::poisoned;
+      return RuntimeStatus::poisoned;
+    }
+    if (lease.state != ExternalLeaseState::submitted) {
+      return poison("transaction", "poll_external", "external lease state is invalid");
+    }
+
+    const cuda::abi::Result query = api_.event_query_(compute_done_);
+    if (query == CUDA_ERROR_NOT_READY) {
+      return RuntimeStatus::success;
+    }
+    if (query != cuda::abi::success) {
+      lease.state = ExternalLeaseState::quarantined;
+      output.state = lease.state;
+      output.result = RuntimeStatus::poisoned;
+      async_resources_quarantined_ = true;
+      return poison_cuda("event", "cuEventQuery(compute_done)", query);
+    }
+
     float elapsed = 0.0F;
     if (const cuda::abi::Result code =
             api_.event_elapsed_time_(&elapsed, compute_started_, compute_done_);
         code != cuda::abi::success) {
-      unpin(pinned);
+      lease.state = ExternalLeaseState::quarantined;
+      output.state = lease.state;
+      output.result = RuntimeStatus::poisoned;
+      async_resources_quarantined_ = true;
       return poison_cuda("transaction", "cuEventElapsedTime", code);
     }
     telemetry_.last_transaction_ms = static_cast<double>(elapsed);
-    for (ChunkRecord* record : pinned) {
-      if (complete_event_generation(*record, record->event_generation) !=
-          EventGenerationResult::success) {
-        unpin(pinned);
-        return poison("transaction", "retire_generation",
-                      "working-set event generation could not retire");
+
+    bool retired = true;
+    for (const LeaseChunk& use : lease.chunks) {
+      ChunkRecord* record = chunk(use.key);
+      if (record == nullptr ||
+          complete_event_generation(*record, use.generation) !=
+              EventGenerationResult::success) {
+        retired = false;
       }
     }
-    unpin(pinned);
-    ++telemetry_.transactions_completed;
-    if (config_.maximum_transaction_duration.count() > 0 &&
-        static_cast<double>(elapsed) >
-            static_cast<double>(config_.maximum_transaction_duration.count())) {
-      launches_blocked_ = true;
-      ++telemetry_.watchdog_rejections;
-      return fail(RuntimeStatus::timeout, "transaction", "duration_guard",
-                  "transaction exceeded the configured kernel safety duration");
+    for (const LeaseChunk& use : lease.chunks) {
+      ChunkRecord* record = chunk(use.key);
+      if (record == nullptr) {
+        retired = false;
+        continue;
+      }
+      if (record->pin_count != 0) {
+        --record->pin_count;
+      }
+      record->in_current_working_set = false;
+      if (record->state == ChunkState::resident_clean ||
+          record->state == ChunkState::resident_dirty) {
+        policy_->touch(record->key, ++policy_sequence_, record->sequential_one_touch);
+      }
+    }
+    if (!retired) {
+      lease.state = ExternalLeaseState::quarantined;
+      output.state = lease.state;
+      output.result = RuntimeStatus::poisoned;
+      return poison("transaction", "retire_generation",
+                    "external working-set generation could not retire");
+    }
+
+    if (lease.seal_mode == ExternalSealMode::cancelled_before_submission) {
+      for (const LeaseChunk& use : lease.chunks) {
+        if (!use.provisional_full_write) {
+          continue;
+        }
+        ChunkRecord* record = chunk(use.key);
+        if (record != nullptr && record->state == ChunkState::resident_clean &&
+            unmap(use.key) != RuntimeStatus::success) {
+          lease.state = ExternalLeaseState::quarantined;
+          output.state = lease.state;
+          output.result = RuntimeStatus::poisoned;
+          return error_.status;
+        }
+      }
+    }
+
+    output.elapsed_ms = static_cast<double>(elapsed);
+    if (lease.seal_mode == ExternalSealMode::cancelled_before_submission) {
+      output.state = ExternalLeaseState::cancelled;
+      output.result = RuntimeStatus::callback_skipped;
+    } else if (lease.seal_mode == ExternalSealMode::failed_after_possible_submission) {
+      output.state = ExternalLeaseState::failed;
+      output.result = RuntimeStatus::callback_failed;
+    } else {
+      output.state = ExternalLeaseState::completed;
+      output.result = RuntimeStatus::success;
+      ++telemetry_.transactions_completed;
+      if (config_.maximum_transaction_duration.count() > 0 &&
+          static_cast<double>(elapsed) >
+              static_cast<double>(config_.maximum_transaction_duration.count())) {
+        launches_blocked_ = true;
+        ++telemetry_.watchdog_rejections;
+        output.state = ExternalLeaseState::failed;
+        output.result = RuntimeStatus::timeout;
+        (void)fail(RuntimeStatus::timeout, "transaction", "duration_guard",
+                   "transaction exceeded the configured kernel safety duration");
+      }
+    }
+
+    last_external_lease_ = output;
+    active_external_lease_.reset();
+    if (output.result == RuntimeStatus::callback_failed) {
+      (void)poison("transaction", "callback", "transaction callback rejected submission",
+                   RuntimeStatus::callback_failed);
     }
     return RuntimeStatus::success;
+  }
+
+  [[nodiscard]] RuntimeStatus wait_external(const ExternalLeaseId lease_id,
+                                            const std::chrono::milliseconds timeout,
+                                            ExternalLeasePoll& output) {
+    if (timeout.count() <= 0) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "wait_external",
+                  "external lease timeout must be positive");
+    }
+    if (active_external_lease_.has_value() && active_external_lease_->id == lease_id &&
+        active_external_lease_->state == ExternalLeaseState::armed) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "wait_external",
+                  "external lease must be sealed before it can be waited");
+    }
+    const Clock::time_point now = Clock::now();
+    const std::chrono::milliseconds maximum_timeout =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::time_point::max() - now);
+    const Clock::time_point deadline =
+        timeout >= maximum_timeout ? Clock::time_point::max() : now + timeout;
+    for (;;) {
+      const RuntimeStatus status = poll_external(lease_id, output);
+      if (status != RuntimeStatus::success) {
+        return status;
+      }
+      if (output.state == ExternalLeaseState::completed ||
+          output.state == ExternalLeaseState::cancelled ||
+          output.state == ExternalLeaseState::failed) {
+        return output.result;
+      }
+      if (Clock::now() >= deadline) {
+        if (active_external_lease_.has_value() && active_external_lease_->id == lease_id) {
+          active_external_lease_->state = ExternalLeaseState::quarantined;
+        }
+        output.state = ExternalLeaseState::quarantined;
+        output.result = RuntimeStatus::timeout;
+        async_resources_quarantined_ = true;
+        return poison("event", "wait_external",
+                      "external completion event did not retire before the stall deadline",
+                      RuntimeStatus::timeout);
+      }
+      std::this_thread::yield();
+    }
+  }
+
+  [[nodiscard]] RuntimeStatus execute(const std::span<const AccessRange> ranges,
+                                      const std::uint64_t workspace_bytes,
+                                      const TransactionCallback& callback) {
+    if (!callback) {
+      return fail(RuntimeStatus::invalid_argument, "transaction", "execute",
+                  "transaction callback is invalid");
+    }
+    ExternalLease lease;
+    const ExternalLeaseRequest request{ranges, workspace_bytes};
+    if (const RuntimeStatus status = acquire_external(request, lease);
+        status != RuntimeStatus::success) {
+      return status;
+    }
+
+    RuntimeStatus callback_status = RuntimeStatus::internal_failure;
+    try {
+      callback_status = callback(
+          TransactionContext{lease.ranges, lease.workspace_address, lease.workspace_bytes,
+                             lease.stream});
+    } catch (...) {
+      callback_status = RuntimeStatus::callback_failed;
+    }
+    const ExternalSealMode seal_mode =
+        callback_status == RuntimeStatus::success
+            ? ExternalSealMode::success
+            : (callback_status == RuntimeStatus::callback_skipped
+                   ? ExternalSealMode::cancelled_before_submission
+                   : ExternalSealMode::failed_after_possible_submission);
+    if (const RuntimeStatus status = seal_external(lease.id, seal_mode);
+        status != RuntimeStatus::success) {
+      return status;
+    }
+    ExternalLeasePoll completion;
+    return wait_external(lease.id, config_.stall_timeout, completion);
   }
 
   [[nodiscard]] RuntimeStatus drain(const bool release_mappings) {
     if (!setup_complete_) {
       return RuntimeStatus::success;
+    }
+    if (active_external_lease_.has_value()) {
+      if (active_external_lease_->state != ExternalLeaseState::submitted) {
+        return fail(RuntimeStatus::invalid_argument, "transaction", "drain",
+                    "an armed external lease must be sealed before draining");
+      }
+      ExternalLeasePoll completion;
+      const RuntimeStatus status =
+          wait_external(active_external_lease_->id, config_.stall_timeout, completion);
+      if (status != RuntimeStatus::success && status != RuntimeStatus::callback_skipped &&
+          status != RuntimeStatus::callback_failed) {
+        return status;
+      }
     }
     for (auto& [id, owner] : allocations_) {
       (void)id;
@@ -708,6 +1090,27 @@ public:
     const auto note_cleanup_failure = [&]() noexcept {
       aggregate = RuntimeStatus::cleanup_failure;
     };
+
+    if (active_external_lease_.has_value()) {
+      if (active_external_lease_->state == ExternalLeaseState::submitted) {
+        ExternalLeasePoll completion;
+        const RuntimeStatus status =
+            wait_external(active_external_lease_->id, config_.stall_timeout, completion);
+        if (status != RuntimeStatus::success && status != RuntimeStatus::callback_skipped &&
+            status != RuntimeStatus::callback_failed) {
+          note_cleanup_failure();
+        }
+      }
+      if (active_external_lease_.has_value()) {
+        // An armed or unobservable lease may already have client work in flight. It is never safe
+        // to infer cancellation from the absence of a seal call.
+        active_external_lease_->state = ExternalLeaseState::quarantined;
+        async_resources_quarantined_ = true;
+        telemetry_.quarantined = true;
+        poisoned_ = true;
+        note_cleanup_failure();
+      }
+    }
 
     // Close is deliberately best-effort. A failure on one frame must not prevent us from
     // retiring other independently safe mappings. Conversely, transient or structurally
@@ -860,6 +1263,7 @@ public:
     } else {
       destroy_staging_pool(h2d_staging_, aggregate);
       destroy_staging_pool(d2h_staging_, aggregate);
+      destroy_event(compute_ready_, aggregate);
       destroy_event(compute_started_, aggregate);
       destroy_event(compute_done_, aggregate);
       destroy_stream(h2d_stream_, aggregate);
@@ -920,18 +1324,22 @@ public:
 private:
   [[nodiscard]] bool have_required_symbols() const noexcept {
     return api_.init_ != nullptr && api_.device_get_ != nullptr &&
-           api_.context_get_device_ != nullptr && api_.context_create_ != nullptr &&
+           api_.context_get_current_ != nullptr && api_.context_get_device_ != nullptr &&
+           api_.context_create_ != nullptr &&
            api_.context_destroy_ != nullptr && api_.context_push_current_ != nullptr &&
            api_.context_pop_current_ != nullptr && api_.mem_get_info_ != nullptr &&
            api_.mem_get_allocation_granularity_ != nullptr &&
            api_.mem_address_reserve_ != nullptr && api_.mem_address_free_ != nullptr &&
            api_.mem_create_ != nullptr && api_.mem_release_ != nullptr &&
            api_.mem_map_ != nullptr && api_.mem_unmap_ != nullptr &&
-           api_.mem_set_access_ != nullptr && api_.mem_alloc_ != nullptr &&
+           api_.mem_set_access_ != nullptr && api_.mem_get_access_ != nullptr &&
+           api_.mem_alloc_ != nullptr &&
            api_.mem_free_ != nullptr && api_.mem_host_alloc_ != nullptr &&
            api_.mem_free_host_ != nullptr && api_.memcpy_h2d_async_ != nullptr &&
            api_.memcpy_d2h_async_ != nullptr && api_.stream_create_ != nullptr &&
-           api_.stream_destroy_ != nullptr && api_.event_create_ != nullptr &&
+           api_.stream_destroy_ != nullptr && api_.stream_get_context_ != nullptr &&
+           api_.stream_wait_event_ != nullptr && api_.stream_is_capturing_ != nullptr &&
+           api_.event_create_ != nullptr &&
            api_.event_destroy_ != nullptr && api_.event_record_ != nullptr &&
            api_.event_query_ != nullptr && api_.event_elapsed_time_ != nullptr;
   }
@@ -1110,6 +1518,16 @@ private:
     return found == allocations_.end() ? nullptr : found->second.get();
   }
 
+  [[nodiscard]] bool active_lease_references(const AllocationId id) const noexcept {
+    if (!active_external_lease_.has_value()) {
+      return false;
+    }
+    return std::any_of(active_external_lease_->chunks.begin(),
+                       active_external_lease_->chunks.end(), [&](const LeaseChunk& use) {
+                         return use.key.allocation_id == id;
+                       });
+  }
+
   [[nodiscard]] ChunkRecord* chunk(const ChunkKey key) noexcept {
     Allocation* owner = allocation(key.allocation_id);
     return owner == nullptr || key.chunk_index >= owner->chunks.size()
@@ -1136,6 +1554,72 @@ private:
       return false;
     }
     return bytes <= owner->logical_bytes - offset;
+  }
+
+  [[nodiscard]] bool plan_has_valid_host_sources(
+      const std::span<const ChunkAccessPlan> chunks) const noexcept {
+    for (const ChunkAccessPlan& plan : chunks) {
+      const Allocation* owner = allocation(plan.key.allocation_id);
+      if (owner == nullptr || plan.key.chunk_index >= owner->host_valid.size()) {
+        return false;
+      }
+      const ChunkRecord& record =
+          owner->chunks[static_cast<std::size_t>(plan.key.chunk_index)];
+      const bool resident = record.state == ChunkState::resident_clean ||
+                            record.state == ChunkState::resident_dirty;
+      if (plan.requires_h2d && !resident &&
+          owner->host_valid[static_cast<std::size_t>(plan.key.chunk_index)] == 0U) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool host_range_is_valid(const Allocation& owner, const std::uint64_t offset,
+                                         const std::uint64_t bytes) const noexcept {
+    const std::uint64_t first = offset / config_.chunk_bytes;
+    const std::uint64_t last = (offset + bytes - 1U) / config_.chunk_bytes;
+    for (std::uint64_t index = first; index <= last; ++index) {
+      if (owner.host_valid[static_cast<std::size_t>(index)] == 0U) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool host_write_covers_invalid_chunks(
+      const Allocation& owner, const std::uint64_t offset,
+      const std::uint64_t bytes) const noexcept {
+    const std::uint64_t end = offset + bytes;
+    const std::uint64_t first = offset / config_.chunk_bytes;
+    const std::uint64_t last = (end - 1U) / config_.chunk_bytes;
+    for (std::uint64_t index = first; index <= last; ++index) {
+      if (owner.host_valid[static_cast<std::size_t>(index)] != 0U) {
+        continue;
+      }
+      const std::uint64_t chunk_begin = index * config_.chunk_bytes;
+      const std::uint64_t chunk_end =
+          chunk_begin + std::min(config_.chunk_bytes, owner.logical_bytes - chunk_begin);
+      if (offset > chunk_begin || end < chunk_end) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void mark_host_chunks_valid(Allocation& owner, const std::uint64_t offset,
+                              const std::uint64_t bytes) noexcept {
+    const std::uint64_t end = offset + bytes;
+    const std::uint64_t first = offset / config_.chunk_bytes;
+    const std::uint64_t last = (end - 1U) / config_.chunk_bytes;
+    for (std::uint64_t index = first; index <= last; ++index) {
+      const std::uint64_t chunk_begin = index * config_.chunk_bytes;
+      const std::uint64_t chunk_end =
+          chunk_begin + std::min(config_.chunk_bytes, owner.logical_bytes - chunk_begin);
+      if (offset <= chunk_begin && end >= chunk_end) {
+        owner.host_valid[static_cast<std::size_t>(index)] = 1U;
+      }
+    }
   }
 
   [[nodiscard]] RuntimeStatus flush_overlapping(Allocation& owner, const std::uint64_t offset,
@@ -1484,6 +1968,38 @@ private:
       }
       return fail_cuda("cache", "cuMemSetAccess", code);
     }
+    CUmemLocation access_location{};
+    access_location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    access_location.id = device_;
+    unsigned long long observed_access = 0;
+    if (const cuda::abi::Result code =
+            api_.mem_get_access_(&observed_access, &access_location, address);
+        code != cuda::abi::success ||
+        observed_access !=
+            static_cast<unsigned long long>(CU_MEM_ACCESS_FLAGS_PROT_READWRITE)) {
+      const cuda::abi::Result rollback =
+          api_.mem_unmap_(address, static_cast<std::size_t>(config_.chunk_bytes));
+      if (rollback != cuda::abi::success) {
+        owner->reservation_quarantined = true;
+        frame.quarantined = true;
+        telemetry_.quarantined = true;
+        release_quarantined_handle(frame);
+        return poison_cuda("cache", "cuMemUnmap(get_access_rollback)", rollback);
+      }
+      frame.key.reset();
+      frame.address = 0;
+      frame.mapped = false;
+      record->frame_index.reset();
+      if (transition_chunk_state(record->state, ChunkState::host_clean) !=
+          StateTransitionResult::success) {
+        return poison("cache", "get_access_rollback",
+                      "failed to restore the host-clean state after access verification");
+      }
+      return code == cuda::abi::success
+                 ? fail(RuntimeStatus::cuda_failure, "cache", "cuMemGetAccess",
+                        "CUDA mapping did not retain read-write access")
+                 : fail_cuda("cache", "cuMemGetAccess", code);
+    }
     ++telemetry_.maps;
     ++telemetry_.set_access;
     telemetry_.resident_bytes += config_.chunk_bytes;
@@ -1585,6 +2101,7 @@ private:
     std::memcpy(static_cast<std::byte*>(owner->backing->data()) +
                     key.chunk_index * config_.chunk_bytes,
                 staging.memory, static_cast<std::size_t>(valid));
+    owner->host_valid[static_cast<std::size_t>(key.chunk_index)] = 1U;
     record->staging_slot.reset();
     if (complete_event_generation(*record, record->event_generation) !=
             EventGenerationResult::success ||
@@ -1685,6 +2202,42 @@ private:
     return retire_evicting_mapping(*record, *owner, *frame);
   }
 
+  [[nodiscard]] RuntimeStatus discard_dirty_mapping(const ChunkKey key) {
+    ChunkRecord* record = chunk(key);
+    Allocation* owner = allocation(key.allocation_id);
+    Frame* frame = frame_for(key);
+    if (record == nullptr || owner == nullptr || frame == nullptr ||
+        record->state != ChunkState::resident_dirty || !is_victim_eligible(*record) ||
+        record->event_generation == 0 ||
+        record->completed_generation != record->event_generation) {
+      ++telemetry_.unsafe_remaps;
+      return poison("cache", "discard_dead",
+                    "dirty dead chunk lacks a completed last-use event boundary");
+    }
+    const cuda::abi::Result code =
+        api_.mem_unmap_(frame->address, static_cast<std::size_t>(config_.chunk_bytes));
+    if (code != cuda::abi::success) {
+      frame->quarantined = true;
+      quarantine_mapping(*owner);
+      release_quarantined_handle(*frame);
+      return poison_cuda("cache", "cuMemUnmap(discard_dead)", code);
+    }
+    ++telemetry_.unmaps;
+    ++telemetry_.event_boundaries;
+    telemetry_.resident_bytes -= config_.chunk_bytes;
+    (void)policy_->erase(record->key);
+    frame->key.reset();
+    frame->address = 0;
+    frame->mapped = false;
+    frame->quarantined = false;
+    record->frame_index.reset();
+    record->speculative = false;
+    // The range is liveness-proven dead. Its dirty contents deliberately do not become
+    // host-visible; discard_dead() records that the next use must fully overwrite the chunk.
+    record->state = ChunkState::host_clean;
+    return RuntimeStatus::success;
+  }
+
   [[nodiscard]] RuntimeStatus ensure_workspace(const std::uint64_t bytes) {
     if (bytes <= workspace_bytes_) {
       return RuntimeStatus::success;
@@ -1759,6 +2312,7 @@ private:
   cuda::abi::Stream h2d_stream_ = nullptr;
   cuda::abi::Stream compute_stream_ = nullptr;
   cuda::abi::Stream d2h_stream_ = nullptr;
+  cuda::abi::Event compute_ready_ = nullptr;
   cuda::abi::Event compute_started_ = nullptr;
   cuda::abi::Event compute_done_ = nullptr;
   std::vector<StagingSlot> h2d_staging_;
@@ -1767,6 +2321,9 @@ private:
   std::size_t next_d2h_staging_ = 0;
   cuda::abi::DevicePointer workspace_ = 0;
   std::uint64_t workspace_bytes_ = 0;
+  ExternalLeaseId next_external_lease_id_{1};
+  std::optional<ActiveExternalLease> active_external_lease_;
+  std::optional<ExternalLeasePoll> last_external_lease_;
   RuntimeTelemetry telemetry_;
   RuntimeError error_;
 };
@@ -1788,6 +2345,13 @@ RuntimeStatus Runtime::allocate(const std::uint64_t bytes, const ResidencyHint h
 RuntimeStatus Runtime::release(const AllocationId id) {
   return impl_->release(id);
 }
+RuntimeStatus Runtime::discard_dead(const AllocationId id) {
+  return impl_->discard_dead(id);
+}
+RuntimeStatus Runtime::discard_dead(const AllocationId id, const std::uint64_t offset,
+                                    const std::uint64_t bytes) {
+  return impl_->discard_dead(id, offset, bytes);
+}
 RuntimeStatus Runtime::write(const AllocationId id, const std::uint64_t offset, const void* source,
                              const std::uint64_t bytes) {
   return impl_->write(id, offset, source, bytes);
@@ -1798,6 +2362,23 @@ RuntimeStatus Runtime::read(const AllocationId id, const std::uint64_t offset, v
 }
 RuntimeStatus Runtime::prefetch(const std::span<const AccessRange> ranges) {
   return impl_->prefetch(ranges);
+}
+RuntimeStatus Runtime::acquire_external(const ExternalLeaseRequest& request,
+                                        ExternalLease& output) {
+  return impl_->acquire_external(request, output);
+}
+RuntimeStatus Runtime::seal_external(const ExternalLeaseId lease_id,
+                                     const ExternalSealMode mode) {
+  return impl_->seal_external(lease_id, mode);
+}
+RuntimeStatus Runtime::poll_external(const ExternalLeaseId lease_id,
+                                     ExternalLeasePoll& output) {
+  return impl_->poll_external(lease_id, output);
+}
+RuntimeStatus Runtime::wait_external(const ExternalLeaseId lease_id,
+                                     const std::chrono::milliseconds timeout,
+                                     ExternalLeasePoll& output) {
+  return impl_->wait_external(lease_id, timeout, output);
 }
 RuntimeStatus Runtime::execute(const std::span<const AccessRange> ranges,
                                const std::uint64_t workspace_bytes,
