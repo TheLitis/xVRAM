@@ -25,6 +25,41 @@ add_test(
           "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_allocator_export_contract.py" --self-test)
 
 add_test(
+  NAME xvram.torch-runtime.export-parser
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_runtime_export_contract.py" --self-test)
+if(TARGET xvram_torch_runtime)
+  add_executable(
+    xvram-torch-runtime-control-tests
+    "${PROJECT_SOURCE_DIR}/src/torch_runtime/control_tests.cpp")
+  target_link_libraries(xvram-torch-runtime-control-tests PRIVATE xvram_torch_runtime)
+  target_include_directories(
+    xvram-torch-runtime-control-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_compile_features(xvram-torch-runtime-control-tests PRIVATE cxx_std_20)
+  xvram_enable_warnings(xvram-torch-runtime-control-tests)
+  add_test(NAME xvram.torch-runtime.control COMMAND xvram-torch-runtime-control-tests)
+  list(GET XVRAM_TORCH_LIBRARY_DIRS 0 XVRAM_TORCH_PRIMARY_LIBRARY_DIR)
+  set_tests_properties(
+    xvram.torch-runtime.control
+    PROPERTIES TIMEOUT 30
+               ENVIRONMENT_MODIFICATION
+               "PATH=path_list_prepend:$<TARGET_FILE_DIR:xvram_torch_runtime>;PATH=path_list_prepend:${XVRAM_TORCH_PRIMARY_LIBRARY_DIR}")
+  add_test(
+    NAME xvram.torch-runtime.export-contract
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_runtime_export_contract.py"
+            "$<TARGET_FILE:xvram_torch_runtime>")
+  add_test(
+    NAME xvram.torch-runtime.stable-load
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_runtime_stable_load.py"
+            "$<TARGET_FILE:xvram_torch_runtime>")
+  set_tests_properties(
+    xvram.torch-runtime.export-contract xvram.torch-runtime.stable-load
+    PROPERTIES TIMEOUT 30)
+endif()
+
+add_test(
   NAME xvram.torch-python.unit
   COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
           "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "test_*.py")

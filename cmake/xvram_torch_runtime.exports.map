@@ -1,0 +1,8 @@
+XVRAM_TORCH_RUNTIME_1.0 {
+  global:
+    xvram_torch_runtime_get_api;
+    xvram_torch_runtime_scratch_alloc;
+    xvram_torch_runtime_scratch_free;
+  local:
+    *;
+};

@@ -31,6 +31,12 @@ option(XVRAM_FETCH_CUBLAS_REDIST
 set(XVRAM_CUBLAS_REDIST_ROOT "" CACHE PATH
     "Existing official cuBLAS redistributable root to stage beside the SDK")
 option(XVRAM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+set(XVRAM_BUILD_TORCH_RUNTIME "AUTO" CACHE STRING
+    "Build the private Phase 4b PyTorch Stable-ABI runtime (AUTO, ON, or OFF)")
+set_property(CACHE XVRAM_BUILD_TORCH_RUNTIME PROPERTY STRINGS AUTO ON OFF)
+if(NOT XVRAM_BUILD_TORCH_RUNTIME MATCHES "^(AUTO|ON|OFF)$")
+  message(FATAL_ERROR "XVRAM_BUILD_TORCH_RUNTIME must be AUTO, ON, or OFF")
+endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "xVRAM currently supports 64-bit targets only")
@@ -471,6 +477,96 @@ xvram_enable_warnings(xvram_torch_allocator)
 
 add_library(xVRAM::torch_allocator ALIAS xvram_torch_allocator)
 
+set(XVRAM_TORCH_RUNTIME_ENABLED OFF)
+if(NOT XVRAM_BUILD_TORCH_RUNTIME STREQUAL "OFF")
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c
+              "from torch.utils.cpp_extension import include_paths; print(';'.join(include_paths()))"
+      RESULT_VARIABLE XVRAM_TORCH_INCLUDE_RESULT
+      OUTPUT_VARIABLE XVRAM_TORCH_INCLUDE_DIRS
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c
+              "from torch.utils.cpp_extension import library_paths; print(';'.join(library_paths()))"
+      RESULT_VARIABLE XVRAM_TORCH_LIBRARY_RESULT
+      OUTPUT_VARIABLE XVRAM_TORCH_LIBRARY_DIRS
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" -c
+              "import torch; print(int(torch.compiled_with_cxx11_abi()))"
+      RESULT_VARIABLE XVRAM_TORCH_ABI_RESULT
+      OUTPUT_VARIABLE XVRAM_TORCH_CXX11_ABI
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    if(XVRAM_TORCH_INCLUDE_RESULT EQUAL 0 AND XVRAM_TORCH_LIBRARY_RESULT EQUAL 0 AND
+       XVRAM_TORCH_ABI_RESULT EQUAL 0)
+      find_path(
+        XVRAM_TORCH_STABLE_INCLUDE_DIR
+        NAMES torch/csrc/stable/library.h
+        PATHS ${XVRAM_TORCH_INCLUDE_DIRS}
+        NO_DEFAULT_PATH)
+      find_library(
+        XVRAM_TORCH_LIBRARY NAMES torch PATHS ${XVRAM_TORCH_LIBRARY_DIRS} NO_DEFAULT_PATH)
+      find_library(
+        XVRAM_TORCH_CPU_LIBRARY NAMES torch_cpu PATHS ${XVRAM_TORCH_LIBRARY_DIRS}
+        NO_DEFAULT_PATH)
+      find_library(
+        XVRAM_TORCH_C10_LIBRARY NAMES c10 PATHS ${XVRAM_TORCH_LIBRARY_DIRS} NO_DEFAULT_PATH)
+    endif()
+  endif()
+  if(XVRAM_TORCH_STABLE_INCLUDE_DIR AND XVRAM_TORCH_LIBRARY AND XVRAM_TORCH_CPU_LIBRARY AND
+     XVRAM_TORCH_C10_LIBRARY)
+    set(XVRAM_TORCH_RUNTIME_ENABLED ON)
+  elseif(XVRAM_BUILD_TORCH_RUNTIME STREQUAL "ON")
+    message(FATAL_ERROR
+            "XVRAM_BUILD_TORCH_RUNTIME=ON requires PyTorch 2.11+ Stable-ABI headers and libraries")
+  else()
+    message(STATUS "PyTorch not found; skipping private xvram_torch_runtime target")
+  endif()
+endif()
+
+if(XVRAM_TORCH_RUNTIME_ENABLED)
+  add_library(
+    xvram_torch_runtime SHARED
+    src/torch_runtime/control.cpp
+    src/torch_runtime/stable_bridge.cpp)
+  set_target_properties(
+    xvram_torch_runtime
+    PROPERTIES OUTPUT_NAME xvram_torch_runtime
+               CXX_VISIBILITY_PRESET hidden
+               VISIBILITY_INLINES_HIDDEN YES)
+  target_compile_definitions(
+    xvram_torch_runtime
+    PRIVATE XVRAM_TORCH_RUNTIME_BUILDING_LIBRARY
+            TORCH_TARGET_VERSION=0x020B000000000000ULL
+            _GLIBCXX_USE_CXX11_ABI=${XVRAM_TORCH_CXX11_ABI})
+  target_compile_features(xvram_torch_runtime PRIVATE cxx_std_20)
+  target_include_directories(
+    xvram_torch_runtime
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(
+    xvram_torch_runtime SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}" ${XVRAM_TORCH_INCLUDE_DIRS})
+  target_link_libraries(
+    xvram_torch_runtime
+    PRIVATE xvram_residency_core Threads::Threads "${XVRAM_TORCH_LIBRARY}"
+            "${XVRAM_TORCH_CPU_LIBRARY}" "${XVRAM_TORCH_C10_LIBRARY}")
+  if(UNIX AND NOT APPLE)
+    target_link_options(
+      xvram_torch_runtime
+      PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram_torch_runtime.exports.map")
+    set_property(
+      TARGET xvram_torch_runtime
+      APPEND
+      PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xvram_torch_runtime.exports.map")
+  endif()
+  xvram_enable_warnings(xvram_torch_runtime)
+endif()
+
 add_library(
   xvram_gemm_bench STATIC
   src/gemm_bench/executor.cpp
@@ -568,6 +664,13 @@ install(
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+if(XVRAM_TORCH_RUNTIME_ENABLED)
+  # This is an implementation library loaded by the Python package, not an installed CMake ABI.
+  install(
+    TARGETS xvram_torch_runtime
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endif()
 install(FILES include/xvram/xvram.h include/xvram/torch_allocator.h
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
 install(FILES schemas/capability-report-v1.schema.json
