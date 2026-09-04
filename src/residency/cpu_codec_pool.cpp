@@ -229,12 +229,20 @@ struct CpuCodecWorkerPool::Impl {
           job.result = std::move(result);
           return;
         }
-        // resize() is not permitted to retain compressBound capacity here. The result becomes
-        // authoritative backing, whose admission is charged by its stored byte count; retaining
-        // the oversized allocation would silently defeat the host-store cap on compressible data.
-        std::vector<std::byte> exact(written);
-        std::copy_n(result.output.begin(), written, exact.begin());
-        result.output.swap(exact);
+        if (written >= job.request.input.size()) {
+          // Expansion is never stored. Return the already-owned, verified source bytes so the
+          // caller can preserve this block as raw without reading and hashing it a second time.
+          result.output = std::move(job.request.input);
+          result.encoded_as_raw = true;
+        } else {
+          // resize() is not permitted to retain compressBound capacity here. The result becomes
+          // authoritative backing, whose admission is charged by its stored byte count; retaining
+          // the oversized allocation would silently defeat the host-store cap on compressible
+          // data.
+          std::vector<std::byte> exact(written);
+          std::copy_n(result.output.begin(), written, exact.begin());
+          result.output.swap(exact);
+        }
       } else if (job.request.operation == CpuCodecOperation::decode) {
         result.output.resize(job.request.decoded_bytes);
         result.codec_status = functions.decompress(job.request.input, result.output);

@@ -40,6 +40,41 @@ enum class BackingRepresentation {
   lz4_blocks,
 };
 
+// Internal, allocation-safe observation boundary shared by the residency runtime and codec
+// pipeline. The callback receives identifiers and byte counts only; CUDA addresses, streams, and
+// native handles are deliberately absent. A submit without a matching retire is meaningful when
+// a post-submission failure quarantines the worker.
+enum class CompressionTraceEventKind {
+  encode_submit,
+  encode_retire,
+  decode_submit,
+  decode_retire,
+  h2d_submit,
+  h2d_retire,
+  d2h_submit,
+  d2h_retire,
+  generation_discard,
+};
+
+struct CompressionTraceEvent {
+  CompressionTraceEventKind kind = CompressionTraceEventKind::h2d_submit;
+  ChunkKey key;
+  std::uint64_t operation_id = 0;
+  std::uint64_t source_generation = 0;
+  std::optional<std::uint64_t> target_generation;
+  std::optional<std::uint64_t> slot_generation;
+  CompressionPath path = CompressionPath::raw;
+  std::optional<BackingRepresentation> from_representation;
+  std::optional<BackingRepresentation> to_representation;
+  std::uint64_t logical_bytes = 0;
+  std::uint64_t physical_bytes = 0;
+  std::string_view reason;
+  bool speculative = false;
+};
+
+using CompressionTraceObserver = void (*)(void* user_data,
+                                          const CompressionTraceEvent& event) noexcept;
+
 [[nodiscard]] std::string_view compression_mode_name(CompressionMode mode) noexcept;
 [[nodiscard]] std::string_view compression_codec_name(CompressionCodec codec) noexcept;
 [[nodiscard]] std::string_view compression_path_name(CompressionPath path) noexcept;
@@ -361,6 +396,19 @@ struct CostDecision {
   CostEstimate cpu_lz4_gpu_decode;
   CostEstimate nvcomp_gpu_codec;
 };
+
+struct ReuseProbeForecast {
+  double raw_total_us = 0.0;
+  double candidate_total_us = 0.0;
+};
+
+// Projects one encode followed by the observed number of clean read cycles. This is the horizon
+// used both by adaptive probe hysteresis and by CostDecision, so a reusable generation is not
+// incorrectly marked never-compress based only on its one-time encode cost.
+[[nodiscard]] std::optional<ReuseProbeForecast>
+forecast_clean_reuse_probe(double raw_transfer_us, double candidate_encode_us,
+                           double candidate_decode_us, double candidate_transfer_us,
+                           std::uint64_t reuse_count) noexcept;
 
 class CompressionCostModel {
 public:

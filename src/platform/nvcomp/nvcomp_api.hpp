@@ -5,6 +5,7 @@
 #include <nvcomp/lz4.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,11 +14,11 @@ namespace xvram::nvcomp {
 struct NvcompDispatch {
   decltype(&::nvcompGetProperties) get_properties = nullptr;
   decltype(&::nvcompGetStatusString) get_status_string = nullptr;
-  decltype(&::nvcompBatchedLZ4CompressGetRequiredAlignments)
-      lz4_compress_get_required_alignments = nullptr;
+  decltype(&::nvcompBatchedLZ4CompressGetRequiredAlignments) lz4_compress_get_required_alignments =
+      nullptr;
   decltype(&::nvcompBatchedLZ4CompressGetTempSizeAsync) lz4_compress_get_temp_size = nullptr;
-  decltype(&::nvcompBatchedLZ4CompressGetMaxOutputChunkSize)
-      lz4_compress_get_max_output_size = nullptr;
+  decltype(&::nvcompBatchedLZ4CompressGetMaxOutputChunkSize) lz4_compress_get_max_output_size =
+      nullptr;
   decltype(&::nvcompBatchedLZ4CompressAsync) lz4_compress_async = nullptr;
   decltype(&::nvcompBatchedLZ4DecompressGetRequiredAlignments)
       lz4_decompress_get_required_alignments = nullptr;
@@ -26,9 +27,13 @@ struct NvcompDispatch {
 };
 
 struct NvcompLoadOptions {
-  // Empty requests normal system lookup followed by an app-local lookup beside xVRAM.
-  // A non-empty path must be absolute.
+  // Empty requests resolve only the app-local redistributable beside xVRAM (or, on Linux,
+  // in the sibling ../lib directory used by the installed package). A non-empty path must be
+  // absolute. Default loading deliberately never falls back to a machine-wide nvCOMP runtime.
   std::filesystem::path library;
+  // Tests and explicitly pinned offline packages may override the build-time pin. An empty value
+  // always uses the digest embedded by the xVRAM build. Production Runtime never overrides it.
+  std::optional<std::string> expected_library_sha256;
 };
 
 enum class NvcompLoadStatus {
@@ -36,6 +41,7 @@ enum class NvcompLoadStatus {
   library_unavailable,
   symbols_missing,
   incompatible_version,
+  integrity_failure,
   invalid_path,
 };
 
@@ -56,6 +62,9 @@ public:
   [[nodiscard]] NvcompLoadStatus status() const noexcept;
   [[nodiscard]] NvcompLibrarySource library_source() const noexcept;
   [[nodiscard]] const std::string& loaded_name() const noexcept;
+  [[nodiscard]] const std::string& library_sha256() const noexcept;
+  [[nodiscard]] const std::string& version_string() const noexcept;
+  [[nodiscard]] bool integrity_verified() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
   [[nodiscard]] const std::vector<std::string>& missing_symbols() const noexcept;
   [[nodiscard]] const nvcompProperties_t& properties() const noexcept;
@@ -69,6 +78,8 @@ private:
   void resolve_symbols();
   void validate_dispatch();
   void validate_version();
+  [[nodiscard]] bool validate_integrity(const std::filesystem::path& loaded_path,
+                                        const NvcompLoadOptions& options);
 
   template <typename Function> void require(Function& output, const char* name) {
     output = library_.symbol<Function>(name);
@@ -83,6 +94,9 @@ private:
   NvcompLibrarySource source_ = NvcompLibrarySource::unknown;
   bool load_attempted_ = false;
   std::string loaded_name_;
+  std::string library_sha256_;
+  std::string version_string_;
+  bool integrity_verified_ = false;
   std::string error_;
   std::vector<std::string> missing_symbols_;
   nvcompProperties_t properties_{};

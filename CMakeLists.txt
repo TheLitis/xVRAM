@@ -35,6 +35,8 @@ option(XVRAM_FETCH_NVCOMP_REDIST
        ON)
 set(XVRAM_NVCOMP_REDIST_ROOT "" CACHE PATH
     "Existing official nvCOMP redistributable root to stage beside xVRAM")
+set(XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256 "" CACHE STRING
+    "Optional additional GPU shared-library SHA-256 for an offline nvCOMP package")
 option(XVRAM_FETCH_LZ4 "Download the hash-pinned upstream LZ4 1.10.0 sources" ON)
 option(XVRAM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 set(XVRAM_BUILD_TORCH_RUNTIME "AUTO" CACHE STRING
@@ -280,8 +282,32 @@ if(XVRAM_FETCH_LZ4)
   target_include_directories(xvram_lz4 SYSTEM PUBLIC "${xvram_lz4_SOURCE_DIR}/lib")
   set_target_properties(xvram_lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
   add_library(lz4 ALIAS xvram_lz4)
-elseif(NOT TARGET lz4)
-  find_package(lz4 1.10 CONFIG REQUIRED)
+  set(XVRAM_LZ4_TARGET xvram_lz4)
+else()
+  foreach(candidate IN ITEMS lz4 lz4::lz4 LZ4::lz4)
+    if(TARGET "${candidate}" AND NOT XVRAM_LZ4_TARGET)
+      set(XVRAM_LZ4_TARGET "${candidate}")
+    endif()
+  endforeach()
+  if(NOT XVRAM_LZ4_TARGET)
+    find_package(lz4 1.10.0 EXACT CONFIG QUIET)
+    find_package(LZ4 1.10.0 EXACT CONFIG QUIET)
+    foreach(candidate IN ITEMS lz4 lz4::lz4 LZ4::lz4)
+      if(TARGET "${candidate}" AND NOT XVRAM_LZ4_TARGET)
+        set(XVRAM_LZ4_TARGET "${candidate}")
+      endif()
+    endforeach()
+  endif()
+  if(NOT XVRAM_LZ4_TARGET)
+    find_path(XVRAM_LZ4_INCLUDE_DIR NAMES lz4.h REQUIRED)
+    find_library(XVRAM_LZ4_LIBRARY NAMES lz4 liblz4 REQUIRED)
+    add_library(xvram_lz4_external UNKNOWN IMPORTED)
+    set_target_properties(
+      xvram_lz4_external
+      PROPERTIES IMPORTED_LOCATION "${XVRAM_LZ4_LIBRARY}"
+                 INTERFACE_INCLUDE_DIRECTORIES "${XVRAM_LZ4_INCLUDE_DIR}")
+    set(XVRAM_LZ4_TARGET xvram_lz4_external)
+  endif()
 endif()
 
 if(XVRAM_FETCH_NVCOMP_REDIST AND NOT XVRAM_NVCOMP_REDIST_ROOT)
@@ -322,14 +348,29 @@ find_path(
 if(NOT XVRAM_NVCOMP_INCLUDE_DIR)
   message(FATAL_ERROR "XVRAM_NVCOMP_REDIST_ROOT does not contain nvcomp/lz4.h")
 endif()
+set(XVRAM_NVCOMP_VERSION_HEADER "${XVRAM_NVCOMP_INCLUDE_DIR}/nvcomp/version.h")
+foreach(version_component IN ITEMS "MAJOR;5" "MINOR;3" "PATCH;0" "BUILD;16")
+  list(GET version_component 0 version_name)
+  list(GET version_component 1 version_value)
+  file(STRINGS "${XVRAM_NVCOMP_VERSION_HEADER}" version_line
+       REGEX "^#define[ \t]+NVCOMP_VER_${version_name}[ \t]+${version_value}[ \t]*$")
+  if(NOT version_line)
+    message(FATAL_ERROR
+            "xVRAM requires exact nvCOMP headers 5.3.0.16; ${version_name} did not match")
+  endif()
+endforeach()
 message(STATUS "Using nvCOMP headers/runtime: ${XVRAM_NVCOMP_REDIST_ROOT}")
 
 if(WIN32)
+  set(XVRAM_NVCOMP_OFFICIAL_LIBRARY_SHA256
+      "86af6147413d09233c7ac78c968163a1b529c4e22f20c9fd8b8bab7894a29c35")
   file(GLOB_RECURSE XVRAM_NVCOMP_RUNTIME_LIBRARIES LIST_DIRECTORIES FALSE
        "${XVRAM_NVCOMP_REDIST_ROOT}/nvcomp64_5.dll"
        "${XVRAM_NVCOMP_REDIST_ROOT}/nvcomp_cpu64_5.dll")
   set(XVRAM_NVCOMP_INSTALL_DESTINATION "${CMAKE_INSTALL_BINDIR}")
 else()
+  set(XVRAM_NVCOMP_OFFICIAL_LIBRARY_SHA256
+      "fb37c8bd862dab666b1dfc2a116c2447d8c7ddebdf2a03b21747d9bc9e133a9d")
   file(GLOB_RECURSE XVRAM_NVCOMP_RUNTIME_LIBRARIES LIST_DIRECTORIES FALSE
        "${XVRAM_NVCOMP_REDIST_ROOT}/libnvcomp.so.5"
        "${XVRAM_NVCOMP_REDIST_ROOT}/libnvcomp_cpu.so.5")
@@ -340,6 +381,42 @@ if(NOT XVRAM_NVCOMP_RUNTIME_COUNT EQUAL 2)
   message(FATAL_ERROR "nvCOMP redistributable must contain the GPU and CPU runtime pair")
 endif()
 
+# Pin reporting and relocation checks to the actual GPU shared library that is staged and loaded,
+# rather than to the outer wheel/archive hash used by FetchContent.
+set(XVRAM_NVCOMP_GPU_LIBRARY "")
+foreach(runtime_library IN LISTS XVRAM_NVCOMP_RUNTIME_LIBRARIES)
+  get_filename_component(runtime_name "${runtime_library}" NAME)
+  if((WIN32 AND runtime_name STREQUAL "nvcomp64_5.dll") OR
+     (NOT WIN32 AND runtime_name STREQUAL "libnvcomp.so.5"))
+    set(XVRAM_NVCOMP_GPU_LIBRARY "${runtime_library}")
+  endif()
+endforeach()
+if(NOT XVRAM_NVCOMP_GPU_LIBRARY)
+  message(FATAL_ERROR "nvCOMP redistributable does not contain the expected GPU shared library")
+endif()
+file(SHA256 "${XVRAM_NVCOMP_GPU_LIBRARY}" XVRAM_NVCOMP_LIBRARY_SHA256)
+string(TOLOWER "${XVRAM_NVCOMP_LIBRARY_SHA256}" XVRAM_NVCOMP_LIBRARY_SHA256)
+if(NOT XVRAM_NVCOMP_LIBRARY_SHA256 STREQUAL XVRAM_NVCOMP_OFFICIAL_LIBRARY_SHA256)
+  message(FATAL_ERROR
+          "The nvCOMP 5.3.0.16 GPU shared library differs from xVRAM's platform pin")
+endif()
+if(XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256)
+  string(TOLOWER "${XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256}"
+         XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256)
+  string(LENGTH "${XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256}"
+         XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256_LENGTH)
+  if(NOT XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256_LENGTH EQUAL 64 OR
+     XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256 MATCHES "[^0-9a-f]")
+    message(FATAL_ERROR
+            "XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256 must contain 64 hexadecimal characters")
+  endif()
+  if(NOT XVRAM_NVCOMP_LIBRARY_SHA256 STREQUAL XVRAM_NVCOMP_EXPECTED_LIBRARY_SHA256)
+    message(FATAL_ERROR
+            "The external nvCOMP GPU shared library does not match its configured SHA-256 pin")
+  endif()
+endif()
+message(STATUS "Pinned staged nvCOMP shared-library SHA-256: ${XVRAM_NVCOMP_LIBRARY_SHA256}")
+
 function(xvram_stage_nvcomp target)
   foreach(runtime_library IN LISTS XVRAM_NVCOMP_RUNTIME_LIBRARIES)
     add_custom_command(
@@ -348,6 +425,15 @@ function(xvram_stage_nvcomp target)
               "$<TARGET_FILE_DIR:${target}>"
       VERBATIM)
   endforeach()
+  add_custom_command(
+    TARGET ${target} POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XVRAM_NVCOMP_REDIST_ROOT}/LICENSE"
+            "$<TARGET_FILE_DIR:${target}>/LICENSE.nvcomp.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${XVRAM_NVCOMP_REDIST_ROOT}/NOTICE"
+            "$<TARGET_FILE_DIR:${target}>/NOTICE.nvcomp.txt"
+    VERBATIM)
 endfunction()
 
 function(xvram_enable_warnings target)
@@ -411,9 +497,14 @@ xvram_enable_warnings(xvram_worker_process)
 add_library(
   xvram_residency_core STATIC
   src/platform/nvcomp/nvcomp_api.cpp
+  src/platform/sha256.cpp
   src/residency/budget.cpp
+  src/residency/compression.cpp
   src/residency/core.cpp
+  src/residency/cpu_codec_pool.cpp
+  src/residency/lz4_codec.cpp
   src/residency/metrics.cpp
+  src/residency/nvcomp_pipeline.cpp
   src/residency/policy.cpp
   src/residency/runtime.cpp
   src/residency/scenario.cpp)
@@ -421,7 +512,10 @@ target_compile_features(xvram_residency_core PUBLIC cxx_std_20)
 target_include_directories(xvram_residency_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(
   xvram_residency_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}" "${XVRAM_NVCOMP_INCLUDE_DIR}")
-target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib lz4)
+target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib ${XVRAM_LZ4_TARGET})
+target_compile_definitions(
+  xvram_residency_core
+  PRIVATE "XVRAM_NVCOMP_LIBRARY_SHA256=\"${XVRAM_NVCOMP_LIBRARY_SHA256}\"")
 xvram_enable_warnings(xvram_residency_core)
 
 add_library(

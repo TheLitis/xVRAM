@@ -1,9 +1,13 @@
 #include "residency/runtime.hpp"
 
-#include "platform/pageable_memory.hpp"
+#include "platform/nvcomp/nvcomp_api.hpp"
+#include "platform/system_info.hpp"
 #ifdef _WIN32
 #include "platform/dxgi_memory.hpp"
 #endif
+#include "residency/cpu_codec_pool.hpp"
+#include "residency/lz4_codec.hpp"
+#include "residency/nvcomp_pipeline.hpp"
 #include "residency/policy.hpp"
 
 #include <algorithm>
@@ -24,6 +28,31 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+class RawOnlyBlockCodec final : public BlockCodec {
+public:
+  [[nodiscard]] CompressionCodec codec() const noexcept override {
+    // HostBackingStore validates the container codec family even when every block is raw. This
+    // sentinel deliberately exposes no encoder/decoder and avoids initializing LZ4 for ABI v1.
+    return CompressionCodec::lz4;
+  }
+  [[nodiscard]] std::string_view implementation_name() const noexcept override {
+    return "raw-only";
+  }
+  [[nodiscard]] std::optional<std::size_t>
+  maximum_compressed_bytes(std::size_t) const noexcept override {
+    return std::nullopt;
+  }
+  [[nodiscard]] CodecStatus compress(std::span<const std::byte>, std::span<std::byte>,
+                                     std::size_t& written_bytes) const noexcept override {
+    written_bytes = 0;
+    return CodecStatus::invalid_argument;
+  }
+  [[nodiscard]] CodecStatus decompress(std::span<const std::byte>,
+                                       std::span<std::byte>) const noexcept override {
+    return CodecStatus::invalid_argument;
+  }
+};
+
 [[nodiscard]] std::optional<std::uint64_t> checked_add(const std::uint64_t left,
                                                        const std::uint64_t right) noexcept {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
@@ -40,6 +69,13 @@ using Clock = std::chrono::steady_clock;
   return left * right;
 }
 
+[[nodiscard]] std::uint64_t saturating_add(const std::uint64_t left,
+                                           const std::uint64_t right) noexcept {
+  return right > std::numeric_limits<std::uint64_t>::max() - left
+             ? std::numeric_limits<std::uint64_t>::max()
+             : left + right;
+}
+
 [[nodiscard]] std::optional<std::uint64_t> align_up(const std::uint64_t value,
                                                     const std::uint64_t alignment) noexcept {
   if (alignment == 0) {
@@ -53,6 +89,24 @@ using Clock = std::chrono::steady_clock;
 [[nodiscard]] RuntimeStatus classify_cuda(const cuda::abi::Result result) noexcept {
   return result == CUDA_ERROR_OUT_OF_MEMORY ? RuntimeStatus::device_oom
                                             : RuntimeStatus::cuda_failure;
+}
+
+[[nodiscard]] std::uint64_t content_identity(const ContentToken token) noexcept {
+  const std::uint64_t rotated_low = (token.low << 1U) | (token.low >> 63U);
+  const std::uint64_t identity = token.high ^ rotated_low;
+  return identity == 0U ? 1U : identity;
+}
+
+void observe_latency_per_byte(double& ewma_us_per_byte, const std::uint64_t bytes,
+                              const std::chrono::nanoseconds elapsed) noexcept {
+  if (bytes == 0U || elapsed.count() < 0) {
+    return;
+  }
+  const double sample = static_cast<double>(elapsed.count()) / 1000.0 / static_cast<double>(bytes);
+  if (sample < 0.0) {
+    return;
+  }
+  ewma_us_per_byte = ewma_us_per_byte <= 0.0 ? sample : sample * 0.25 + ewma_us_per_byte * 0.75;
 }
 
 } // namespace
@@ -102,11 +156,8 @@ public:
     cuda::abi::DevicePointer reservation = 0;
     std::uint64_t reservation_bytes = 0;
     cuda::abi::DevicePointer logical_base = 0;
-    std::unique_ptr<platform::PageableMemory> backing;
     std::vector<ChunkRecord> chunks;
-    // False means the pageable copy was intentionally discarded after liveness was proven.
-    // Such a chunk may only be made resident by a full write-only access until write-back.
-    std::vector<std::uint8_t> host_valid;
+    std::vector<CompressionPath> backing_paths;
     ResidencyHint hint = ResidencyHint::normal;
     bool reservation_quarantined = false;
   };
@@ -123,6 +174,7 @@ public:
   struct StagingSlot {
     void* memory = nullptr;
     cuda::abi::Event done = nullptr;
+    std::uint64_t generation = 0;
   };
 
   struct LeaseChunk {
@@ -130,6 +182,19 @@ public:
     std::uint64_t generation = 0;
     bool marks_dirty = false;
     bool provisional_full_write = false;
+    bool spill_reserved_here = false;
+  };
+
+  struct RawSpill {
+    HostBudgetReservation reservation;
+    PreparedRawBacking backing;
+  };
+
+  struct CpuCompressionCandidate {
+    Lz4BlocksV1 container;
+    HostBudgetReservation reservation;
+    std::uint64_t stored_payload_bytes = 0;
+    std::uint64_t operation_id = 0;
   };
 
   struct ActiveExternalLease {
@@ -249,6 +314,7 @@ public:
     telemetry_.target_bytes = target;
     telemetry_.target_minimum_bytes = target;
     telemetry_.target_maximum_bytes = target;
+    telemetry_.safe_device_budget_minimum_bytes = target;
     telemetry_.cuda_free_minimum_bytes = free_u64;
     telemetry_.cuda_free_end_bytes = free_u64;
     telemetry_.wddm_available_minimum_bytes = wddm_available;
@@ -257,8 +323,22 @@ public:
     configured_target_cap_ = config_.cache_target_bytes == 0
                                  ? static_cast<std::uint64_t>(cuda_total)
                                  : config_.cache_target_bytes;
-    const std::uint64_t frame_budget =
-        config_.workspace_reserve_bytes < target ? target - config_.workspace_reserve_bytes : 0;
+    std::uint64_t device_reserve = config_.workspace_reserve_bytes;
+    if (config_.compression_mode != CompressionMode::disabled) {
+      const auto codec_slot_reserve = checked_multiply(config_.chunk_bytes, config_.codec_slots);
+      const auto with_workspace =
+          checked_add(device_reserve, config_.compression_workspace_cap_bytes);
+      const auto with_slots = with_workspace.has_value() && codec_slot_reserve.has_value()
+                                  ? checked_add(*with_workspace, *codec_slot_reserve)
+                                  : std::nullopt;
+      if (!with_slots.has_value()) {
+        return fail(RuntimeStatus::invalid_argument, "setup", "codec_device_reserve",
+                    "codec workspace and slot reserve overflowed");
+      }
+      device_reserve = *with_slots;
+    }
+    fixed_device_reserve_bytes_ = device_reserve;
+    const std::uint64_t frame_budget = device_reserve < target ? target - device_reserve : 0;
     frame_capacity_ = frame_budget / config_.chunk_bytes;
     if (frame_capacity_ < 2) {
       return fail(RuntimeStatus::budget_pressure, "setup", "workspace_reserve",
@@ -275,6 +355,26 @@ public:
     if (config_.staging_slots < 2U || config_.staging_slots > 8U) {
       return fail(RuntimeStatus::invalid_argument, "setup", "staging_slots",
                   "staging slot count must be in [2, 8]");
+    }
+    if (config_.compression_mode != CompressionMode::disabled &&
+        (config_.compression_workspace_cap_bytes == 0U || config_.codec_slots < 2U ||
+         config_.codec_slots > 8U || config_.codec_workers == 0U || config_.codec_workers > 8U)) {
+      return fail(RuntimeStatus::invalid_argument, "setup", "compression_config",
+                  "compression workspace, slots, or workers are out of range");
+    }
+    if (config_.compression_mode != CompressionMode::disabled &&
+        config_.host_store_cap_bytes != 0U && config_.host_headroom_bytes != 0U) {
+      const probe::SystemInfo system = platform::collect_system_info();
+      if (!system.available_memory_bytes.has_value()) {
+        return fail(RuntimeStatus::unavailable, "setup", "host_budget",
+                    "explicit compressed backing admission requires host memory telemetry");
+      }
+      const auto requested_host =
+          checked_add(config_.host_store_cap_bytes, config_.host_headroom_bytes);
+      if (!requested_host.has_value() || *requested_host > *system.available_memory_bytes) {
+        return fail(RuntimeStatus::unavailable, "setup", "host_budget",
+                    "host store cap plus headroom exceeds currently available RAM");
+      }
     }
     const auto pinned_staging_bytes = checked_multiply(config_.chunk_bytes, config_.staging_slots);
     if (!pinned_staging_bytes.has_value()) {
@@ -299,10 +399,166 @@ public:
       return error_.status;
     }
     telemetry_.pinned_staging_bytes = *pinned_staging_bytes;
+    try {
+      if (config_.compression_mode == CompressionMode::disabled) {
+        backing_codec_ = std::make_unique<RawOnlyBlockCodec>();
+      } else {
+        backing_codec_ = std::make_unique<Lz4BlockCodec>();
+      }
+      backing_store_ = std::make_unique<HostBackingStore>(
+          HostBackingConfig{config_.chunk_bytes, config_.host_store_cap_bytes}, *backing_codec_);
+      if (config_.compression_mode != CompressionMode::disabled) {
+        cpu_codec_queue_capacity_ =
+            std::min<std::uint32_t>(cpu_codec_max_queue_capacity,
+                                    std::max<std::uint32_t>(64U, config_.codec_workers * 32U));
+        cpu_codec_pool_ = std::make_unique<CpuCodecWorkerPool>(
+            CpuCodecPoolConfig{config_.codec_workers, cpu_codec_queue_capacity_}, *backing_codec_);
+        if (!cpu_codec_pool_->valid()) {
+          return fail(RuntimeStatus::invalid_argument, "setup", "create_cpu_codec_pool",
+                      "CPU codec worker pool configuration is invalid");
+        }
+      }
+    } catch (const std::bad_alloc&) {
+      return fail(RuntimeStatus::host_oom, "setup", "create_backing_store",
+                  "host backing store allocation failed");
+    } catch (...) {
+      return fail(RuntimeStatus::internal_failure, "setup", "create_backing_store",
+                  "host backing store initialization failed");
+    }
+    if (const HostBudgetStatus budget_status = backing_store_->budget().reserve(
+            HostBudgetCategory::pinned_staging, *pinned_staging_bytes, pinned_budget_reservation_);
+        budget_status != HostBudgetStatus::success) {
+      return fail(RuntimeStatus::host_oom, "setup", "reserve_pinned_staging",
+                  std::string(host_budget_status_name(budget_status)));
+    }
+    pinned_budget_active_ = true;
+
+    if (config_.compression_mode != CompressionMode::disabled) {
+      if (config_.nvcomp_api != nullptr) {
+        nvcomp_api_ = config_.nvcomp_api;
+      } else {
+        owned_nvcomp_api_ = std::make_unique<nvcomp::NvcompApi>();
+        nvcomp_api_ = owned_nvcomp_api_.get();
+      }
+      const nvcomp::NvcompLoadResult codec_load = nvcomp_api_->load();
+      nvcomp_available_ = codec_load.status == nvcomp::NvcompLoadStatus::loaded;
+      telemetry_.nvcomp_available = nvcomp_available_;
+      telemetry_.nvcomp_app_local = nvcomp_available_ && nvcomp_api_->library_source() ==
+                                                             nvcomp::NvcompLibrarySource::app_local;
+      telemetry_.nvcomp_version = nvcomp_available_ ? nvcomp_api_->version_string() : std::string{};
+      telemetry_.nvcomp_library_sha256 = nvcomp_available_ && nvcomp_api_->integrity_verified()
+                                             ? nvcomp_api_->library_sha256()
+                                             : std::string{};
+      // CPU LZ4 remains the authoritative, lossless fallback. nvCOMP unavailability therefore
+      // does not reject an adaptive/capacity session.
+      if (!nvcomp_available_) {
+        ++telemetry_.gpu_codec_fallbacks;
+        if (config_.forced_compression_path.has_value() &&
+            config_.forced_compression_path != CompressionPath::raw) {
+          return fail(RuntimeStatus::unsupported, "setup", "load_nvcomp",
+                      "forced nvCOMP path is unavailable; no silent downgrade is permitted");
+        }
+      } else {
+        NvcompPipelineConfig pipeline_config{config_.chunk_bytes,
+                                             config_.codec_slots,
+                                             config_.compression_workspace_cap_bytes,
+                                             config_.stall_timeout,
+                                             nullptr,
+                                             nullptr};
+        pipeline_config.trace_observer = &Impl::compression_trace_trampoline;
+        pipeline_config.trace_user_data = this;
+        nvcomp_pipeline_ = std::make_unique<NvcompLz4Pipeline>(api_, *nvcomp_api_, *backing_codec_,
+                                                               pipeline_config);
+        const NvcompPipelineStatus pipeline_status = nvcomp_pipeline_->setup();
+        if (pipeline_status != NvcompPipelineStatus::success) {
+          ++telemetry_.gpu_codec_fallbacks;
+          (void)nvcomp_pipeline_->close();
+          nvcomp_pipeline_.reset();
+          nvcomp_available_ = false;
+          telemetry_.nvcomp_available = false;
+          telemetry_.nvcomp_app_local = false;
+          telemetry_.nvcomp_version.clear();
+          telemetry_.nvcomp_library_sha256.clear();
+          codec_managed_device_bytes_ = 0;
+          if (config_.forced_compression_path.has_value() &&
+              config_.forced_compression_path != CompressionPath::raw) {
+            return fail(RuntimeStatus::unsupported, "setup", "initialize_nvcomp",
+                        "forced nvCOMP path could not initialize its event-safe pipeline");
+          }
+        } else {
+          sync_codec_telemetry();
+          const std::uint64_t codec_pinned_bytes = nvcomp_pipeline_->telemetry().pinned_slot_bytes;
+          const HostBudgetStatus codec_budget_status = backing_store_->budget().reserve(
+              HostBudgetCategory::pinned_staging, codec_pinned_bytes,
+              codec_pinned_budget_reservation_);
+          if (codec_budget_status != HostBudgetStatus::success) {
+            ++telemetry_.gpu_codec_fallbacks;
+            const NvcompPipelineStatus close_status = nvcomp_pipeline_->close();
+            // Preserve the historical codec peak while clearing the current device-byte
+            // accounting after a successful rollback.  This path may continue with the CPU
+            // codec, so stale current bytes or an uncharged setup peak would make an otherwise
+            // successful report internally inconsistent.
+            sync_codec_telemetry();
+            if (close_status != NvcompPipelineStatus::success) {
+              async_resources_quarantined_ = true;
+              telemetry_.quarantined = true;
+              return poison("codec", "reserve_pinned_slots",
+                            "nvCOMP slots exceeded the host budget and could not be cleaned up");
+            }
+            nvcomp_pipeline_.reset();
+            nvcomp_available_ = false;
+            telemetry_.nvcomp_available = false;
+            telemetry_.nvcomp_app_local = false;
+            telemetry_.nvcomp_version.clear();
+            telemetry_.nvcomp_library_sha256.clear();
+            codec_managed_device_bytes_ = 0;
+            if (config_.forced_compression_path.has_value() &&
+                config_.forced_compression_path != CompressionPath::raw) {
+              return fail(RuntimeStatus::host_oom, "setup", "reserve_pinned_slots",
+                          "forced nvCOMP path exceeds the configured host budget");
+            }
+          } else {
+            codec_pinned_budget_active_ = true;
+            suspended_codec_device_bytes_ = codec_managed_device_bytes_;
+            suspended_codec_pinned_bytes_ = codec_pinned_bytes;
+          }
+        }
+      }
+    }
+    if (config_.compression_mode != CompressionMode::disabled) {
+      const auto actual_reserve =
+          checked_add(config_.workspace_reserve_bytes, codec_managed_device_bytes_);
+      if (!actual_reserve.has_value()) {
+        return fail(RuntimeStatus::invalid_argument, "setup", "codec_device_reserve",
+                    "actual codec device allocation accounting overflowed");
+      }
+      const std::uint64_t actual_frame_capacity =
+          *actual_reserve < target ? (target - *actual_reserve) / config_.chunk_bytes : 0U;
+      if (actual_frame_capacity < 2U) {
+        return fail(RuntimeStatus::budget_pressure, "setup", "codec_device_reserve",
+                    "actual codec resources leave fewer than two cache frames");
+      }
+      if (actual_frame_capacity > frame_capacity_) {
+        try {
+          frames_.resize(static_cast<std::size_t>(actual_frame_capacity));
+        } catch (const std::bad_alloc&) {
+          return fail(RuntimeStatus::host_oom, "setup", "resize_frame_metadata",
+                      "cache frame metadata allocation failed");
+        }
+      } else if (actual_frame_capacity < frame_capacity_) {
+        frames_.resize(static_cast<std::size_t>(actual_frame_capacity));
+      }
+      frame_capacity_ = actual_frame_capacity;
+      maximum_frame_capacity_ = actual_frame_capacity;
+      fixed_device_reserve_bytes_ = *actual_reserve;
+    }
+    telemetry_.device_reserve_bytes_peak =
+        std::max(telemetry_.device_reserve_bytes_peak, fixed_device_reserve_bytes_);
     policy_ = config_.policy == RuntimePolicy::lru
                   ? std::unique_ptr<VictimPolicy>(std::make_unique<LruPolicy>())
                   : std::unique_ptr<VictimPolicy>(std::make_unique<ClockPolicy>());
     setup_complete_ = true;
+    refresh_host_telemetry();
     return RuntimeStatus::success;
   }
 
@@ -331,14 +587,9 @@ public:
     owner->mapped_bytes = *mapped;
     owner->reservation_bytes = *reservation;
     owner->hint = hint;
-    owner->backing = std::make_unique<platform::PageableMemory>();
-    if (!owner->backing->allocate(bytes)) {
-      return fail(RuntimeStatus::host_oom, "allocation", "allocate_pageable_backing",
-                  "pageable host backing allocation failed");
-    }
     try {
       owner->chunks.resize(static_cast<std::size_t>(*chunk_count));
-      owner->host_valid.resize(static_cast<std::size_t>(*chunk_count), 1U);
+      owner->backing_paths.assign(static_cast<std::size_t>(*chunk_count), CompressionPath::raw);
     } catch (const std::bad_alloc&) {
       return fail(RuntimeStatus::host_oom, "allocation", "allocate_chunk_metadata",
                   "chunk metadata allocation failed");
@@ -347,18 +598,54 @@ public:
                   "chunk metadata allocation raised an unexpected exception");
     }
     for (std::uint64_t index = 0; index < *chunk_count; ++index) {
-      owner->chunks[static_cast<std::size_t>(index)].key = ChunkKey{owner->id, index};
+      const ChunkKey key{owner->id, index};
+      owner->chunks[static_cast<std::size_t>(index)].key = key;
+      const std::uint64_t begin = index * config_.chunk_bytes;
+      const std::uint64_t valid = std::min(config_.chunk_bytes, bytes - begin);
+      const BackingRepresentation initial = config_.compression_mode == CompressionMode::disabled
+                                                ? BackingRepresentation::raw
+                                                : BackingRepresentation::implicit_zero;
+      const BackingResult registered = backing_store_->register_chunk(key, valid, initial);
+      if (!registered) {
+        for (std::uint64_t rollback = 0; rollback < index; ++rollback) {
+          const ChunkKey rollback_key{owner->id, rollback};
+          const BackingResult info = backing_store_->inspect(rollback_key);
+          if (info) {
+            (void)backing_store_->erase_chunk(rollback_key, info.chunk.generation);
+            notify_lifecycle_progress();
+          }
+        }
+        return fail(backing_runtime_status(registered.status), "allocation", "register_host_chunk",
+                    std::string(backing_status_name(registered.status)));
+      }
+      ++telemetry_.generations_created;
+      ++telemetry_.generations_committed;
+      notify_lifecycle_progress();
     }
+    const auto rollback_registered_backing = [&]() noexcept {
+      for (std::uint64_t index = 0; index < *chunk_count; ++index) {
+        const ChunkKey key{next_allocation_id_, index};
+        const BackingResult info = backing_store_->inspect(key);
+        if (info) {
+          (void)backing_store_->erase_chunk(key, info.chunk.generation);
+          notify_lifecycle_progress();
+        }
+      }
+      refresh_host_telemetry();
+    };
     try {
       auto [position, inserted] = allocations_.try_emplace(owner->id.value, std::move(owner));
       if (!inserted) {
+        rollback_registered_backing();
         return fail(RuntimeStatus::internal_failure, "allocation", "register_allocation",
                     "allocation identifier was already registered");
       }
     } catch (const std::bad_alloc&) {
+      rollback_registered_backing();
       return fail(RuntimeStatus::host_oom, "allocation", "register_allocation",
                   "allocation registry growth failed");
     } catch (...) {
+      rollback_registered_backing();
       return fail(RuntimeStatus::internal_failure, "allocation", "register_allocation",
                   "allocation registry raised an unexpected exception");
     }
@@ -368,6 +655,7 @@ public:
             &registered.reservation, static_cast<std::size_t>(registered.reservation_bytes), 0, 0,
             0);
         code != cuda::abi::success) {
+      rollback_registered_backing();
       allocations_.erase(next_allocation_id_.value);
       return fail_cuda("allocation", "cuMemAddressReserve", code);
     }
@@ -387,6 +675,7 @@ public:
         return poison_cuda("allocation", "cuMemAddressFree(alignment_rollback)", code);
       }
       registered.reservation = 0;
+      rollback_registered_backing();
       allocations_.erase(next_allocation_id_.value);
       return fail(RuntimeStatus::internal_failure, "allocation", "align_logical_base",
                   "padded reservation cannot contain the stable logical range");
@@ -394,6 +683,8 @@ public:
     registered.logical_base = static_cast<cuda::abi::DevicePointer>(*logical_base);
     output = RuntimeAllocation{next_allocation_id_, bytes};
     ++telemetry_.allocations_created;
+    telemetry_.logical_bytes += bytes;
+    refresh_host_telemetry();
     if (next_allocation_id_.value == std::numeric_limits<std::uint64_t>::max()) {
       next_allocation_id_ = {};
     } else {
@@ -431,12 +722,21 @@ public:
       }
       owner.reservation = 0;
     }
-    if (!owner.backing->release()) {
-      return fail(RuntimeStatus::cleanup_failure, "cleanup", "release_pageable_backing",
-                  "pageable backing release failed");
+    for (const ChunkRecord& record : owner.chunks) {
+      release_spill(record.key);
+      const BackingResult info = backing_store_->inspect(record.key);
+      if (info && !backing_store_->erase_chunk(record.key, info.chunk.generation)) {
+        return fail(RuntimeStatus::cleanup_failure, "cleanup", "erase_host_chunk",
+                    "authoritative backing generation could not be released");
+      }
+      notify_lifecycle_progress();
     }
+    telemetry_.logical_bytes = telemetry_.logical_bytes >= owner.logical_bytes
+                                   ? telemetry_.logical_bytes - owner.logical_bytes
+                                   : 0U;
     allocations_.erase(found);
     ++telemetry_.allocations_released;
+    refresh_host_telemetry();
     return RuntimeStatus::success;
   }
 
@@ -493,8 +793,22 @@ public:
       if (status != RuntimeStatus::success) {
         return status;
       }
-      owner->host_valid[static_cast<std::size_t>(index)] = 0U;
+      release_spill(record.key);
+      const BackingResult info = backing_store_->inspect(record.key);
+      if (!info) {
+        return poison("cache", "discard_dead", "host backing chunk disappeared");
+      }
+      const BackingResult invalidated =
+          backing_store_->invalidate(record.key, info.chunk.generation);
+      if (!invalidated) {
+        return fail(backing_runtime_status(invalidated.status), "cache", "discard_dead",
+                    std::string(backing_status_name(invalidated.status)));
+      }
+      set_backing_path(record.key, CompressionPath::raw);
+      ++telemetry_.generations_created;
+      ++telemetry_.generations_committed;
     }
+    refresh_host_telemetry();
     return RuntimeStatus::success;
   }
 
@@ -513,9 +827,41 @@ public:
       return fail(RuntimeStatus::invalid_argument, "host_access", "write",
                   "host writes must fully replace every discarded chunk they overlap");
     }
-    std::memcpy(static_cast<std::byte*>(owner->backing->data()) + offset, source,
-                static_cast<std::size_t>(bytes));
-    mark_host_chunks_valid(*owner, offset, bytes);
+    const auto* input = static_cast<const std::byte*>(source);
+    std::uint64_t cursor = offset;
+    std::uint64_t remaining = bytes;
+    while (remaining != 0U) {
+      const std::uint64_t chunk_index = cursor / config_.chunk_bytes;
+      const std::uint64_t chunk_offset = cursor % config_.chunk_bytes;
+      const ChunkKey key{id, chunk_index};
+      const BackingResult info = backing_store_->inspect(key);
+      if (!info) {
+        return poison("host_access", "write", "authoritative host chunk disappeared");
+      }
+      const std::uint64_t segment = std::min(remaining, info.chunk.valid_bytes - chunk_offset);
+      const auto segment_input =
+          std::span<const std::byte>{input, static_cast<std::size_t>(segment)};
+      const bool full_replace = chunk_offset == 0U && segment == info.chunk.valid_bytes;
+      const BackingResult written =
+          full_replace
+              ? backing_store_->replace_raw(key, info.chunk.generation, segment_input)
+              : backing_store_->write(key, info.chunk.generation, chunk_offset, segment_input);
+      if (!written) {
+        return fail(backing_runtime_status(written.status), "host_access", "write_backing",
+                    std::string(backing_status_name(written.status)));
+      }
+      set_backing_path(key, CompressionPath::raw);
+      ++telemetry_.generations_created;
+      ++telemetry_.generations_committed;
+      if (const RuntimeStatus status = consider_compression(key);
+          status != RuntimeStatus::success) {
+        return status;
+      }
+      input += segment;
+      cursor += segment;
+      remaining -= segment;
+    }
+    refresh_host_telemetry();
     return RuntimeStatus::success;
   }
 
@@ -534,8 +880,37 @@ public:
       return fail(RuntimeStatus::invalid_argument, "host_access", "read",
                   "host read overlaps liveness-discarded data");
     }
-    std::memcpy(destination, static_cast<const std::byte*>(owner->backing->data()) + offset,
-                static_cast<std::size_t>(bytes));
+    auto* output = static_cast<std::byte*>(destination);
+    std::uint64_t cursor = offset;
+    std::uint64_t remaining = bytes;
+    while (remaining != 0U) {
+      const std::uint64_t chunk_index = cursor / config_.chunk_bytes;
+      const std::uint64_t chunk_offset = cursor % config_.chunk_bytes;
+      const ChunkKey key{id, chunk_index};
+      const BackingResult info = backing_store_->inspect(key);
+      if (!info) {
+        return poison("host_access", "read", "authoritative host chunk disappeared");
+      }
+      const std::uint64_t segment = std::min(remaining, info.chunk.valid_bytes - chunk_offset);
+      const auto destination_span = std::span<std::byte>{output, static_cast<std::size_t>(segment)};
+      const auto started = Clock::now();
+      const BackingResult read_result = backing_store_->read(key, chunk_offset, destination_span);
+      const auto elapsed =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
+      if (!read_result) {
+        return fail(backing_runtime_status(read_result.status), "host_access", "read_backing",
+                    std::string(backing_status_name(read_result.status)));
+      }
+      if (info.chunk.representation == BackingRepresentation::lz4_blocks) {
+        ++telemetry_.decompression_attempts;
+        ++telemetry_.decompression_commits;
+        ++telemetry_.cpu_decode_operations;
+        telemetry_.cpu_decode_nanoseconds += static_cast<std::uint64_t>(elapsed.count());
+      }
+      output += segment;
+      cursor += segment;
+      remaining -= segment;
+    }
     return RuntimeStatus::success;
   }
 
@@ -659,8 +1034,7 @@ public:
       }
       lease.chunks.reserve(plan.chunks.size());
       for (const ChunkAccessPlan& chunk_plan : plan.chunks) {
-        lease.chunks.push_back(
-            LeaseChunk{chunk_plan.key, 0, chunk_plan.marks_dirty, false});
+        lease.chunks.push_back(LeaseChunk{chunk_plan.key, 0, chunk_plan.marks_dirty, false});
       }
     } catch (const std::bad_alloc&) {
       return fail(RuntimeStatus::host_oom, "transaction", "prepare_lease",
@@ -683,8 +1057,7 @@ public:
         }
         ChunkRecord* record = chunk(use.key);
         if (record == nullptr ||
-            complete_event_generation(*record, use.generation) !=
-                EventGenerationResult::success) {
+            complete_event_generation(*record, use.generation) != EventGenerationResult::success) {
           retired = false;
         }
       }
@@ -716,6 +1089,11 @@ public:
           retired = false;
         }
       }
+      for (const LeaseChunk& use : lease.chunks) {
+        if (use.spill_reserved_here) {
+          release_spill(use.key);
+        }
+      }
       return retired;
     };
 
@@ -724,9 +1102,21 @@ public:
       const ChunkAccessPlan& chunk_plan = plan.chunks[index];
       LeaseChunk& use = lease.chunks[index];
       ChunkRecord* record = chunk(chunk_plan.key);
-      const bool provisional_full_write =
-          record != nullptr && record->state == ChunkState::host_clean &&
-          chunk_plan.full_write_only;
+      const bool provisional_full_write = record != nullptr &&
+                                          record->state == ChunkState::host_clean &&
+                                          chunk_plan.full_write_only;
+      if (chunk_plan.marks_dirty &&
+          spill_reservations_.find(chunk_plan.key) == spill_reservations_.end()) {
+        const RuntimeStatus spill_status = reserve_spill(chunk_plan.key);
+        if (spill_status != RuntimeStatus::success) {
+          if (!rollback()) {
+            return poison("transaction", "spill_rollback",
+                          "spill reservations could not roll back before launch");
+          }
+          return spill_status;
+        }
+        use.spill_reserved_here = true;
+      }
       bool hit = false;
       const RuntimeStatus resident_status = ensure_resident(chunk_plan, false, hit);
       if (resident_status != RuntimeStatus::success) {
@@ -750,8 +1140,7 @@ public:
           return poison("transaction", "pin_rollback",
                         "working-set generations could not retire after pin failure");
         }
-        return poison("transaction", "pin_working_set",
-                      "chunk event generation cannot be started");
+        return poison("transaction", "pin_working_set", "chunk event generation cannot be started");
       }
       use.generation = record->event_generation;
       ++record->pin_count;
@@ -885,8 +1274,7 @@ public:
     for (const LeaseChunk& use : lease.chunks) {
       ChunkRecord* record = chunk(use.key);
       if (record == nullptr ||
-          complete_event_generation(*record, use.generation) !=
-              EventGenerationResult::success) {
+          complete_event_generation(*record, use.generation) != EventGenerationResult::success) {
         retired = false;
       }
     }
@@ -925,6 +1313,11 @@ public:
           output.state = lease.state;
           output.result = RuntimeStatus::poisoned;
           return error_.status;
+        }
+      }
+      for (const LeaseChunk& use : lease.chunks) {
+        if (use.spill_reserved_here) {
+          release_spill(use.key);
         }
       }
     }
@@ -1019,9 +1412,8 @@ public:
 
     RuntimeStatus callback_status = RuntimeStatus::internal_failure;
     try {
-      callback_status = callback(
-          TransactionContext{lease.ranges, lease.workspace_address, lease.workspace_bytes,
-                             lease.stream});
+      callback_status = callback(TransactionContext{lease.ranges, lease.workspace_address,
+                                                    lease.workspace_bytes, lease.stream});
     } catch (...) {
       callback_status = RuntimeStatus::callback_failed;
     }
@@ -1219,10 +1611,18 @@ public:
           owner->reservation = 0;
         }
       }
-      if (owner->backing != nullptr && !owner->backing->release()) {
-        note_cleanup_failure();
+      for (const ChunkRecord& record : owner->chunks) {
+        release_spill(record.key);
+        const BackingResult info =
+            backing_store_ != nullptr ? backing_store_->inspect(record.key) : BackingResult{};
+        if (backing_store_ != nullptr && info &&
+            !backing_store_->erase_chunk(record.key, info.chunk.generation)) {
+          note_cleanup_failure();
+        }
+        notify_lifecycle_progress();
       }
     }
+    refresh_host_telemetry();
     allocations_.clear();
     if (workspace_ != 0 && !async_resources_quarantined_) {
       if (api_.mem_free_(workspace_) != cuda::abi::success) {
@@ -1240,6 +1640,14 @@ public:
         telemetry_.quarantined = true;
         poisoned_ = true;
         note_cleanup_failure();
+        if (async_resources_quarantined_) {
+          // A failed event record/query or an unsealed external lease leaves it unknown whether
+          // the GPU still references this physical allocation. Keep the VMM handle together with
+          // its mapping and reservation until the isolated worker exits. This differs from a
+          // completed cuMemUnmap failure: in that event-safe case CUDA permits dropping the
+          // explicit handle while the mapping itself retains the allocation.
+          continue;
+        }
         if (api_.mem_release_(frame.handle) != cuda::abi::success) {
           note_cleanup_failure();
         } else {
@@ -1255,10 +1663,40 @@ public:
         frame.handle = 0;
       }
     }
+    if (nvcomp_pipeline_ != nullptr) {
+      const NvcompPipelineStatus codec_close = nvcomp_pipeline_->close();
+      sync_codec_telemetry();
+      if (codec_close != NvcompPipelineStatus::success) {
+        note_cleanup_failure();
+        if (codec_close == NvcompPipelineStatus::quarantined || nvcomp_pipeline_->quarantined()) {
+          async_resources_quarantined_ = true;
+          telemetry_.quarantined = true;
+          poisoned_ = true;
+        }
+      }
+      nvcomp_pipeline_.reset();
+    }
+    if (cpu_codec_pool_ != nullptr) {
+      if (cpu_codec_pool_->close() != CpuCodecPoolStatus::success) {
+        note_cleanup_failure();
+      }
+      cpu_codec_pool_.reset();
+    }
+    if (backing_store_ != nullptr && codec_pinned_budget_active_ && !async_resources_quarantined_) {
+      if (backing_store_->budget().release(codec_pinned_budget_reservation_) !=
+          HostBudgetStatus::success) {
+        note_cleanup_failure();
+      }
+      codec_pinned_budget_active_ = false;
+      refresh_host_telemetry();
+    }
     if (async_resources_quarantined_) {
       // No trustworthy completion boundary exists. Keep memory, event, stream, workspace, and
       // owned-context resources alive until the quarantine process exits; destroying any of them
       // here could race an unobserved DMA transfer or kernel.
+      if (owned_nvcomp_api_ != nullptr) {
+        owned_nvcomp_api_->abandon();
+      }
       note_cleanup_failure();
     } else {
       destroy_staging_pool(h2d_staging_, aggregate);
@@ -1270,6 +1708,16 @@ public:
       destroy_stream(compute_stream_, aggregate);
       destroy_stream(d2h_stream_, aggregate);
     }
+    if (backing_store_ != nullptr && pinned_budget_active_ && !async_resources_quarantined_) {
+      if (backing_store_->budget().release(pinned_budget_reservation_) !=
+          HostBudgetStatus::success) {
+        note_cleanup_failure();
+      }
+      pinned_budget_active_ = false;
+      refresh_host_telemetry();
+    }
+    backing_store_.reset();
+    backing_codec_.reset();
     if (context_pushed_) {
       cuda::abi::Context popped = nullptr;
       if (api_.context_pop_current_(&popped) != cuda::abi::success || popped != context_) {
@@ -1321,25 +1769,930 @@ public:
     return owner == nullptr ? std::nullopt : std::optional<std::uint64_t>{owner->logical_bytes};
   }
 
+  [[nodiscard]] std::optional<HostChunkInfo>
+  backing_info(const AllocationId id, const std::uint64_t chunk_index) const noexcept {
+    const Allocation* owner = allocation(id);
+    if (owner == nullptr || backing_store_ == nullptr || chunk_index >= owner->chunks.size()) {
+      return std::nullopt;
+    }
+    const BackingResult info =
+        backing_store_->inspect(owner->chunks[static_cast<std::size_t>(chunk_index)].key);
+    return info ? std::optional<HostChunkInfo>{info.chunk} : std::nullopt;
+  }
+
 private:
+  void notify_lifecycle_progress() noexcept {
+    if (!config_.lifecycle_progress) {
+      return;
+    }
+    try {
+      config_.lifecycle_progress();
+    } catch (...) {
+      // Runtime correctness never depends on an observer supplied by a controller frontend.
+    }
+  }
+
+  void emit_compression_trace(const CompressionTraceEvent& event) noexcept {
+    if (!config_.compression_trace) {
+      return;
+    }
+    try {
+      config_.compression_trace(event);
+    } catch (...) {
+      // Tracing is advisory. An observer must never perturb an event-safe runtime transition.
+    }
+  }
+
+  static void compression_trace_trampoline(void* user_data,
+                                           const CompressionTraceEvent& event) noexcept {
+    if (user_data != nullptr) {
+      static_cast<Impl*>(user_data)->emit_compression_trace(event);
+    }
+  }
+
+  [[nodiscard]] CompressionPath backing_path(const ChunkKey key) const noexcept {
+    const Allocation* owner = allocation(key.allocation_id);
+    if (owner == nullptr || key.chunk_index >= owner->backing_paths.size()) {
+      return CompressionPath::raw;
+    }
+    return owner->backing_paths[static_cast<std::size_t>(key.chunk_index)];
+  }
+
+  void set_backing_path(const ChunkKey key, const CompressionPath path) noexcept {
+    Allocation* owner = allocation(key.allocation_id);
+    if (owner != nullptr && key.chunk_index < owner->backing_paths.size()) {
+      owner->backing_paths[static_cast<std::size_t>(key.chunk_index)] = path;
+    }
+  }
+
+  void emit_generation_discard(const ChunkKey key, const std::uint64_t operation_id,
+                               const HostChunkInfo& source, const std::uint64_t target_generation,
+                               const std::optional<std::uint64_t> slot_generation,
+                               const CompressionPath path, const std::uint64_t physical_bytes,
+                               const std::string_view reason,
+                               const bool speculative = false) noexcept {
+    CompressionTraceEvent event;
+    event.kind = CompressionTraceEventKind::generation_discard;
+    event.key = key;
+    event.operation_id = operation_id;
+    event.source_generation = source.generation;
+    event.target_generation = target_generation;
+    event.slot_generation = slot_generation;
+    event.path = path;
+    event.from_representation = source.representation;
+    event.to_representation = BackingRepresentation::lz4_blocks;
+    event.logical_bytes = source.valid_bytes;
+    event.physical_bytes = physical_bytes;
+    event.reason = reason;
+    event.speculative = speculative;
+    emit_compression_trace(event);
+  }
+
+  [[nodiscard]] RuntimeStatus suspend_codec_pipeline_for_budget() {
+    if (nvcomp_pipeline_ == nullptr) {
+      return RuntimeStatus::success;
+    }
+    const NvcompPipelineTelemetry resources = nvcomp_pipeline_->telemetry();
+    const NvcompPipelineStatus close_status = nvcomp_pipeline_->close();
+    sync_codec_telemetry();
+    if (close_status != NvcompPipelineStatus::success) {
+      if (close_status == NvcompPipelineStatus::quarantined || nvcomp_pipeline_->quarantined()) {
+        async_resources_quarantined_ = true;
+        telemetry_.quarantined = true;
+        return poison("budget", "close_codec_pipeline",
+                      "codec completion became unknown while shrinking the live device target");
+      }
+      return fail(RuntimeStatus::cleanup_failure, "budget", "close_codec_pipeline",
+                  "codec resources could not be released while shrinking the live device target");
+    }
+    if (codec_pinned_budget_active_) {
+      const HostBudgetStatus released =
+          backing_store_->budget().release(codec_pinned_budget_reservation_);
+      if (released != HostBudgetStatus::success) {
+        return fail(RuntimeStatus::cleanup_failure, "budget", "release_codec_host_budget",
+                    std::string(host_budget_status_name(released)));
+      }
+      codec_pinned_budget_active_ = false;
+    }
+    suspended_codec_device_bytes_ = resources.device_slot_bytes;
+    suspended_codec_pinned_bytes_ = resources.pinned_slot_bytes;
+    fold_codec_epoch(resources);
+    nvcomp_pipeline_.reset();
+    codec_managed_device_bytes_ = 0;
+    codec_pipeline_suspended_for_budget_ = true;
+    consecutive_codec_restore_samples_ = 0;
+    fixed_device_reserve_bytes_ = config_.workspace_reserve_bytes;
+    sync_codec_telemetry();
+    refresh_host_telemetry();
+    return RuntimeStatus::success;
+  }
+
+  [[nodiscard]] RuntimeStatus restore_codec_pipeline_after_budget_growth() {
+    if (!codec_pipeline_suspended_for_budget_ || nvcomp_pipeline_ != nullptr ||
+        !nvcomp_available_ || nvcomp_api_ == nullptr || backing_codec_ == nullptr ||
+        backing_store_ == nullptr || suspended_codec_device_bytes_ == 0U ||
+        suspended_codec_pinned_bytes_ == 0U) {
+      return RuntimeStatus::success;
+    }
+
+    HostBudgetReservation pinned_reservation;
+    const HostBudgetStatus admitted = backing_store_->budget().reserve(
+        HostBudgetCategory::pinned_staging, suspended_codec_pinned_bytes_, pinned_reservation);
+    if (admitted != HostBudgetStatus::success) {
+      ++telemetry_.gpu_codec_fallbacks;
+      refresh_host_telemetry();
+      return RuntimeStatus::success;
+    }
+
+    std::unique_ptr<NvcompLz4Pipeline> candidate;
+    try {
+      NvcompPipelineConfig pipeline_config{config_.chunk_bytes,
+                                           config_.codec_slots,
+                                           config_.compression_workspace_cap_bytes,
+                                           config_.stall_timeout,
+                                           nullptr,
+                                           nullptr};
+      pipeline_config.trace_observer = &Impl::compression_trace_trampoline;
+      pipeline_config.trace_user_data = this;
+      candidate =
+          std::make_unique<NvcompLz4Pipeline>(api_, *nvcomp_api_, *backing_codec_, pipeline_config);
+    } catch (const std::bad_alloc&) {
+      (void)backing_store_->budget().release(pinned_reservation);
+      ++telemetry_.gpu_codec_fallbacks;
+      refresh_host_telemetry();
+      return RuntimeStatus::success;
+    } catch (...) {
+      (void)backing_store_->budget().release(pinned_reservation);
+      ++telemetry_.gpu_codec_fallbacks;
+      refresh_host_telemetry();
+      return RuntimeStatus::success;
+    }
+
+    const NvcompPipelineStatus setup_status = candidate->setup();
+    const NvcompPipelineTelemetry setup_resources = candidate->telemetry();
+    const bool resources_match =
+        setup_status == NvcompPipelineStatus::success &&
+        setup_resources.device_slot_bytes == suspended_codec_device_bytes_ &&
+        setup_resources.pinned_slot_bytes == suspended_codec_pinned_bytes_;
+    if (!resources_match) {
+      const NvcompPipelineStatus close_status = candidate->close();
+      const NvcompPipelineTelemetry retired = candidate->telemetry();
+      if (close_status != NvcompPipelineStatus::success) {
+        // Preserve every resource and its host-ledger charge for cleanup retry. Setup has not
+        // submitted user work, so an ordinary cleanup failure is not mislabeled as an unknown
+        // completion; a true pipeline quarantine still remains a worker quarantine boundary.
+        nvcomp_pipeline_ = std::move(candidate);
+        codec_pinned_budget_reservation_ = pinned_reservation;
+        codec_pinned_budget_active_ = true;
+        sync_codec_telemetry();
+        if (const auto reserve =
+                checked_add(config_.workspace_reserve_bytes, codec_managed_device_bytes_);
+            reserve.has_value()) {
+          fixed_device_reserve_bytes_ = *reserve;
+        }
+        launches_blocked_ = true;
+        if (close_status == NvcompPipelineStatus::quarantined || nvcomp_pipeline_->quarantined()) {
+          async_resources_quarantined_ = true;
+          telemetry_.quarantined = true;
+          return poison("budget", "restore_codec_pipeline",
+                        "codec restoration entered an unknown post-submission state");
+        }
+        return fail(RuntimeStatus::cleanup_failure, "budget", "restore_codec_pipeline",
+                    "failed codec restoration retained resources for cleanup retry");
+      }
+      fold_codec_epoch(retired);
+      if (backing_store_->budget().release(pinned_reservation) != HostBudgetStatus::success) {
+        return poison("budget", "restore_codec_host_budget",
+                      "failed codec restoration retained an unknown host-budget reservation");
+      }
+      sync_codec_telemetry();
+      ++telemetry_.gpu_codec_fallbacks;
+      refresh_host_telemetry();
+      return RuntimeStatus::success;
+    }
+
+    nvcomp_pipeline_ = std::move(candidate);
+    codec_pinned_budget_reservation_ = pinned_reservation;
+    codec_pinned_budget_active_ = true;
+    codec_pipeline_suspended_for_budget_ = false;
+    consecutive_codec_restore_samples_ = 0;
+    sync_codec_telemetry();
+    const auto restored_reserve =
+        checked_add(config_.workspace_reserve_bytes, codec_managed_device_bytes_);
+    if (!restored_reserve.has_value()) {
+      return poison("budget", "restore_codec_accounting",
+                    "restored codec device-byte accounting overflowed");
+    }
+    fixed_device_reserve_bytes_ = *restored_reserve;
+    telemetry_.device_reserve_bytes_peak =
+        std::max(telemetry_.device_reserve_bytes_peak, fixed_device_reserve_bytes_);
+    refresh_host_telemetry();
+    return RuntimeStatus::success;
+  }
+
+  void fold_codec_epoch(const NvcompPipelineTelemetry& source) noexcept {
+    telemetry_.codec_slots_peak = std::max(telemetry_.codec_slots_peak, source.slots_created);
+    retired_codec_telemetry_.workspace_peak_bytes =
+        std::max(retired_codec_telemetry_.workspace_peak_bytes, source.workspace_peak_bytes);
+    retired_codec_telemetry_.device_slot_peak_bytes =
+        std::max(retired_codec_telemetry_.device_slot_peak_bytes, source.device_slot_peak_bytes);
+    retired_codec_telemetry_.pinned_slot_peak_bytes =
+        std::max(retired_codec_telemetry_.pinned_slot_peak_bytes, source.pinned_slot_peak_bytes);
+    retired_codec_telemetry_.device_slot_capacity_bytes = std::max(
+        retired_codec_telemetry_.device_slot_capacity_bytes, source.device_slot_capacity_bytes);
+    retired_codec_telemetry_.events_recorded =
+        saturating_add(retired_codec_telemetry_.events_recorded, source.events_recorded);
+    retired_codec_telemetry_.events_retired =
+        saturating_add(retired_codec_telemetry_.events_retired, source.events_retired);
+    retired_codec_telemetry_.encode_batches =
+        saturating_add(retired_codec_telemetry_.encode_batches, source.encode_batches);
+    retired_codec_telemetry_.decode_batches =
+        saturating_add(retired_codec_telemetry_.decode_batches, source.decode_batches);
+    retired_codec_telemetry_.verification_failures = saturating_add(
+        retired_codec_telemetry_.verification_failures, source.verification_failures);
+    retired_codec_telemetry_.slots_created =
+        saturating_add(retired_codec_telemetry_.slots_created, source.slots_created);
+    retired_codec_telemetry_.slots_reused =
+        saturating_add(retired_codec_telemetry_.slots_reused, source.slots_reused);
+    retired_codec_telemetry_.verification_nanoseconds = saturating_add(
+        retired_codec_telemetry_.verification_nanoseconds, source.verification_nanoseconds);
+    retired_codec_telemetry_.codec_failures =
+        saturating_add(retired_codec_telemetry_.codec_failures, source.codec_failures);
+  }
+
+  void sync_codec_telemetry() noexcept {
+    const NvcompPipelineTelemetry empty{};
+    const NvcompPipelineTelemetry& source =
+        nvcomp_pipeline_ != nullptr ? nvcomp_pipeline_->telemetry() : empty;
+    telemetry_.codec_workspace_bytes = nvcomp_pipeline_ != nullptr ? source.workspace_bytes : 0U;
+    telemetry_.codec_workspace_peak_bytes =
+        std::max({telemetry_.codec_workspace_peak_bytes,
+                  retired_codec_telemetry_.workspace_peak_bytes, source.workspace_peak_bytes});
+    telemetry_.codec_slot_bytes =
+        nvcomp_pipeline_ != nullptr && source.device_slot_bytes >= source.workspace_bytes
+            ? source.device_slot_bytes - source.workspace_bytes
+            : 0U;
+    telemetry_.codec_slot_peak_bytes =
+        std::max(telemetry_.codec_slot_peak_bytes,
+                 std::max(retired_codec_telemetry_.device_slot_peak_bytes >=
+                                  retired_codec_telemetry_.workspace_peak_bytes
+                              ? retired_codec_telemetry_.device_slot_peak_bytes -
+                                    retired_codec_telemetry_.workspace_peak_bytes
+                              : 0U,
+                          source.device_slot_peak_bytes >= source.workspace_peak_bytes
+                              ? source.device_slot_peak_bytes - source.workspace_peak_bytes
+                              : 0U));
+    telemetry_.codec_slot_capacity_bytes = std::max(
+        {telemetry_.codec_slot_capacity_bytes, retired_codec_telemetry_.device_slot_capacity_bytes,
+         source.device_slot_capacity_bytes});
+    telemetry_.codec_events_recorded =
+        saturating_add(retired_codec_telemetry_.events_recorded, source.events_recorded);
+    telemetry_.codec_events_retired =
+        saturating_add(retired_codec_telemetry_.events_retired, source.events_retired);
+    telemetry_.gpu_encode_operations =
+        saturating_add(retired_codec_telemetry_.encode_batches, source.encode_batches);
+    telemetry_.gpu_decode_operations =
+        saturating_add(retired_codec_telemetry_.decode_batches, source.decode_batches);
+    telemetry_.codec_verification_failures = saturating_add(
+        retired_codec_telemetry_.verification_failures, source.verification_failures);
+    telemetry_.codec_slots_created =
+        saturating_add(retired_codec_telemetry_.slots_created, source.slots_created);
+    telemetry_.codec_slots_reused =
+        saturating_add(retired_codec_telemetry_.slots_reused, source.slots_reused);
+    telemetry_.codec_slots_peak = std::max(telemetry_.codec_slots_peak, source.slots_created);
+    telemetry_.verification_nanoseconds = saturating_add(
+        retired_codec_telemetry_.verification_nanoseconds, source.verification_nanoseconds);
+    codec_managed_device_bytes_ = nvcomp_pipeline_ != nullptr ? source.device_slot_bytes : 0U;
+    // NvcompPipelineTelemetry::device_slot_peak_bytes includes both non-workspace slot
+    // allocations and the per-slot workspace.  Charge that exact historical peak together with
+    // the runtime compute reserve even if setup later rolls back to the CPU codec.
+    if (const auto reserve_peak =
+            checked_add(config_.workspace_reserve_bytes, source.device_slot_peak_bytes);
+        reserve_peak.has_value()) {
+      telemetry_.device_reserve_bytes_peak =
+          std::max(telemetry_.device_reserve_bytes_peak, *reserve_peak);
+    } else {
+      telemetry_.device_reserve_bytes_peak = std::numeric_limits<std::uint64_t>::max();
+      ++telemetry_.device_budget_violation_count;
+    }
+    telemetry_.gpu_codec_fallbacks =
+        std::max(telemetry_.gpu_codec_fallbacks,
+                 saturating_add(retired_codec_telemetry_.codec_failures, source.codec_failures));
+  }
+
+  void sync_cpu_codec_telemetry() noexcept {
+    if (cpu_codec_pool_ == nullptr) {
+      return;
+    }
+    const std::uint64_t submitted = cpu_codec_pool_->telemetry().encode_submitted;
+    const std::uint64_t delta = submitted >= observed_cpu_codec_blocks_submitted_
+                                    ? submitted - observed_cpu_codec_blocks_submitted_
+                                    : submitted;
+    telemetry_.cpu_codec_blocks_submitted =
+        saturating_add(telemetry_.cpu_codec_blocks_submitted, delta);
+    observed_cpu_codec_blocks_submitted_ = submitted;
+  }
+
+  [[nodiscard]] static RuntimeStatus backing_runtime_status(const BackingStatus status) noexcept {
+    switch (status) {
+    case BackingStatus::success:
+      return RuntimeStatus::success;
+    case BackingStatus::invalid_configuration:
+    case BackingStatus::invalid_argument:
+    case BackingStatus::duplicate_chunk:
+    case BackingStatus::chunk_not_found:
+    case BackingStatus::invalid_state:
+    case BackingStatus::stale_generation:
+    case BackingStatus::generation_overflow:
+    case BackingStatus::range_overflow:
+    case BackingStatus::range_out_of_bounds:
+      return RuntimeStatus::invalid_argument;
+    case BackingStatus::host_budget_exceeded:
+    case BackingStatus::allocation_failure:
+      return RuntimeStatus::host_oom;
+    case BackingStatus::codec_failure:
+    case BackingStatus::corrupt_data:
+      return RuntimeStatus::poisoned;
+    case BackingStatus::not_beneficial:
+      return RuntimeStatus::success;
+    case BackingStatus::internal_failure:
+      return RuntimeStatus::internal_failure;
+    }
+    return RuntimeStatus::internal_failure;
+  }
+
+  void refresh_host_telemetry() noexcept {
+    if (backing_store_ == nullptr) {
+      telemetry_.host_stored_bytes = 0;
+      telemetry_.host_raw_bytes = 0;
+      telemetry_.host_compressed_bytes = 0;
+      telemetry_.host_implicit_zero_bytes = 0;
+      telemetry_.host_invalid_bytes = 0;
+      telemetry_.host_invalid_chunks = 0;
+      telemetry_.host_implicit_zero_chunks = 0;
+      telemetry_.host_raw_chunks = 0;
+      telemetry_.host_lz4_chunks = 0;
+      telemetry_.host_authoritative_bytes = 0;
+      telemetry_.host_budget_bytes = 0;
+      return;
+    }
+    std::uint64_t stored = 0;
+    std::uint64_t raw = 0;
+    std::uint64_t compressed = 0;
+    std::uint64_t implicit_zero = 0;
+    std::uint64_t invalid = 0;
+    std::uint64_t invalid_chunks = 0;
+    std::uint64_t implicit_zero_chunks = 0;
+    std::uint64_t raw_chunks = 0;
+    std::uint64_t lz4_chunks = 0;
+    for (const auto& [id, owner] : allocations_) {
+      (void)id;
+      for (const ChunkRecord& record : owner->chunks) {
+        const BackingResult info = backing_store_->inspect(record.key);
+        if (!info) {
+          continue;
+        }
+        stored += info.chunk.stored_payload_bytes;
+        switch (info.chunk.representation) {
+        case BackingRepresentation::raw:
+          raw += info.chunk.stored_payload_bytes;
+          ++raw_chunks;
+          break;
+        case BackingRepresentation::lz4_blocks:
+          compressed += info.chunk.stored_payload_bytes;
+          ++lz4_chunks;
+          break;
+        case BackingRepresentation::implicit_zero:
+          implicit_zero += info.chunk.valid_bytes;
+          ++implicit_zero_chunks;
+          break;
+        case BackingRepresentation::invalid:
+          invalid += info.chunk.valid_bytes;
+          ++invalid_chunks;
+          break;
+        }
+      }
+    }
+    telemetry_.host_stored_bytes = stored;
+    telemetry_.host_stored_peak_bytes = std::max(telemetry_.host_stored_peak_bytes, stored);
+    telemetry_.host_raw_bytes = raw;
+    telemetry_.host_raw_peak_bytes = std::max(telemetry_.host_raw_peak_bytes, raw);
+    telemetry_.host_compressed_bytes = compressed;
+    telemetry_.host_compressed_peak_bytes =
+        std::max(telemetry_.host_compressed_peak_bytes, compressed);
+    telemetry_.host_implicit_zero_bytes = implicit_zero;
+    telemetry_.host_invalid_bytes = invalid;
+    telemetry_.host_invalid_chunks = invalid_chunks;
+    telemetry_.host_implicit_zero_chunks = implicit_zero_chunks;
+    telemetry_.host_raw_chunks = raw_chunks;
+    telemetry_.host_lz4_chunks = lz4_chunks;
+    const HostBudgetSnapshot budget = backing_store_->budget().snapshot();
+    telemetry_.host_store_cap_bytes = budget.limit_bytes;
+    telemetry_.host_authoritative_bytes = budget.authoritative_bytes;
+    telemetry_.host_authoritative_peak_bytes =
+        std::max(telemetry_.host_authoritative_peak_bytes, budget.authoritative_peak_bytes);
+    telemetry_.host_budget_bytes = budget.total_bytes;
+    telemetry_.host_budget_peak_bytes =
+        std::max(telemetry_.host_budget_peak_bytes, budget.peak_bytes);
+    telemetry_.conversion_scratch_peak_bytes =
+        std::max(telemetry_.conversion_scratch_peak_bytes, budget.conversion_scratch_peak_bytes);
+    telemetry_.spill_reserved_peak_bytes =
+        std::max(telemetry_.spill_reserved_peak_bytes, budget.spill_peak_bytes);
+  }
+
+  [[nodiscard]] RuntimeStatus reserve_spill(const ChunkKey key) {
+    if (spill_reservations_.contains(key)) {
+      return RuntimeStatus::success;
+    }
+    const BackingResult info = backing_store_->inspect(key);
+    if (!info) {
+      return fail(RuntimeStatus::invalid_argument, "compression", "reserve_spill",
+                  "write-capable chunk has no backing generation");
+    }
+    const std::optional<std::uint64_t> maximum_charge =
+        maximum_raw_backing_charge(info.chunk.valid_bytes);
+    if (!maximum_charge.has_value()) {
+      return fail(RuntimeStatus::invalid_argument, "compression", "reserve_spill",
+                  "raw spill size overflowed");
+    }
+    RawSpill spill;
+    const HostBudgetStatus budget_status = backing_store_->budget().reserve(
+        HostBudgetCategory::spill, *maximum_charge, spill.reservation);
+    if (budget_status != HostBudgetStatus::success) {
+      return fail(RuntimeStatus::host_oom, "compression", "reserve_spill",
+                  "raw spill admission failed before the write-capable lease");
+    }
+    const BackingResult prepared =
+        backing_store_->prepare_raw_replacement(key, info.chunk.generation, spill.backing);
+    if (!prepared) {
+      (void)backing_store_->budget().release(spill.reservation);
+      return fail(backing_runtime_status(prepared.status), "compression", "prepare_raw_spill",
+                  std::string(backing_status_name(prepared.status)));
+    }
+    try {
+      spill_reservations_.emplace(key, std::move(spill));
+    } catch (const std::bad_alloc&) {
+      (void)backing_store_->budget().release(spill.reservation);
+      return fail(RuntimeStatus::host_oom, "compression", "reserve_spill",
+                  "raw spill allocation failed before launch");
+    } catch (...) {
+      (void)backing_store_->budget().release(spill.reservation);
+      return fail(RuntimeStatus::internal_failure, "compression", "reserve_spill",
+                  "spill reservation metadata failed unexpectedly");
+    }
+    const HostBudgetSnapshot snapshot = backing_store_->budget().snapshot();
+    telemetry_.spill_reserved_bytes = snapshot.spill_bytes;
+    telemetry_.spill_reserved_peak_bytes =
+        std::max(telemetry_.spill_reserved_peak_bytes, snapshot.spill_bytes);
+    return RuntimeStatus::success;
+  }
+
+  void release_spill(const ChunkKey key) noexcept {
+    const auto found = spill_reservations_.find(key);
+    if (found == spill_reservations_.end()) {
+      return;
+    }
+    (void)backing_store_->budget().release(found->second.reservation);
+    spill_reservations_.erase(found);
+    telemetry_.spill_reserved_bytes = backing_store_->budget().snapshot().spill_bytes;
+  }
+
+  [[nodiscard]] BackingStatus prepare_cpu_compression(const ChunkKey key,
+                                                      const HostChunkInfo& source,
+                                                      CpuCompressionCandidate& output) {
+    output = {};
+    if (cpu_codec_pool_ == nullptr || !cpu_codec_pool_->valid() || source.valid_bytes == 0 ||
+        source.generation == std::numeric_limits<std::uint64_t>::max()) {
+      return BackingStatus::codec_failure;
+    }
+    const std::optional<std::uint64_t> candidate_charge =
+        maximum_raw_backing_charge(source.valid_bytes);
+    const std::uint64_t block_count =
+        (source.valid_bytes + compression_block_bytes - 1U) / compression_block_bytes;
+    const std::uint64_t batch_count =
+        std::min<std::uint64_t>(block_count, cpu_codec_queue_capacity_);
+    const auto queued_input_bytes = checked_multiply(batch_count, compression_block_bytes);
+    const auto maximum_encoded_block =
+        backing_codec_->maximum_compressed_bytes(static_cast<std::size_t>(compression_block_bytes));
+    const auto queued_output_bytes =
+        maximum_encoded_block.has_value()
+            ? checked_multiply(batch_count, static_cast<std::uint64_t>(*maximum_encoded_block))
+            : std::nullopt;
+    // Each outstanding job owns its raw input and may simultaneously hold a compressBound-sized
+    // output while it is repacked into the exact-sized candidate allocation. A single contiguous
+    // snapshot avoids 1024 separately verified backing reads for a 64-MiB chunk. The candidate
+    // itself is covered by candidate_charge; every transient side is covered by scratch credit.
+    const auto queued_input_and_output =
+        queued_input_bytes.has_value() && queued_output_bytes.has_value()
+            ? checked_add(*queued_input_bytes, *queued_output_bytes)
+            : std::nullopt;
+    const auto block_scratch_bytes =
+        queued_input_and_output.has_value()
+            ? checked_add(*queued_input_and_output, compression_block_bytes)
+            : std::nullopt;
+    const auto scratch_bytes = block_scratch_bytes.has_value()
+                                   ? checked_add(*block_scratch_bytes, source.valid_bytes)
+                                   : std::nullopt;
+    if (!candidate_charge.has_value() || !scratch_bytes.has_value() ||
+        block_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+      return BackingStatus::range_overflow;
+    }
+
+    HostBudgetReservation candidate_reservation;
+    HostBudgetReservation scratch_reservation;
+    const auto release_reservations = [&]() noexcept {
+      (void)backing_store_->budget().release(candidate_reservation);
+      (void)backing_store_->budget().release(scratch_reservation);
+    };
+    HostBudgetStatus budget = backing_store_->budget().reserve(
+        HostBudgetCategory::conversion_scratch, *candidate_charge, candidate_reservation);
+    if (budget == HostBudgetStatus::success) {
+      budget = backing_store_->budget().reserve(HostBudgetCategory::conversion_scratch,
+                                                *scratch_bytes, scratch_reservation);
+    }
+    if (budget != HostBudgetStatus::success) {
+      release_reservations();
+      return budget == HostBudgetStatus::limit_exceeded ? BackingStatus::host_budget_exceeded
+                                                        : BackingStatus::allocation_failure;
+    }
+
+    struct PendingBlock {
+      CpuCodecTicket ticket;
+      std::uint64_t index = 0;
+      std::uint32_t bytes = 0;
+    };
+    try {
+      std::vector<std::byte> source_snapshot(static_cast<std::size_t>(source.valid_bytes));
+      const BackingResult snapshot = backing_store_->read(key, 0, source_snapshot);
+      if (!snapshot) {
+        release_reservations();
+        return snapshot.status;
+      }
+      Lz4BlocksV1 candidate;
+      candidate.valid_bytes = source.valid_bytes;
+      candidate.generation = source.generation + 1U;
+      candidate.content_token = source.content_token;
+      candidate.blocks.resize(static_cast<std::size_t>(block_count));
+      std::vector<PendingBlock> pending;
+      pending.reserve(static_cast<std::size_t>(batch_count));
+
+      for (std::uint64_t first = 0; first < block_count; first += batch_count) {
+        pending.clear();
+        const std::uint64_t end = std::min(block_count, first + batch_count);
+        for (std::uint64_t index = first; index < end; ++index) {
+          const std::uint64_t offset = index * compression_block_bytes;
+          const std::uint32_t bytes = static_cast<std::uint32_t>(
+              std::min(compression_block_bytes, source.valid_bytes - offset));
+          Lz4BlockV1& block = candidate.blocks[static_cast<std::size_t>(index)];
+          block.uncompressed_bytes = bytes;
+
+          // The candidate's immediately preceding block is a bounded one-entry encoded-result
+          // cache. Compare against the charged source snapshot before submitting work, then copy
+          // the exact-sized payload after its representative retires. This works across batch
+          // boundaries and avoids retaining an uncharged dictionary of arbitrary unique blocks.
+          const bool repeats_previous =
+              index != 0U &&
+              candidate.blocks[static_cast<std::size_t>(index - 1U)].uncompressed_bytes == bytes &&
+              std::memcmp(source_snapshot.data() + static_cast<std::size_t>(offset),
+                          source_snapshot.data() +
+                              static_cast<std::size_t>(offset - compression_block_bytes),
+                          bytes) == 0;
+          if (repeats_previous) {
+            continue;
+          }
+          std::vector<std::byte> input(static_cast<std::size_t>(bytes));
+          std::memcpy(input.data(), source_snapshot.data() + static_cast<std::size_t>(offset),
+                      bytes);
+          CpuCodecTicket ticket;
+          const CpuCodecPoolStatus submitted =
+              cpu_codec_pool_->submit_encode(key, source.generation, std::move(input), ticket);
+          if (submitted != CpuCodecPoolStatus::success) {
+            for (const PendingBlock& accepted : pending) {
+              CpuCodecResult ignored;
+              const CpuCodecPoolStatus retired =
+                  cpu_codec_pool_->wait(accepted.ticket, config_.stall_timeout, &ignored);
+              if (retired == CpuCodecPoolStatus::timeout ||
+                  retired == CpuCodecPoolStatus::not_ready) {
+                cpu_codec_timeout_ = true;
+              }
+            }
+            if (!cpu_codec_timeout_) {
+              release_reservations();
+            }
+            return submitted == CpuCodecPoolStatus::allocation_failure
+                       ? BackingStatus::allocation_failure
+                       : BackingStatus::codec_failure;
+          }
+          if (output.operation_id == 0U) {
+            output.operation_id = ticket.operation_id;
+          }
+          pending.push_back(PendingBlock{ticket, index, bytes});
+        }
+
+        BackingStatus batch_status = BackingStatus::success;
+        for (const PendingBlock& accepted : pending) {
+          CpuCodecResult result;
+          const CpuCodecPoolStatus completed =
+              cpu_codec_pool_->wait(accepted.ticket, config_.stall_timeout, &result);
+          if (completed == CpuCodecPoolStatus::timeout ||
+              completed == CpuCodecPoolStatus::not_ready) {
+            cpu_codec_timeout_ = true;
+          }
+          if (completed != CpuCodecPoolStatus::success ||
+              result.ticket.source_generation != source.generation) {
+            batch_status = completed == CpuCodecPoolStatus::allocation_failure
+                               ? BackingStatus::allocation_failure
+                               : BackingStatus::codec_failure;
+            continue;
+          }
+          Lz4BlockV1& block = candidate.blocks[static_cast<std::size_t>(accepted.index)];
+          if (!result.encoded_as_raw && !result.output.empty() &&
+              result.output.size() < accepted.bytes) {
+            block.storage = BlockStorage::lz4;
+            block.payload = std::move(result.output);
+          } else if (result.encoded_as_raw && result.output.size() == accepted.bytes) {
+            block.storage = BlockStorage::raw;
+            block.payload = std::move(result.output);
+          } else {
+            batch_status = BackingStatus::codec_failure;
+            continue;
+          }
+          if (block.payload.size() >
+              std::numeric_limits<std::uint64_t>::max() - output.stored_payload_bytes) {
+            batch_status = BackingStatus::range_overflow;
+            continue;
+          }
+          output.stored_payload_bytes += static_cast<std::uint64_t>(block.payload.size());
+        }
+        if (batch_status == BackingStatus::success) {
+          for (std::uint64_t index = first; index < end; ++index) {
+            Lz4BlockV1& block = candidate.blocks[static_cast<std::size_t>(index)];
+            if (!block.payload.empty()) {
+              continue;
+            }
+            if (index == 0U) {
+              batch_status = BackingStatus::codec_failure;
+              break;
+            }
+            const Lz4BlockV1& previous = candidate.blocks[static_cast<std::size_t>(index - 1U)];
+            if (previous.payload.empty() ||
+                previous.uncompressed_bytes != block.uncompressed_bytes) {
+              batch_status = BackingStatus::codec_failure;
+              break;
+            }
+            block.storage = previous.storage;
+            block.payload = previous.payload;
+            if (block.payload.size() >
+                std::numeric_limits<std::uint64_t>::max() - output.stored_payload_bytes) {
+              batch_status = BackingStatus::range_overflow;
+              break;
+            }
+            output.stored_payload_bytes += static_cast<std::uint64_t>(block.payload.size());
+          }
+        }
+        if (batch_status != BackingStatus::success) {
+          if (!cpu_codec_timeout_) {
+            release_reservations();
+          }
+          return batch_status;
+        }
+      }
+      // Every block is now present in a complete immutable candidate generation. From this point
+      // onward the caller must either commit it, or this helper/caller must record a safe discard.
+      ++telemetry_.generations_created;
+      if (backing_store_->budget().release(scratch_reservation) != HostBudgetStatus::success) {
+        if (backing_store_->budget().release(candidate_reservation) == HostBudgetStatus::success) {
+          ++telemetry_.generations_discarded;
+          emit_generation_discard(key, output.operation_id, source, candidate.generation,
+                                  std::nullopt, CompressionPath::cpu_lz4_gpu_decode,
+                                  output.stored_payload_bytes,
+                                  "cpu_candidate_scratch_release_failed");
+        }
+        return BackingStatus::internal_failure;
+      }
+      if (output.stored_payload_bytes >= source.valid_bytes) {
+        const std::uint64_t operation_id = output.operation_id;
+        const std::uint64_t physical_bytes = output.stored_payload_bytes;
+        const HostBudgetStatus released = backing_store_->budget().release(candidate_reservation);
+        output = {};
+        if (released == HostBudgetStatus::success) {
+          ++telemetry_.generations_discarded;
+          emit_generation_discard(key, operation_id, source, candidate.generation, std::nullopt,
+                                  CompressionPath::cpu_lz4_gpu_decode, physical_bytes,
+                                  "cpu_candidate_expansion_rejected");
+        }
+        return released == HostBudgetStatus::success ? BackingStatus::not_beneficial
+                                                     : BackingStatus::internal_failure;
+      }
+      output.container = std::move(candidate);
+      output.reservation = candidate_reservation;
+      candidate_reservation = {};
+      return BackingStatus::success;
+    } catch (const std::bad_alloc&) {
+      release_reservations();
+      output = {};
+      return BackingStatus::allocation_failure;
+    } catch (...) {
+      release_reservations();
+      output = {};
+      return BackingStatus::internal_failure;
+    }
+  }
+
+  [[nodiscard]] RuntimeStatus consider_compression(const ChunkKey key) {
+    if (config_.compression_mode == CompressionMode::disabled ||
+        config_.forced_compression_path == CompressionPath::raw ||
+        config_.forced_compression_path == CompressionPath::nvcomp_gpu_codec) {
+      ++telemetry_.raw_path_decisions;
+      return RuntimeStatus::success;
+    }
+    BackingResult info = backing_store_->inspect(key);
+    if (!info || info.chunk.representation == BackingRepresentation::invalid) {
+      return fail(RuntimeStatus::invalid_argument, "compression", "consider_compression",
+                  "compression candidate has no host authority");
+    }
+    if (info.chunk.representation == BackingRepresentation::implicit_zero ||
+        info.chunk.representation == BackingRepresentation::lz4_blocks) {
+      return RuntimeStatus::success;
+    }
+
+    CompressionCostModel& model = cost_models_.try_emplace(key).first->second;
+    const std::uint64_t content_generation = content_identity(info.chunk.content_token);
+    if (model.generation() != content_generation) {
+      model.reset(content_generation);
+    }
+    const double raw_transfer_us =
+        raw_h2d_us_per_byte_ * static_cast<double>(info.chunk.valid_bytes);
+    const auto reuse_found = chunk_reuse_counts_.find(key);
+    const std::uint64_t reuse_count =
+        reuse_found == chunk_reuse_counts_.end() ? 0U : reuse_found->second;
+    const CpuCodecPoolTelemetry pool_telemetry = cpu_codec_pool_->telemetry();
+    // Historical peak_outstanding reflects our deliberately bounded batch size, not current CPU
+    // scarcity. Using it here permanently multiplied an already end-to-end encode sample by the
+    // queue depth (64/2 by default), making adaptive compression impossible after one normal
+    // batch. Charge only live competing work; the measured encode duration already includes this
+    // candidate's own queueing.
+    const std::uint64_t live_cpu_work =
+        saturating_add(pool_telemetry.queued, pool_telemetry.running);
+    const double cpu_availability =
+        live_cpu_work <= config_.codec_workers
+            ? 1.0
+            : static_cast<double>(config_.codec_workers) / static_cast<double>(live_cpu_work);
+    (void)model.observe(content_generation,
+                        CostObservation{CompressionPath::raw, info.chunk.valid_bytes,
+                                        info.chunk.valid_bytes, 0.0, 0.0, raw_transfer_us, 0.0, 0.0,
+                                        0.0, 0.0, 1.0, reuse_count, false});
+
+    const bool force_cpu = config_.forced_compression_path == CompressionPath::cpu_lz4_gpu_decode;
+    const std::uint32_t attempts =
+        config_.compression_mode == CompressionMode::capacity || force_cpu ? 1U : 3U;
+    for (std::uint32_t attempt = 0; attempt < attempts; ++attempt) {
+      info = backing_store_->inspect(key);
+      if (!info) {
+        return poison("compression", "inspect", "compression candidate disappeared");
+      }
+      // Two calibration samples are required for every selectable path. Raw transfer is cheap to
+      // observe and remains history-bearing across immutable content generations.
+      (void)model.observe(content_generation,
+                          CostObservation{CompressionPath::raw, info.chunk.valid_bytes,
+                                          info.chunk.valid_bytes, 0.0, 0.0, raw_transfer_us, 0.0,
+                                          0.0, 0.0, 0.0, 1.0, reuse_count, false});
+      ++telemetry_.compression_attempts;
+      ++telemetry_.cpu_encode_operations;
+      ++telemetry_.codec_calibration_samples;
+      const auto started = Clock::now();
+      CpuCompressionCandidate candidate;
+      const BackingStatus encoded = prepare_cpu_compression(key, info.chunk, candidate);
+      sync_cpu_codec_telemetry();
+      const auto elapsed =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
+      telemetry_.cpu_encode_nanoseconds += static_cast<std::uint64_t>(elapsed.count());
+      const double encode_us = static_cast<double>(elapsed.count()) / 1000.0;
+      if (encoded != BackingStatus::success) {
+        if (cpu_codec_timeout_) {
+          launches_blocked_ = true;
+          return fail(RuntimeStatus::timeout, "compression", "cpu_codec_wait",
+                      "CPU codec operation exceeded the bounded retirement timeout");
+        }
+        if (encoded == BackingStatus::not_beneficial) {
+          // prepare_cpu_compression completed an immutable candidate generation before proving
+          // that its payload did not reduce storage. The helper released its reservation and
+          // destroyed the candidate locally, so this is a complete, safely discarded lifecycle.
+          ++telemetry_.expansion_rejections;
+          ++telemetry_.raw_fallbacks;
+          const double decode_us =
+              (gpu_decode_us_per_byte_ > 0.0 ? gpu_decode_us_per_byte_ : cpu_decode_us_per_byte_) *
+              static_cast<double>(info.chunk.valid_bytes);
+          (void)model.observe(content_generation,
+                              CostObservation{CompressionPath::cpu_lz4_gpu_decode,
+                                              info.chunk.valid_bytes, info.chunk.valid_bytes,
+                                              encode_us, decode_us, raw_transfer_us, 0.0, 0.0, 0.0,
+                                              0.0, cpu_availability, reuse_count, false});
+          const auto probe = forecast_clean_reuse_probe(raw_transfer_us, encode_us, decode_us,
+                                                        raw_transfer_us, reuse_count);
+          if (probe.has_value()) {
+            (void)model.record_probe(content_generation, CompressionPath::cpu_lz4_gpu_decode,
+                                     probe->raw_total_us, probe->candidate_total_us);
+          }
+          continue;
+        }
+        ++telemetry_.cpu_codec_fallbacks;
+        if (!force_cpu && (encoded == BackingStatus::host_budget_exceeded ||
+                           encoded == BackingStatus::allocation_failure ||
+                           encoded == BackingStatus::codec_failure)) {
+          ++telemetry_.raw_fallbacks;
+          ++telemetry_.raw_path_decisions;
+          refresh_host_telemetry();
+          return RuntimeStatus::success;
+        }
+        return fail(backing_runtime_status(encoded), "compression", "encode_lz4",
+                    std::string(backing_status_name(encoded)));
+      }
+      // The successful prepare already counted this complete immutable generation. Resolve it
+      // exactly once below as either the new authority or a safely discarded policy candidate.
+      const double compressed_transfer_us =
+          raw_h2d_us_per_byte_ * static_cast<double>(candidate.stored_payload_bytes);
+      const double decode_us =
+          (gpu_decode_us_per_byte_ > 0.0 ? gpu_decode_us_per_byte_ : cpu_decode_us_per_byte_) *
+          static_cast<double>(candidate.container.valid_bytes);
+      (void)model.observe(content_generation,
+                          CostObservation{CompressionPath::cpu_lz4_gpu_decode,
+                                          candidate.container.valid_bytes,
+                                          candidate.stored_payload_bytes, encode_us, decode_us,
+                                          compressed_transfer_us, 0.0, 0.0, 0.0, 0.0,
+                                          cpu_availability, reuse_count, false});
+      const auto probe = forecast_clean_reuse_probe(raw_transfer_us, encode_us, decode_us,
+                                                    compressed_transfer_us, reuse_count);
+      const bool favorable =
+          probe.has_value() &&
+          model.record_probe(content_generation, CompressionPath::cpu_lz4_gpu_decode,
+                             probe->raw_total_us, probe->candidate_total_us);
+      const CostDecision decision = model.decide(
+          config_.compression_mode, candidate.container.valid_bytes, true, nvcomp_available_);
+      const bool commit_candidate =
+          config_.compression_mode == CompressionMode::capacity || force_cpu ||
+          (favorable && !decision.calibration_required && decision.path != CompressionPath::raw);
+      if (commit_candidate) {
+        const std::uint64_t candidate_operation_id = candidate.operation_id;
+        const std::uint64_t candidate_generation = candidate.container.generation;
+        const std::uint64_t candidate_physical_bytes = candidate.stored_payload_bytes;
+        const BackingResult committed = backing_store_->commit_lz4_blocks(
+            key, info.chunk.generation, std::move(candidate.container), &candidate.reservation);
+        if (!committed) {
+          const HostBudgetStatus released = backing_store_->budget().release(candidate.reservation);
+          if (released != HostBudgetStatus::success) {
+            return poison("compression", "discard_candidate",
+                          "failed CPU codec commit retained an unknown host-budget reservation");
+          }
+          ++telemetry_.generations_discarded;
+          emit_generation_discard(key, candidate_operation_id, info.chunk, candidate_generation,
+                                  std::nullopt, CompressionPath::cpu_lz4_gpu_decode,
+                                  candidate_physical_bytes, "cpu_candidate_commit_rejected");
+          return fail(backing_runtime_status(committed.status), "compression", "commit_lz4",
+                      std::string(backing_status_name(committed.status)));
+        }
+        ++telemetry_.compression_commits;
+        ++telemetry_.generations_committed;
+        ++telemetry_.cpu_lz4_gpu_decode_decisions;
+        set_backing_path(key, CompressionPath::cpu_lz4_gpu_decode);
+        refresh_host_telemetry();
+        return RuntimeStatus::success;
+      }
+      if (backing_store_->budget().release(candidate.reservation) != HostBudgetStatus::success) {
+        return poison("compression", "discard_candidate",
+                      "rejected CPU codec candidate retained an unknown host-budget reservation");
+      }
+      ++telemetry_.generations_discarded;
+      emit_generation_discard(key, candidate.operation_id, info.chunk,
+                              candidate.container.generation, std::nullopt,
+                              CompressionPath::cpu_lz4_gpu_decode, candidate.stored_payload_bytes,
+                              "cpu_candidate_policy_rejected");
+    }
+
+    if (model.never_compress()) {
+      ++telemetry_.never_compress_decisions;
+    }
+    ++telemetry_.raw_path_decisions;
+    refresh_host_telemetry();
+    return RuntimeStatus::success;
+  }
+
   [[nodiscard]] bool have_required_symbols() const noexcept {
     return api_.init_ != nullptr && api_.device_get_ != nullptr &&
            api_.context_get_current_ != nullptr && api_.context_get_device_ != nullptr &&
-           api_.context_create_ != nullptr &&
-           api_.context_destroy_ != nullptr && api_.context_push_current_ != nullptr &&
-           api_.context_pop_current_ != nullptr && api_.mem_get_info_ != nullptr &&
-           api_.mem_get_allocation_granularity_ != nullptr &&
+           api_.context_create_ != nullptr && api_.context_destroy_ != nullptr &&
+           api_.context_push_current_ != nullptr && api_.context_pop_current_ != nullptr &&
+           api_.mem_get_info_ != nullptr && api_.mem_get_allocation_granularity_ != nullptr &&
            api_.mem_address_reserve_ != nullptr && api_.mem_address_free_ != nullptr &&
            api_.mem_create_ != nullptr && api_.mem_release_ != nullptr &&
            api_.mem_map_ != nullptr && api_.mem_unmap_ != nullptr &&
            api_.mem_set_access_ != nullptr && api_.mem_get_access_ != nullptr &&
-           api_.mem_alloc_ != nullptr &&
-           api_.mem_free_ != nullptr && api_.mem_host_alloc_ != nullptr &&
-           api_.mem_free_host_ != nullptr && api_.memcpy_h2d_async_ != nullptr &&
-           api_.memcpy_d2h_async_ != nullptr && api_.stream_create_ != nullptr &&
-           api_.stream_destroy_ != nullptr && api_.stream_get_context_ != nullptr &&
-           api_.stream_wait_event_ != nullptr && api_.stream_is_capturing_ != nullptr &&
-           api_.event_create_ != nullptr &&
+           api_.mem_alloc_ != nullptr && api_.mem_free_ != nullptr &&
+           api_.mem_host_alloc_ != nullptr && api_.mem_free_host_ != nullptr &&
+           api_.memcpy_h2d_async_ != nullptr && api_.memcpy_d2h_async_ != nullptr &&
+           api_.stream_create_ != nullptr && api_.stream_destroy_ != nullptr &&
+           api_.stream_get_context_ != nullptr && api_.stream_wait_event_ != nullptr &&
+           api_.stream_is_capturing_ != nullptr && api_.event_create_ != nullptr &&
            api_.event_destroy_ != nullptr && api_.event_record_ != nullptr &&
            api_.event_query_ != nullptr && api_.event_elapsed_time_ != nullptr;
   }
@@ -1384,6 +2737,11 @@ private:
   [[nodiscard]] RuntimeStatus fail(const RuntimeStatus status, std::string stage,
                                    std::string operation, std::string message,
                                    const std::optional<std::int64_t> native = std::nullopt) {
+    if (status == RuntimeStatus::poisoned) {
+      // Authoritative-data corruption is a terminal logical failure even when no CUDA work is
+      // in flight. Keep the distinct async quarantine flag clear so safe cleanup can still run.
+      poisoned_ = true;
+    }
     error_ =
         RuntimeError{status, std::move(stage), std::move(operation), std::move(message), native};
     return status;
@@ -1522,10 +2880,8 @@ private:
     if (!active_external_lease_.has_value()) {
       return false;
     }
-    return std::any_of(active_external_lease_->chunks.begin(),
-                       active_external_lease_->chunks.end(), [&](const LeaseChunk& use) {
-                         return use.key.allocation_id == id;
-                       });
+    return std::any_of(active_external_lease_->chunks.begin(), active_external_lease_->chunks.end(),
+                       [&](const LeaseChunk& use) { return use.key.allocation_id == id; });
   }
 
   [[nodiscard]] ChunkRecord* chunk(const ChunkKey key) noexcept {
@@ -1556,19 +2912,19 @@ private:
     return bytes <= owner->logical_bytes - offset;
   }
 
-  [[nodiscard]] bool plan_has_valid_host_sources(
-      const std::span<const ChunkAccessPlan> chunks) const noexcept {
+  [[nodiscard]] bool
+  plan_has_valid_host_sources(const std::span<const ChunkAccessPlan> chunks) const noexcept {
     for (const ChunkAccessPlan& plan : chunks) {
       const Allocation* owner = allocation(plan.key.allocation_id);
-      if (owner == nullptr || plan.key.chunk_index >= owner->host_valid.size()) {
+      if (owner == nullptr || plan.key.chunk_index >= owner->chunks.size()) {
         return false;
       }
-      const ChunkRecord& record =
-          owner->chunks[static_cast<std::size_t>(plan.key.chunk_index)];
-      const bool resident = record.state == ChunkState::resident_clean ||
-                            record.state == ChunkState::resident_dirty;
-      if (plan.requires_h2d && !resident &&
-          owner->host_valid[static_cast<std::size_t>(plan.key.chunk_index)] == 0U) {
+      const ChunkRecord& record = owner->chunks[static_cast<std::size_t>(plan.key.chunk_index)];
+      const bool resident =
+          record.state == ChunkState::resident_clean || record.state == ChunkState::resident_dirty;
+      const BackingResult info = backing_store_->inspect(plan.key);
+      if (!info || (plan.requires_h2d && !resident &&
+                    info.chunk.representation == BackingRepresentation::invalid)) {
         return false;
       }
     }
@@ -1580,21 +2936,26 @@ private:
     const std::uint64_t first = offset / config_.chunk_bytes;
     const std::uint64_t last = (offset + bytes - 1U) / config_.chunk_bytes;
     for (std::uint64_t index = first; index <= last; ++index) {
-      if (owner.host_valid[static_cast<std::size_t>(index)] == 0U) {
+      const BackingResult info = backing_store_->inspect(ChunkKey{owner.id, index});
+      if (!info || info.chunk.representation == BackingRepresentation::invalid) {
         return false;
       }
     }
     return true;
   }
 
-  [[nodiscard]] bool host_write_covers_invalid_chunks(
-      const Allocation& owner, const std::uint64_t offset,
-      const std::uint64_t bytes) const noexcept {
+  [[nodiscard]] bool host_write_covers_invalid_chunks(const Allocation& owner,
+                                                      const std::uint64_t offset,
+                                                      const std::uint64_t bytes) const noexcept {
     const std::uint64_t end = offset + bytes;
     const std::uint64_t first = offset / config_.chunk_bytes;
     const std::uint64_t last = (end - 1U) / config_.chunk_bytes;
     for (std::uint64_t index = first; index <= last; ++index) {
-      if (owner.host_valid[static_cast<std::size_t>(index)] != 0U) {
+      const BackingResult info = backing_store_->inspect(ChunkKey{owner.id, index});
+      if (!info) {
+        return false;
+      }
+      if (info.chunk.representation != BackingRepresentation::invalid) {
         continue;
       }
       const std::uint64_t chunk_begin = index * config_.chunk_bytes;
@@ -1605,21 +2966,6 @@ private:
       }
     }
     return true;
-  }
-
-  void mark_host_chunks_valid(Allocation& owner, const std::uint64_t offset,
-                              const std::uint64_t bytes) noexcept {
-    const std::uint64_t end = offset + bytes;
-    const std::uint64_t first = offset / config_.chunk_bytes;
-    const std::uint64_t last = (end - 1U) / config_.chunk_bytes;
-    for (std::uint64_t index = first; index <= last; ++index) {
-      const std::uint64_t chunk_begin = index * config_.chunk_bytes;
-      const std::uint64_t chunk_end =
-          chunk_begin + std::min(config_.chunk_bytes, owner.logical_bytes - chunk_begin);
-      if (offset <= chunk_begin && end >= chunk_end) {
-        owner.host_valid[static_cast<std::size_t>(index)] = 1U;
-      }
-    }
   }
 
   [[nodiscard]] RuntimeStatus flush_overlapping(Allocation& owner, const std::uint64_t offset,
@@ -1700,7 +3046,10 @@ private:
     ++telemetry_.budget_samples;
     telemetry_.cuda_free_end_bytes = free_bytes;
     telemetry_.cuda_free_minimum_bytes = std::min(telemetry_.cuda_free_minimum_bytes, free_bytes);
-    const auto managed_with_workspace = checked_add(telemetry_.resident_bytes, workspace_bytes_);
+    const auto managed_compute = checked_add(telemetry_.resident_bytes, workspace_bytes_);
+    const auto managed_with_workspace =
+        managed_compute.has_value() ? checked_add(*managed_compute, codec_managed_device_bytes_)
+                                    : std::nullopt;
     const std::uint64_t reclaimable =
         managed_with_workspace.has_value() &&
                 free_bytes <= std::numeric_limits<std::uint64_t>::max() - *managed_with_workspace
@@ -1732,14 +3081,35 @@ private:
             : 0;
     std::uint64_t observed_target = std::min(configured_target_cap_, after_headroom);
     observed_target -= observed_target % config_.chunk_bytes;
+    telemetry_.safe_device_budget_minimum_bytes =
+        telemetry_.safe_device_budget_minimum_bytes == 0U
+            ? observed_target
+            : std::min(telemetry_.safe_device_budget_minimum_bytes, observed_target);
     const auto required_frame_bytes =
         checked_multiply(static_cast<std::uint64_t>(required_frames), config_.chunk_bytes);
-    const auto required_total = required_frame_bytes.has_value()
-                                    ? checked_add(*required_frame_bytes, required_workspace)
-                                    : std::nullopt;
+    std::uint64_t codec_only_reserve =
+        fixed_device_reserve_bytes_ >= config_.workspace_reserve_bytes
+            ? fixed_device_reserve_bytes_ - config_.workspace_reserve_bytes
+            : 0U;
+    const auto required_with_workspace =
+        required_frame_bytes.has_value() ? checked_add(*required_frame_bytes, required_workspace)
+                                         : std::nullopt;
+    auto required_total = required_with_workspace.has_value()
+                              ? checked_add(*required_with_workspace, codec_only_reserve)
+                              : std::nullopt;
+    if (nvcomp_pipeline_ != nullptr &&
+        (!required_total.has_value() || observed_target < *required_total ||
+         observed_target <= fixed_device_reserve_bytes_)) {
+      const RuntimeStatus suspended = suspend_codec_pipeline_for_budget();
+      if (suspended != RuntimeStatus::success) {
+        return suspended;
+      }
+      codec_only_reserve = 0;
+      required_total = required_with_workspace;
+    }
     std::uint64_t observed_frames =
-        observed_target > config_.workspace_reserve_bytes
-            ? (observed_target - config_.workspace_reserve_bytes) / config_.chunk_bytes
+        observed_target > fixed_device_reserve_bytes_
+            ? (observed_target - fixed_device_reserve_bytes_) / config_.chunk_bytes
             : 0;
     observed_frames = std::min(observed_frames, maximum_frame_capacity_);
 
@@ -1802,8 +3172,92 @@ private:
       consecutive_growth_samples_ = 0;
     }
 
+    if (codec_pipeline_suspended_for_budget_) {
+      const auto restored_fixed_reserve =
+          checked_add(config_.workspace_reserve_bytes, suspended_codec_device_bytes_);
+      const auto current_frame_bytes = checked_multiply(frame_capacity_, config_.chunk_bytes);
+      const auto current_with_workspace =
+          current_frame_bytes.has_value() ? checked_add(*current_frame_bytes, required_workspace)
+                                          : std::nullopt;
+      const auto current_with_codec =
+          current_with_workspace.has_value()
+              ? checked_add(*current_with_workspace, suspended_codec_device_bytes_)
+              : std::nullopt;
+      const auto required_with_codec =
+          required_with_workspace.has_value()
+              ? checked_add(*required_with_workspace, suspended_codec_device_bytes_)
+              : std::nullopt;
+      const HostBudgetSnapshot host = backing_store_->budget().snapshot();
+      const bool host_room = suspended_codec_pinned_bytes_ <= host.limit_bytes - host.total_bytes;
+      const bool safe_restore_sample =
+          restored_fixed_reserve.has_value() && current_with_codec.has_value() &&
+          required_with_codec.has_value() && host_room && observed_target >= *current_with_codec &&
+          observed_target >= *required_with_codec && observed_target > *restored_fixed_reserve &&
+          !active_external_lease_.has_value() && !async_resources_quarantined_;
+      if (safe_restore_sample) {
+        if (consecutive_codec_restore_samples_ != std::numeric_limits<std::uint32_t>::max()) {
+          ++consecutive_codec_restore_samples_;
+        }
+      } else {
+        consecutive_codec_restore_samples_ = 0;
+      }
+      if (consecutive_codec_restore_samples_ >= 10U) {
+        consecutive_codec_restore_samples_ = 0;
+        const RuntimeStatus restored = restore_codec_pipeline_after_budget_growth();
+        if (restored != RuntimeStatus::success) {
+          return restored;
+        }
+        if (nvcomp_pipeline_ != nullptr) {
+          codec_only_reserve = codec_managed_device_bytes_;
+          required_total = required_with_workspace.has_value()
+                               ? checked_add(*required_with_workspace, codec_only_reserve)
+                               : std::nullopt;
+          observed_frames =
+              observed_target > fixed_device_reserve_bytes_
+                  ? (observed_target - fixed_device_reserve_bytes_) / config_.chunk_bytes
+                  : 0U;
+          observed_frames = std::min(observed_frames, maximum_frame_capacity_);
+          const auto active_frame_bytes = checked_multiply(frame_capacity_, config_.chunk_bytes);
+          const auto restored_target =
+              active_frame_bytes.has_value()
+                  ? checked_add(*active_frame_bytes, fixed_device_reserve_bytes_)
+                  : std::nullopt;
+          if (!restored_target.has_value()) {
+            ++telemetry_.device_budget_violation_count;
+            return fail(RuntimeStatus::internal_failure, "budget", "restore_codec_target",
+                        "restored cache-target accounting overflowed");
+          }
+          telemetry_.target_bytes = std::min(observed_target, *restored_target);
+          telemetry_.target_maximum_bytes =
+              std::max(telemetry_.target_maximum_bytes, telemetry_.target_bytes);
+        }
+      }
+    }
+
+    const auto managed_resident_and_workspace =
+        checked_add(telemetry_.resident_bytes, workspace_bytes_);
+    const auto managed_device =
+        managed_resident_and_workspace.has_value()
+            ? checked_add(*managed_resident_and_workspace, codec_managed_device_bytes_)
+            : std::nullopt;
+    if (!managed_device.has_value()) {
+      ++telemetry_.device_budget_violation_count;
+      return fail(RuntimeStatus::internal_failure, "budget", "managed_device_accounting",
+                  "managed device resource accounting overflowed");
+    }
+    telemetry_.managed_device_bytes_peak =
+        std::max(telemetry_.managed_device_bytes_peak, *managed_device);
+    telemetry_.device_reserve_bytes_peak =
+        std::max(telemetry_.device_reserve_bytes_peak, fixed_device_reserve_bytes_);
+    if (*managed_device > observed_target) {
+      ++telemetry_.device_budget_violation_count;
+      return fail(RuntimeStatus::budget_pressure, "budget", "managed_device_accounting",
+                  "managed residency, compute scratch, and codec resources exceed the live safe "
+                  "device target");
+    }
+
     if (!required_total.has_value() || observed_target < *required_total ||
-        observed_target <= config_.workspace_reserve_bytes) {
+        observed_target <= fixed_device_reserve_bytes_) {
       return fail(RuntimeStatus::budget_pressure, "budget", "working_set",
                   "live CUDA budget fell below the next transaction working set");
     }
@@ -1812,12 +3266,12 @@ private:
                   "live CUDA budget cannot retain the next transaction frames");
     }
 
-    if (observed_frames > frame_capacity_) {
+    if (!codec_pipeline_suspended_for_budget_ && observed_frames > frame_capacity_) {
       if (++consecutive_growth_samples_ >= 10U &&
           observed_frames >= frame_capacity_ + std::uint64_t{2}) {
         frame_capacity_ = std::min(observed_frames, frame_capacity_ + std::uint64_t{2});
         telemetry_.target_bytes = std::min(observed_target, frame_capacity_ * config_.chunk_bytes +
-                                                                config_.workspace_reserve_bytes);
+                                                                fixed_device_reserve_bytes_);
         telemetry_.target_maximum_bytes =
             std::max(telemetry_.target_maximum_bytes, telemetry_.target_bytes);
         ++telemetry_.budget_grows;
@@ -1901,6 +3355,14 @@ private:
         record->state == ChunkState::resident_dirty) {
       hit = true;
       ++telemetry_.cache_hits;
+      try {
+        std::uint64_t& reuse = chunk_reuse_counts_[plan.key];
+        if (reuse != std::numeric_limits<std::uint64_t>::max()) {
+          ++reuse;
+        }
+      } catch (...) {
+        // Cost telemetry is advisory; allocation failure must not fail a valid cache hit.
+      }
       policy_->touch(plan.key, ++policy_sequence_, owner->hint == ResidencyHint::streaming);
       return RuntimeStatus::success;
     }
@@ -1975,8 +3437,7 @@ private:
     if (const cuda::abi::Result code =
             api_.mem_get_access_(&observed_access, &access_location, address);
         code != cuda::abi::success ||
-        observed_access !=
-            static_cast<unsigned long long>(CU_MEM_ACCESS_FLAGS_PROT_READWRITE)) {
+        observed_access != static_cast<unsigned long long>(CU_MEM_ACCESS_FLAGS_PROT_READWRITE)) {
       const cuda::abi::Result rollback =
           api_.mem_unmap_(address, static_cast<std::size_t>(config_.chunk_bytes));
       if (rollback != cuda::abi::success) {
@@ -2021,30 +3482,218 @@ private:
     const std::size_t staging_index = next_h2d_staging_++ % h2d_staging_.size();
     StagingSlot& staging = h2d_staging_[staging_index];
     record->staging_slot = static_cast<std::uint32_t>(staging_index);
+    const auto retire_failed_h2d = [&](const RuntimeStatus original_status) -> RuntimeStatus {
+      const RuntimeError original_error = error_;
+      // No user work has seen this mapping yet, but the strict remap invariant still requires a
+      // queryable event boundary before the physical handle or VA can be reused.
+      const cuda::abi::Result retirement_record = api_.event_record_(staging.done, h2d_stream_);
+      if (retirement_record != cuda::abi::success) {
+        async_resources_quarantined_ = true;
+        frame.quarantined = true;
+        quarantine_mapping(*owner);
+        return poison_cuda("cache", "cuEventRecord(failed_h2d)", retirement_record);
+      }
+      if (wait_event(staging.done, "failed_h2d_retirement") != RuntimeStatus::success) {
+        frame.quarantined = true;
+        quarantine_mapping(*owner);
+        return error_.status;
+      }
+      record->staging_slot.reset();
+      if (complete_event_generation(*record, record->event_generation) !=
+              EventGenerationResult::success ||
+          transition_chunk_state(record->state, ChunkState::resident_clean) !=
+              StateTransitionResult::success) {
+        frame.quarantined = true;
+        quarantine_mapping(*owner);
+        return poison_transition("cache", "failed_h2d_retirement",
+                                 "failed H2D mapping could not retire safely");
+      }
+      const RuntimeStatus unmap_status = unmap(plan.key);
+      if (unmap_status != RuntimeStatus::success) {
+        return unmap_status;
+      }
+      error_ = original_error;
+      return original_status;
+    };
+    if (staging.generation == std::numeric_limits<std::uint64_t>::max()) {
+      const RuntimeStatus failed =
+          fail(RuntimeStatus::internal_failure, "cache", "h2d_staging_generation",
+               "H2D staging generation overflowed");
+      return retire_failed_h2d(failed);
+    }
+    ++staging.generation;
+    bool codec_transfer_completed = false;
+    std::optional<CompressionTraceEvent> raw_h2d_trace;
+    Clock::time_point raw_h2d_started{};
+    std::uint64_t transfer_content_identity = 0;
     if (plan.requires_h2d) {
-      const auto* source = static_cast<const std::byte*>(owner->backing->data()) +
-                           plan.key.chunk_index * config_.chunk_bytes;
-      std::memcpy(staging.memory, source, static_cast<std::size_t>(valid));
-      if (const cuda::abi::Result code = api_.memcpy_h2d_async_(
-              address, staging.memory, static_cast<std::size_t>(valid), h2d_stream_);
+      const BackingResult info = backing_store_->inspect(plan.key);
+      if (!info || info.chunk.representation == BackingRepresentation::invalid) {
+        const RuntimeStatus failed = fail(RuntimeStatus::poisoned, "cache", "read_host_backing",
+                                          "H2D source has no authoritative host generation");
+        return retire_failed_h2d(failed);
+      }
+      transfer_content_identity = content_identity(info.chunk.content_token);
+      if (info.chunk.representation == BackingRepresentation::lz4_blocks &&
+          nvcomp_pipeline_ != nullptr && config_.forced_compression_path != CompressionPath::raw) {
+        HostBudgetReservation export_scratch;
+        const std::optional<std::uint64_t> export_charge =
+            maximum_raw_backing_charge(info.chunk.valid_bytes);
+        const HostBudgetStatus export_budget =
+            export_charge.has_value()
+                ? backing_store_->budget().reserve(HostBudgetCategory::conversion_scratch,
+                                                   *export_charge, export_scratch)
+                : HostBudgetStatus::reservation_overflow;
+        if (export_budget != HostBudgetStatus::success) {
+          const RuntimeStatus failed =
+              fail(RuntimeStatus::host_oom, "cache", "reserve_codec_export",
+                   "compressed H2D export exceeds the live host-store budget");
+          return retire_failed_h2d(failed);
+        }
+        Lz4BlocksV1 container;
+        const BackingStatus exported = backing_store_->export_lz4_blocks(plan.key, container);
+        if (exported != BackingStatus::success) {
+          (void)backing_store_->budget().release(export_scratch);
+          const RuntimeStatus failed =
+              fail(backing_runtime_status(exported), "cache", "export_lz4_blocks",
+                   std::string(backing_status_name(exported)));
+          return retire_failed_h2d(failed);
+        }
+        const NvcompPipelineTelemetry codec_before = nvcomp_pipeline_->telemetry();
+        NvcompPipelineTicket ticket;
+        const auto started = Clock::now();
+        NvcompDecodeRequest decode_request{&container, address};
+        decode_request.key = plan.key;
+        decode_request.path = backing_path(plan.key);
+        decode_request.speculative = speculative;
+        NvcompPipelineStatus codec_status = nvcomp_pipeline_->decode(decode_request, ticket);
+        if (codec_status == NvcompPipelineStatus::success) {
+          codec_status = nvcomp_pipeline_->wait(ticket);
+        }
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
+        const NvcompPipelineTelemetry codec_after = nvcomp_pipeline_->telemetry();
+        (void)backing_store_->budget().release(export_scratch);
+        const std::uint64_t payload_bytes =
+            codec_after.pcie_h2d_payload_bytes - codec_before.pcie_h2d_payload_bytes;
+        const std::uint64_t metadata_bytes =
+            codec_after.pcie_h2d_metadata_bytes - codec_before.pcie_h2d_metadata_bytes;
+        telemetry_.pcie_h2d_payload_bytes += payload_bytes;
+        telemetry_.pcie_h2d_metadata_bytes += metadata_bytes;
+        telemetry_.pcie_h2d_bytes += payload_bytes + metadata_bytes;
+        sync_codec_telemetry();
+        if (codec_status == NvcompPipelineStatus::success) {
+          codec_transfer_completed = true;
+          ++telemetry_.decompression_attempts;
+          ++telemetry_.decompression_commits;
+          ++telemetry_.gpu_decode_operations;
+          ++telemetry_.cpu_lz4_gpu_decode_decisions;
+          telemetry_.gpu_decode_nanoseconds += static_cast<std::uint64_t>(elapsed.count());
+          observe_latency_per_byte(gpu_decode_us_per_byte_, valid, elapsed);
+        } else if (codec_status == NvcompPipelineStatus::quarantined ||
+                   nvcomp_pipeline_->quarantined()) {
+          async_resources_quarantined_ = true;
+          frame.quarantined = true;
+          quarantine_mapping(*owner);
+          return poison("codec", "nvcomp_decode", nvcomp_pipeline_->error().c_str());
+        } else {
+          ++telemetry_.gpu_codec_fallbacks;
+        }
+      }
+      if (!codec_transfer_completed) {
+        const auto decode_started = Clock::now();
+        HostBudgetReservation decode_scratch;
+        if (info.chunk.representation == BackingRepresentation::lz4_blocks &&
+            backing_store_->budget().reserve(HostBudgetCategory::conversion_scratch,
+                                             compression_block_bytes,
+                                             decode_scratch) != HostBudgetStatus::success) {
+          const RuntimeStatus failed =
+              fail(RuntimeStatus::host_oom, "cache", "reserve_cpu_decode_scratch",
+                   "CPU decode scratch exceeds the host-store budget");
+          return retire_failed_h2d(failed);
+        }
+        const BackingResult materialized =
+            backing_store_->read(plan.key, 0,
+                                 std::span<std::byte>{static_cast<std::byte*>(staging.memory),
+                                                      static_cast<std::size_t>(valid)});
+        if (decode_scratch.id != 0U) {
+          (void)backing_store_->budget().release(decode_scratch);
+        }
+        const auto decode_elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - decode_started);
+        if (!materialized) {
+          const RuntimeStatus failed =
+              fail(backing_runtime_status(materialized.status), "cache", "decode_host_backing",
+                   std::string(backing_status_name(materialized.status)));
+          return retire_failed_h2d(failed);
+        }
+        if (info.chunk.representation == BackingRepresentation::lz4_blocks) {
+          ++telemetry_.decompression_attempts;
+          ++telemetry_.decompression_commits;
+          ++telemetry_.cpu_decode_operations;
+          ++telemetry_.cpu_codec_fallbacks;
+          telemetry_.cpu_decode_nanoseconds += static_cast<std::uint64_t>(decode_elapsed.count());
+          observe_latency_per_byte(cpu_decode_us_per_byte_, valid, decode_elapsed);
+        } else {
+          ++telemetry_.raw_path_decisions;
+        }
+        raw_h2d_started = Clock::now();
+        if (const cuda::abi::Result code = api_.memcpy_h2d_async_(
+                address, staging.memory, static_cast<std::size_t>(valid), h2d_stream_);
+            code != cuda::abi::success) {
+          async_resources_quarantined_ = true;
+          frame.quarantined = true;
+          quarantine_mapping(*owner);
+          return poison_cuda("cache", "cuMemcpyHtoDAsync", code);
+        }
+        CompressionTraceEvent transfer_event;
+        transfer_event.kind = CompressionTraceEventKind::h2d_submit;
+        transfer_event.key = plan.key;
+        transfer_event.operation_id = record->event_generation;
+        transfer_event.source_generation = info.chunk.generation;
+        transfer_event.slot_generation = staging.generation;
+        transfer_event.path = backing_path(plan.key);
+        transfer_event.from_representation = info.chunk.representation;
+        transfer_event.logical_bytes = valid;
+        transfer_event.physical_bytes = valid;
+        transfer_event.reason = info.chunk.representation == BackingRepresentation::lz4_blocks
+                                    ? "cpu_decoded_raw_payload_enqueued"
+                                    : "raw_host_payload_enqueued";
+        transfer_event.speculative = speculative;
+        raw_h2d_trace = transfer_event;
+        emit_compression_trace(*raw_h2d_trace);
+        telemetry_.pcie_h2d_payload_bytes += valid;
+        telemetry_.pcie_h2d_bytes += valid;
+      }
+      telemetry_.h2d_bytes += valid;
+      telemetry_.logical_h2d_bytes += valid;
+    }
+    if (!codec_transfer_completed) {
+      if (const cuda::abi::Result code = api_.event_record_(staging.done, h2d_stream_);
           code != cuda::abi::success) {
         async_resources_quarantined_ = true;
         frame.quarantined = true;
         quarantine_mapping(*owner);
-        return poison_cuda("cache", "cuMemcpyHtoDAsync", code);
+        return poison_cuda("cache", "cuEventRecord(h2d)", code);
       }
-      telemetry_.h2d_bytes += valid;
-    }
-    if (const cuda::abi::Result code = api_.event_record_(staging.done, h2d_stream_);
-        code != cuda::abi::success) {
-      async_resources_quarantined_ = true;
-      frame.quarantined = true;
-      quarantine_mapping(*owner);
-      return poison_cuda("cache", "cuEventRecord(h2d)", code);
-    }
-    if (const RuntimeStatus status = wait_event(staging.done, "h2d_complete");
-        status != RuntimeStatus::success) {
-      return status;
+      if (const RuntimeStatus status = wait_event(staging.done, "h2d_complete");
+          status != RuntimeStatus::success) {
+        return status;
+      }
+      if (raw_h2d_started != Clock::time_point{} && valid != 0U) {
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - raw_h2d_started);
+        observe_latency_per_byte(raw_h2d_us_per_byte_, valid, elapsed);
+        if (transfer_content_identity != 0U) {
+          CompressionCostModel& model = cost_models_.try_emplace(plan.key).first->second;
+          if (model.generation() != transfer_content_identity) {
+            model.reset(transfer_content_identity);
+          }
+          (void)model.observe(transfer_content_identity,
+                              CostObservation{CompressionPath::raw, valid, valid, 0.0, 0.0,
+                                              static_cast<double>(elapsed.count()) / 1000.0});
+        }
+      }
     }
     record->staging_slot.reset();
     if (complete_event_generation(*record, record->event_generation) !=
@@ -2052,6 +3701,11 @@ private:
         transition_chunk_state(record->state, ChunkState::resident_clean) !=
             StateTransitionResult::success) {
       return poison("cache", "h2d_retire", "H2D generation could not retire");
+    }
+    if (raw_h2d_trace.has_value()) {
+      raw_h2d_trace->kind = CompressionTraceEventKind::h2d_retire;
+      raw_h2d_trace->reason = "raw_h2d_generation_retired";
+      emit_compression_trace(*raw_h2d_trace);
     }
     record->speculative = speculative;
     record->sequential_one_touch = owner->hint == ResidencyHint::streaming;
@@ -2079,29 +3733,323 @@ private:
     const std::size_t staging_index = next_d2h_staging_++ % d2h_staging_.size();
     StagingSlot& staging = d2h_staging_[staging_index];
     record->staging_slot = static_cast<std::uint32_t>(h2d_staging_.size() + staging_index);
-    if (const cuda::abi::Result code = api_.memcpy_d2h_async_(
-            staging.memory, frame->address, static_cast<std::size_t>(valid), d2h_stream_);
-        code != cuda::abi::success) {
-      async_resources_quarantined_ = true;
-      frame->quarantined = true;
-      quarantine_mapping(*owner);
-      return poison_cuda("cache", "cuMemcpyDtoHAsync", code);
+    const BackingResult before = backing_store_->inspect(key);
+    if (!before) {
+      return poison("cache", "writeback_commit", "authoritative host chunk disappeared");
     }
-    if (const cuda::abi::Result code = api_.event_record_(staging.done, d2h_stream_);
-        code != cuda::abi::success) {
-      async_resources_quarantined_ = true;
-      frame->quarantined = true;
-      quarantine_mapping(*owner);
-      return poison_cuda("cache", "cuEventRecord(d2h)", code);
+    bool authority_committed = false;
+    bool compression_decided = false;
+    bool codec_candidate_transferred = false;
+    std::uint64_t codec_candidate_physical_bytes = 0;
+    std::optional<NvcompPipelineTicket> codec_commit_ticket;
+    bool codec_candidate_generation_pending = false;
+    HostBudgetReservation codec_candidate_reservation;
+    HostBudgetReservation codec_verification_reservation;
+    bool codec_candidate_reserved = false;
+    const bool gpu_encode_allowed =
+        !config_.forced_compression_path.has_value() ||
+        config_.forced_compression_path == CompressionPath::nvcomp_gpu_codec;
+    bool learned_raw_skip = false;
+    if (config_.compression_mode == CompressionMode::adaptive &&
+        !config_.forced_compression_path.has_value() && nvcomp_pipeline_ != nullptr) {
+      const auto model_found = cost_models_.find(key);
+      if (model_found != cost_models_.end()) {
+        const std::uint64_t identity = content_identity(before.chunk.content_token);
+        if (model_found->second.generation() == identity) {
+          const CostDecision learned =
+              model_found->second.decide(CompressionMode::adaptive, valid, true, true);
+          // A generation-scoped never-compress mark is terminal. Otherwise require both the raw
+          // and GPU paths to have enough samples before suppressing a real codec probe: a raw
+          // decision caused merely by missing GPU calibration must not disable compression.
+          learned_raw_skip = learned.never_compress ||
+                             (learned.path == CompressionPath::raw && learned.raw.confident &&
+                              learned.nvcomp_gpu_codec.confident);
+        }
+      }
+      if (learned_raw_skip) {
+        compression_decided = true;
+        if (model_found->second.never_compress()) {
+          ++telemetry_.never_compress_decisions;
+        } else {
+          ++telemetry_.raw_path_decisions;
+        }
+      }
     }
-    if (const RuntimeStatus status = wait_event(staging.done, "d2h_complete");
-        status != RuntimeStatus::success) {
-      return status;
+    if (config_.compression_mode != CompressionMode::disabled && nvcomp_pipeline_ != nullptr &&
+        gpu_encode_allowed && !learned_raw_skip) {
+      const std::optional<std::uint64_t> maximum_candidate_charge =
+          maximum_raw_backing_charge(valid);
+      const HostBudgetStatus candidate_budget_status =
+          maximum_candidate_charge.has_value()
+              ? backing_store_->budget().reserve(HostBudgetCategory::conversion_scratch,
+                                                 *maximum_candidate_charge,
+                                                 codec_candidate_reservation)
+              : HostBudgetStatus::reservation_overflow;
+      const HostBudgetStatus verification_budget_status =
+          candidate_budget_status == HostBudgetStatus::success
+              ? backing_store_->budget().reserve(HostBudgetCategory::conversion_scratch,
+                                                 compression_block_bytes,
+                                                 codec_verification_reservation)
+              : candidate_budget_status;
+      if (candidate_budget_status != HostBudgetStatus::success ||
+          verification_budget_status != HostBudgetStatus::success) {
+        if (candidate_budget_status == HostBudgetStatus::success) {
+          (void)backing_store_->budget().release(codec_candidate_reservation);
+        }
+        ++telemetry_.gpu_codec_fallbacks;
+      } else {
+        codec_candidate_reserved = true;
+        const NvcompPipelineTelemetry codec_before = nvcomp_pipeline_->telemetry();
+        NvcompPipelineTicket ticket;
+        const auto started = Clock::now();
+        NvcompEncodeRequest encode_request{frame->address, valid, before.chunk.generation,
+                                           std::nullopt};
+        encode_request.key = key;
+        encode_request.path = CompressionPath::nvcomp_gpu_codec;
+        encode_request.speculative = record->speculative;
+        NvcompPipelineStatus codec_status = nvcomp_pipeline_->encode(encode_request, ticket);
+        Lz4BlocksV1 candidate;
+        if (codec_status == NvcompPipelineStatus::success) {
+          codec_status = nvcomp_pipeline_->wait(ticket, &candidate);
+        }
+        (void)backing_store_->budget().release(codec_verification_reservation);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
+        const NvcompPipelineTelemetry codec_after = nvcomp_pipeline_->telemetry();
+        const std::uint64_t candidate_stored_bytes =
+            codec_after.pcie_d2h_payload_bytes - codec_before.pcie_d2h_payload_bytes;
+        const std::uint64_t metadata_bytes =
+            codec_after.pcie_d2h_metadata_bytes - codec_before.pcie_d2h_metadata_bytes;
+        const std::uint64_t pcie_bytes = candidate_stored_bytes + metadata_bytes;
+        telemetry_.pcie_d2h_payload_bytes += candidate_stored_bytes;
+        telemetry_.pcie_d2h_metadata_bytes += metadata_bytes;
+        telemetry_.pcie_d2h_bytes += pcie_bytes;
+        if (codec_status == NvcompPipelineStatus::success) {
+          codec_candidate_transferred = true;
+          codec_commit_ticket = ticket;
+          codec_candidate_generation_pending = true;
+          ++telemetry_.generations_created;
+          ++telemetry_.compression_attempts;
+          ++telemetry_.gpu_encode_operations;
+          ++telemetry_.codec_calibration_samples;
+          telemetry_.gpu_encode_nanoseconds += static_cast<std::uint64_t>(elapsed.count());
+          codec_candidate_physical_bytes = candidate_stored_bytes;
+          const double raw_transfer_us = raw_h2d_us_per_byte_ * static_cast<double>(valid);
+          const double candidate_us = static_cast<double>(elapsed.count()) / 1000.0;
+          const double compressed_transfer_us =
+              raw_h2d_us_per_byte_ * static_cast<double>(candidate_stored_bytes);
+          const double encode_us = std::max(0.0, candidate_us - compressed_transfer_us);
+          const double decode_us = gpu_decode_us_per_byte_ * static_cast<double>(valid);
+          const auto reuse_found = chunk_reuse_counts_.find(key);
+          const std::uint64_t reuse_count =
+              reuse_found == chunk_reuse_counts_.end() ? 0U : reuse_found->second;
+          CompressionCostModel& model = cost_models_.try_emplace(key).first->second;
+          const std::uint64_t identity = content_identity(candidate.content_token);
+          if (model.generation() != identity) {
+            model.reset(identity);
+          }
+          (void)model.observe(identity, CostObservation{CompressionPath::raw, valid, valid, 0.0,
+                                                        0.0, raw_transfer_us, 0.0, 0.0, 0.0, 0.0,
+                                                        1.0, reuse_count, true});
+          (void)model.observe(identity, CostObservation{CompressionPath::nvcomp_gpu_codec, valid,
+                                                        candidate_stored_bytes, encode_us,
+                                                        decode_us, compressed_transfer_us, 0.0, 0.0,
+                                                        0.0, 0.0, 1.0, reuse_count, true});
+          const bool favorable = model.record_probe(identity, CompressionPath::nvcomp_gpu_codec,
+                                                    raw_transfer_us, candidate_us + decode_us);
+          const CostDecision cost = model.decide(config_.compression_mode, valid, true, true);
+          const bool select_compressed = config_.compression_mode != CompressionMode::adaptive ||
+                                         config_.forced_compression_path.has_value() ||
+                                         (favorable && !cost.calibration_required &&
+                                          cost.path == CompressionPath::nvcomp_gpu_codec);
+
+          if (select_compressed) {
+            const BackingResult compressed = backing_store_->commit_lz4_blocks(
+                key, before.chunk.generation, std::move(candidate), &codec_candidate_reservation);
+            if (compressed) {
+              codec_candidate_reserved = false;
+              release_spill(key);
+              authority_committed = true;
+              compression_decided = true;
+              ++telemetry_.compression_commits;
+              ++telemetry_.generations_committed;
+              codec_candidate_generation_pending = false;
+              set_backing_path(key, CompressionPath::nvcomp_gpu_codec);
+              const NvcompPipelineStatus acknowledged =
+                  nvcomp_pipeline_->acknowledge_host_commit(ticket);
+              if (acknowledged != NvcompPipelineStatus::success) {
+                async_resources_quarantined_ = nvcomp_pipeline_->quarantined();
+                frame->quarantined = true;
+                quarantine_mapping(*owner);
+                return poison("codec", "acknowledge_host_commit",
+                              nvcomp_pipeline_->error().c_str());
+              }
+              codec_commit_ticket.reset();
+              ++telemetry_.gpu_lz4_decisions;
+            } else {
+              ++telemetry_.atomic_commit_failures;
+              ++telemetry_.gpu_codec_fallbacks;
+            }
+          } else {
+            // The encoded candidate was fully verified, but adaptive policy predicts raw to be
+            // faster. Preserve the pre-admitted spill and perform a direct raw D2H below; do not
+            // transiently make the compressed candidate authoritative only to decode it on CPU.
+            compression_decided = true;
+            ++telemetry_.raw_fallbacks;
+            if (model.never_compress()) {
+              ++telemetry_.never_compress_decisions;
+            } else {
+              ++telemetry_.raw_path_decisions;
+            }
+          }
+          sync_codec_telemetry();
+        } else if (codec_status == NvcompPipelineStatus::quarantined ||
+                   nvcomp_pipeline_->quarantined()) {
+          (void)backing_store_->budget().release(codec_candidate_reservation);
+          codec_candidate_reserved = false;
+          sync_codec_telemetry();
+          async_resources_quarantined_ = true;
+          frame->quarantined = true;
+          quarantine_mapping(*owner);
+          return poison("codec", "nvcomp_encode", nvcomp_pipeline_->error().c_str());
+        } else {
+          ++telemetry_.gpu_codec_fallbacks;
+        }
+        if (codec_candidate_reserved) {
+          if (backing_store_->budget().release(codec_candidate_reservation) !=
+              HostBudgetStatus::success) {
+            if (codec_commit_ticket.has_value()) {
+              (void)nvcomp_pipeline_->quarantine_uncommitted(*codec_commit_ticket);
+              async_resources_quarantined_ = true;
+              frame->quarantined = true;
+              quarantine_mapping(*owner);
+            }
+            return poison("compression", "discard_candidate",
+                          "GPU codec candidate retained an unknown host-budget reservation");
+          }
+          codec_candidate_reserved = false;
+        }
+      }
     }
-    std::memcpy(static_cast<std::byte*>(owner->backing->data()) +
-                    key.chunk_index * config_.chunk_bytes,
-                staging.memory, static_cast<std::size_t>(valid));
-    owner->host_valid[static_cast<std::size_t>(key.chunk_index)] = 1U;
+
+    std::optional<CompressionTraceEvent> raw_d2h_trace;
+    if (!authority_committed) {
+      if (codec_candidate_transferred) {
+        // The verified compressed candidate crossed PCIe but was rejected or failed its atomic
+        // authority commit. Count that full logical attempt separately from the raw spill D2H
+        // below so logical/physical transfer reconciliation does not hide double transfers.
+        telemetry_.logical_d2h_bytes = saturating_add(telemetry_.logical_d2h_bytes, valid);
+        telemetry_.rejected_candidate_logical_d2h_bytes =
+            saturating_add(telemetry_.rejected_candidate_logical_d2h_bytes, valid);
+      }
+      if (staging.generation == std::numeric_limits<std::uint64_t>::max()) {
+        if (codec_commit_ticket.has_value() && nvcomp_pipeline_ != nullptr) {
+          (void)nvcomp_pipeline_->quarantine_uncommitted(*codec_commit_ticket);
+        }
+        async_resources_quarantined_ = true;
+        frame->quarantined = true;
+        quarantine_mapping(*owner);
+        return poison("cache", "d2h_staging_generation", "D2H staging generation overflowed");
+      }
+      ++staging.generation;
+      if (const cuda::abi::Result code = api_.memcpy_d2h_async_(
+              staging.memory, frame->address, static_cast<std::size_t>(valid), d2h_stream_);
+          code != cuda::abi::success) {
+        async_resources_quarantined_ = true;
+        frame->quarantined = true;
+        quarantine_mapping(*owner);
+        return poison_cuda("cache", "cuMemcpyDtoHAsync", code);
+      }
+      CompressionTraceEvent transfer_event;
+      transfer_event.kind = CompressionTraceEventKind::d2h_submit;
+      transfer_event.key = key;
+      transfer_event.operation_id = record->event_generation;
+      transfer_event.source_generation = before.chunk.generation;
+      if (before.chunk.generation != std::numeric_limits<std::uint64_t>::max()) {
+        transfer_event.target_generation = before.chunk.generation + 1U;
+      }
+      transfer_event.slot_generation = staging.generation;
+      transfer_event.path = CompressionPath::raw;
+      transfer_event.from_representation = before.chunk.representation;
+      transfer_event.to_representation = BackingRepresentation::raw;
+      transfer_event.logical_bytes = valid;
+      transfer_event.physical_bytes = valid;
+      transfer_event.reason = codec_candidate_transferred
+                                  ? "raw_spill_after_codec_rejection_enqueued"
+                                  : "raw_writeback_enqueued";
+      transfer_event.speculative = record->speculative;
+      raw_d2h_trace = transfer_event;
+      emit_compression_trace(*raw_d2h_trace);
+      if (const cuda::abi::Result code = api_.event_record_(staging.done, d2h_stream_);
+          code != cuda::abi::success) {
+        async_resources_quarantined_ = true;
+        frame->quarantined = true;
+        quarantine_mapping(*owner);
+        return poison_cuda("cache", "cuEventRecord(d2h)", code);
+      }
+      if (const RuntimeStatus status = wait_event(staging.done, "d2h_complete");
+          status != RuntimeStatus::success) {
+        return status;
+      }
+      BackingResult committed;
+      const auto spill = spill_reservations_.find(key);
+      if (spill != spill_reservations_.end()) {
+        const BackingStatus filled = backing_store_->fill_prepared_raw(
+            spill->second.backing,
+            std::span<const std::byte>{static_cast<const std::byte*>(staging.memory),
+                                       static_cast<std::size_t>(valid)});
+        if (filled != BackingStatus::success) {
+          const std::string filled_name{backing_status_name(filled)};
+          return poison("cache", "fill_raw_spill", filled_name.c_str());
+        }
+        committed = backing_store_->commit_prepared_raw(
+            key, before.chunk.generation, spill->second.backing, &spill->second.reservation);
+        if (committed) {
+          spill_reservations_.erase(spill);
+          telemetry_.spill_reserved_bytes = backing_store_->budget().snapshot().spill_bytes;
+        }
+      } else {
+        committed = backing_store_->replace_raw(
+            key, before.chunk.generation,
+            std::span<const std::byte>{static_cast<const std::byte*>(staging.memory),
+                                       static_cast<std::size_t>(valid)});
+      }
+      if (!committed) {
+        if (codec_commit_ticket.has_value() && nvcomp_pipeline_ != nullptr) {
+          (void)nvcomp_pipeline_->quarantine_uncommitted(*codec_commit_ticket);
+          async_resources_quarantined_ = true;
+          frame->quarantined = true;
+          quarantine_mapping(*owner);
+        }
+        return fail(backing_runtime_status(committed.status), "cache", "writeback_commit",
+                    std::string(backing_status_name(committed.status)));
+      }
+      set_backing_path(key, CompressionPath::raw);
+      if (codec_commit_ticket.has_value() && nvcomp_pipeline_ != nullptr) {
+        const NvcompPipelineStatus acknowledged =
+            nvcomp_pipeline_->acknowledge_host_commit(*codec_commit_ticket);
+        if (acknowledged != NvcompPipelineStatus::success) {
+          async_resources_quarantined_ = nvcomp_pipeline_->quarantined();
+          frame->quarantined = true;
+          quarantine_mapping(*owner);
+          return poison("codec", "acknowledge_host_commit", nvcomp_pipeline_->error().c_str());
+        }
+        if (codec_candidate_generation_pending) {
+          ++telemetry_.generations_discarded;
+          emit_generation_discard(key, codec_commit_ticket->operation_id, before.chunk,
+                                  before.chunk.generation + 1U,
+                                  codec_commit_ticket->slot_generation,
+                                  CompressionPath::nvcomp_gpu_codec, codec_candidate_physical_bytes,
+                                  "gpu_candidate_raw_fallback_committed", record->speculative);
+          codec_candidate_generation_pending = false;
+        }
+        codec_commit_ticket.reset();
+      }
+      ++telemetry_.generations_created;
+      ++telemetry_.generations_committed;
+      telemetry_.pcie_d2h_payload_bytes += valid;
+      telemetry_.pcie_d2h_bytes += valid;
+    }
     record->staging_slot.reset();
     if (complete_event_generation(*record, record->event_generation) !=
             EventGenerationResult::success ||
@@ -2109,8 +4057,26 @@ private:
             StateTransitionResult::success) {
       return poison("cache", "writeback_retire", "D2H generation could not retire");
     }
+    if (raw_d2h_trace.has_value()) {
+      raw_d2h_trace->kind = CompressionTraceEventKind::d2h_retire;
+      raw_d2h_trace->reason = "raw_d2h_generation_committed";
+      emit_compression_trace(*raw_d2h_trace);
+    }
     telemetry_.d2h_bytes += valid;
+    telemetry_.logical_d2h_bytes += valid;
+    if (owner->hint == ResidencyHint::hot) {
+      telemetry_.hot_allocation_d2h_bytes += valid;
+    } else {
+      telemetry_.non_hot_allocation_d2h_bytes += valid;
+    }
     ++telemetry_.dirty_writebacks;
+    if (!compression_decided) {
+      if (const RuntimeStatus status = consider_compression(key);
+          status != RuntimeStatus::success) {
+        return status;
+      }
+    }
+    refresh_host_telemetry();
     return RuntimeStatus::success;
   }
 
@@ -2208,8 +4174,7 @@ private:
     Frame* frame = frame_for(key);
     if (record == nullptr || owner == nullptr || frame == nullptr ||
         record->state != ChunkState::resident_dirty || !is_victim_eligible(*record) ||
-        record->event_generation == 0 ||
-        record->completed_generation != record->event_generation) {
+        record->event_generation == 0 || record->completed_generation != record->event_generation) {
       ++telemetry_.unsafe_remaps;
       return poison("cache", "discard_dead",
                     "dirty dead chunk lacks a completed last-use event boundary");
@@ -2298,7 +4263,14 @@ private:
   std::uint64_t frame_capacity_ = 0;
   std::uint64_t maximum_frame_capacity_ = 0;
   std::uint64_t configured_target_cap_ = 0;
+  std::uint64_t fixed_device_reserve_bytes_ = 0;
+  std::uint64_t codec_managed_device_bytes_ = 0;
   std::uint32_t consecutive_growth_samples_ = 0;
+  std::uint32_t consecutive_codec_restore_samples_ = 0;
+  std::uint64_t suspended_codec_device_bytes_ = 0;
+  std::uint64_t suspended_codec_pinned_bytes_ = 0;
+  bool codec_pipeline_suspended_for_budget_ = false;
+  NvcompPipelineTelemetry retired_codec_telemetry_;
   bool wddm_budget_active_ = false;
   Clock::time_point last_budget_sample_{};
 #ifdef _WIN32
@@ -2307,6 +4279,26 @@ private:
 #endif
   std::uint64_t policy_sequence_ = 0;
   std::unordered_map<std::uint64_t, std::unique_ptr<Allocation>> allocations_;
+  std::unique_ptr<BlockCodec> backing_codec_;
+  std::unique_ptr<HostBackingStore> backing_store_;
+  std::unique_ptr<CpuCodecWorkerPool> cpu_codec_pool_;
+  std::uint32_t cpu_codec_queue_capacity_ = 0;
+  std::uint64_t observed_cpu_codec_blocks_submitted_ = 0;
+  bool cpu_codec_timeout_ = false;
+  HostBudgetReservation pinned_budget_reservation_;
+  bool pinned_budget_active_ = false;
+  HostBudgetReservation codec_pinned_budget_reservation_;
+  bool codec_pinned_budget_active_ = false;
+  std::unordered_map<ChunkKey, RawSpill, ChunkKeyHash> spill_reservations_;
+  std::unordered_map<ChunkKey, CompressionCostModel, ChunkKeyHash> cost_models_;
+  std::unordered_map<ChunkKey, std::uint64_t, ChunkKeyHash> chunk_reuse_counts_;
+  double raw_h2d_us_per_byte_ = 1'000'000.0 / 12'000'000'000.0;
+  double cpu_decode_us_per_byte_ = 0.0;
+  double gpu_decode_us_per_byte_ = 0.0;
+  std::unique_ptr<nvcomp::NvcompApi> owned_nvcomp_api_;
+  nvcomp::NvcompApi* nvcomp_api_ = nullptr;
+  bool nvcomp_available_ = false;
+  std::unique_ptr<NvcompLz4Pipeline> nvcomp_pipeline_;
   std::vector<Frame> frames_;
   std::unique_ptr<VictimPolicy> policy_;
   cuda::abi::Stream h2d_stream_ = nullptr;
@@ -2367,12 +4359,10 @@ RuntimeStatus Runtime::acquire_external(const ExternalLeaseRequest& request,
                                         ExternalLease& output) {
   return impl_->acquire_external(request, output);
 }
-RuntimeStatus Runtime::seal_external(const ExternalLeaseId lease_id,
-                                     const ExternalSealMode mode) {
+RuntimeStatus Runtime::seal_external(const ExternalLeaseId lease_id, const ExternalSealMode mode) {
   return impl_->seal_external(lease_id, mode);
 }
-RuntimeStatus Runtime::poll_external(const ExternalLeaseId lease_id,
-                                     ExternalLeasePoll& output) {
+RuntimeStatus Runtime::poll_external(const ExternalLeaseId lease_id, ExternalLeasePoll& output) {
   return impl_->poll_external(lease_id, output);
 }
 RuntimeStatus Runtime::wait_external(const ExternalLeaseId lease_id,
@@ -2405,6 +4395,10 @@ std::uint64_t Runtime::target_bytes() const noexcept {
 }
 std::optional<std::uint64_t> Runtime::allocation_size(const AllocationId id) const noexcept {
   return impl_->allocation_size(id);
+}
+std::optional<HostChunkInfo> Runtime::backing_info(const AllocationId id,
+                                                   const std::uint64_t chunk_index) const noexcept {
+  return impl_->backing_info(id, chunk_index);
 }
 const RuntimeTelemetry& Runtime::telemetry() const noexcept {
   return impl_->telemetry();

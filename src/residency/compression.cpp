@@ -19,6 +19,7 @@ constexpr std::uint64_t token_low_seed = 0x585652414D4C4F57ULL;
 constexpr std::uint64_t token_high_seed = 0x585652414D484947ULL;
 constexpr std::uint64_t token_low_prime = 0x100000001B3ULL;
 constexpr std::uint64_t token_high_prime = 0x9E3779B185EBCA87ULL;
+constexpr std::uint64_t token_high_word_xor = 0xA5A5A5A5A5A5A5A5ULL;
 
 [[nodiscard]] bool checked_add(const std::uint64_t left, const std::uint64_t right,
                                std::uint64_t& output) noexcept {
@@ -55,10 +56,30 @@ constexpr std::uint64_t token_high_prime = 0x9E3779B185EBCA87ULL;
                                            const std::uint64_t block_index) noexcept {
   std::uint64_t low = token_low_seed;
   std::uint64_t high = token_high_seed;
-  for (const std::byte value : bytes) {
-    const std::uint64_t octet = static_cast<std::uint64_t>(std::to_integer<unsigned char>(value));
-    low = low * token_low_prime + octet + 1U;
-    high = high * token_high_prime + (octet ^ 0xA5U) + 1U;
+  std::size_t offset = 0;
+  while (bytes.size() - offset >= sizeof(std::uint64_t)) {
+    std::uint64_t word = 0;
+    std::memcpy(&word, bytes.data() + static_cast<std::ptrdiff_t>(offset), sizeof(word));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    word = ((word & 0x00000000000000FFULL) << 56U) | ((word & 0x000000000000FF00ULL) << 40U) |
+           ((word & 0x0000000000FF0000ULL) << 24U) | ((word & 0x00000000FF000000ULL) << 8U) |
+           ((word & 0x000000FF00000000ULL) >> 8U) | ((word & 0x0000FF0000000000ULL) >> 24U) |
+           ((word & 0x00FF000000000000ULL) >> 40U) | ((word & 0xFF00000000000000ULL) >> 56U);
+#endif
+    low = low * token_low_prime + word + 1U;
+    high = high * token_high_prime + (word ^ token_high_word_xor) + 1U;
+    offset += sizeof(word);
+  }
+  if (offset != bytes.size()) {
+    std::uint64_t word = 0;
+    std::uint32_t shift = 0;
+    while (offset < bytes.size()) {
+      word |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(bytes[offset])) << shift;
+      shift += 8U;
+      ++offset;
+    }
+    low = low * token_low_prime + word + 1U;
+    high = high * token_high_prime + (word ^ token_high_word_xor) + 1U;
   }
   const std::uint64_t position =
       mix64(block_index ^ (static_cast<std::uint64_t>(bytes.size()) << 32U));
@@ -82,10 +103,10 @@ constexpr std::uint64_t token_high_prime = 0x9E3779B185EBCA87ULL;
     }
     return result_multiplier * initial + result_addend;
   };
-  const std::uint64_t low =
-      advance(token_low_seed, static_cast<std::uint64_t>(size), token_low_prime, 1);
+  const std::uint64_t words = (static_cast<std::uint64_t>(size) + 7U) / 8U;
+  const std::uint64_t low = advance(token_low_seed, words, token_low_prime, 1);
   const std::uint64_t high =
-      advance(token_high_seed, static_cast<std::uint64_t>(size), token_high_prime, 0xA5U + 1U);
+      advance(token_high_seed, words, token_high_prime, token_high_word_xor + 1U);
   const std::uint64_t position = mix64(block_index ^ (static_cast<std::uint64_t>(size) << 32U));
   return {mix64(high ^ position), mix64(low + position)};
 }
@@ -1611,10 +1632,9 @@ HostBackingStore::commit_lz4_blocks(const ChunkKey key, const std::uint64_t expe
     if (replacement->stored_payload_bytes > replacement->valid_bytes) {
       return {BackingStatus::corrupt_data, current};
     }
-    const BackingStatus validated = validate_image_blocks(*replacement, *impl_->codec);
-    if (validated != BackingStatus::success) {
-      return {validated, current};
-    }
+    // The loop above already decoded every block, recomputed every block token, and reconciled the
+    // aggregate content token. Re-running validate_image_blocks() here would duplicate the complete
+    // trust-boundary verification before the same immutable image is atomically committed.
     return impl_->commit_existing(key, expected_generation, std::move(replacement),
                                   candidate_reservation);
   } catch (const std::bad_alloc&) {
@@ -1708,6 +1728,24 @@ void observe_ewma(double& target, const double sample, const double alpha,
 CompressionCostModel::CompressionCostModel(const double ewma_alpha)
     : impl_(std::make_unique<Impl>()) {
   impl_->alpha = ewma_alpha;
+}
+
+std::optional<ReuseProbeForecast>
+forecast_clean_reuse_probe(const double raw_transfer_us, const double candidate_encode_us,
+                           const double candidate_decode_us, const double candidate_transfer_us,
+                           const std::uint64_t reuse_count) noexcept {
+  if (!finite_nonnegative(raw_transfer_us) || !finite_nonnegative(candidate_encode_us) ||
+      !finite_nonnegative(candidate_decode_us) || !finite_nonnegative(candidate_transfer_us)) {
+    return std::nullopt;
+  }
+  const double reuse_cycles = 1.0 + static_cast<double>(reuse_count);
+  const double raw_total_us = reuse_cycles * raw_transfer_us;
+  const double candidate_total_us =
+      candidate_encode_us + reuse_cycles * (candidate_decode_us + candidate_transfer_us);
+  if (!finite_nonnegative(raw_total_us) || !finite_nonnegative(candidate_total_us)) {
+    return std::nullopt;
+  }
+  return ReuseProbeForecast{raw_total_us, candidate_total_us};
 }
 
 CompressionCostModel::~CompressionCostModel() = default;

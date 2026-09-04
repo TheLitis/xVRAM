@@ -1,0 +1,21 @@
+#pragma once
+
+#include <filesystem>
+#include <string>
+
+namespace xvram::platform {
+
+struct FileSha256Result {
+  std::string digest;
+  std::string error;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return !digest.empty();
+  }
+};
+
+// Hash the bytes currently stored at an exact filesystem path. The lowercase hexadecimal digest
+// is returned only after the whole file has been read successfully.
+[[nodiscard]] FileSha256Result sha256_file(const std::filesystem::path& path);
+
+} // namespace xvram::platform

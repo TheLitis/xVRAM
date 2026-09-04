@@ -1,8 +1,19 @@
 #include "platform/nvcomp/nvcomp_api.hpp"
 
+#include "platform/sha256.hpp"
+
 #include <array>
+#include <cctype>
 #include <filesystem>
+#include <string_view>
+#include <system_error>
 #include <utility>
+
+#include <nvcomp/version.h>
+
+#ifndef XVRAM_NVCOMP_LIBRARY_SHA256
+#error "XVRAM_NVCOMP_LIBRARY_SHA256 must pin the staged nvCOMP GPU shared library"
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -15,6 +26,28 @@
 
 namespace xvram::nvcomp {
 namespace {
+
+constexpr std::string_view pinned_library_sha256{XVRAM_NVCOMP_LIBRARY_SHA256};
+constexpr std::string_view pinned_package_version{"5.3.0.16"};
+
+[[nodiscard]] bool is_sha256(const std::string_view value) noexcept {
+  if (value.size() != 64U) {
+    return false;
+  }
+  for (const char character : value) {
+    if (!std::isxdigit(static_cast<unsigned char>(character))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] std::string lowercase(std::string value) {
+  for (char& character : value) {
+    character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  }
+  return value;
+}
 
 [[nodiscard]] std::filesystem::path module_directory() {
 #ifdef _WIN32
@@ -39,20 +72,35 @@ namespace {
 #endif
 }
 
-[[nodiscard]] bool open_app_local(platform::DynamicLibrary& library) {
-  const std::filesystem::path directory = module_directory();
+[[nodiscard]] bool find_app_local(std::filesystem::path& loaded_path) {
+  std::filesystem::path directory = module_directory();
   if (directory.empty()) {
     return false;
   }
+  if (directory.is_relative()) {
+    std::error_code error;
+    directory = std::filesystem::absolute(directory, error);
+    if (error) {
+      return false;
+    }
+  }
 #ifdef _WIN32
   constexpr std::array names{L"nvcomp64_5.dll"};
+  const std::array directories{directory};
 #else
   constexpr std::array names{"libnvcomp.so.5", "libnvcomp.so"};
+  // Executables are installed in bin while shared libraries live in the sibling lib directory.
+  // Shared xVRAM libraries continue to find nvCOMP directly beside themselves.
+  const std::array directories{directory, directory.parent_path() / "lib"};
 #endif
-  for (const auto* name : names) {
-    const std::filesystem::path candidate = directory / name;
-    if (std::filesystem::is_regular_file(candidate) && library.open_absolute(candidate)) {
-      return true;
+  for (const std::filesystem::path& search_directory : directories) {
+    for (const auto* name : names) {
+      const std::filesystem::path candidate = search_directory / name;
+      std::error_code error;
+      if (std::filesystem::is_regular_file(candidate, error) && !error) {
+        loaded_path = candidate;
+        return true;
+      }
     }
   }
   return false;
@@ -79,26 +127,39 @@ NvcompLoadResult NvcompApi::load(const NvcompLoadOptions& options) {
   }
 
   const bool explicit_path = !options.library.empty();
-  bool opened = explicit_path
-                    ? library_.open_absolute(options.library)
-#ifdef _WIN32
-                    : library_.open_system({"nvcomp64_5.dll"});
-#else
-                    : library_.open_system({"libnvcomp.so.5", "libnvcomp.so"});
-#endif
+  std::filesystem::path loaded_path = options.library;
+  if (!explicit_path && !find_app_local(loaded_path)) {
+    status_ = NvcompLoadStatus::library_unavailable;
+    error_ = "app-local nvCOMP runtime was not found beside xVRAM";
+    return {status_, true};
+  }
+
+  // Verify before invoking the OS loader so a modified binary cannot run its module initializer,
+  // then verify the same path again after loading so telemetry describes the file actually chosen
+  // by the app-local resolver.
+  if (!validate_integrity(loaded_path, options)) {
+    return {status_, true};
+  }
+  const bool opened = library_.open_absolute(loaded_path);
   if (opened) {
-    source_ = explicit_path ? NvcompLibrarySource::explicit_path : NvcompLibrarySource::system;
-  } else if (!explicit_path && open_app_local(library_)) {
-    opened = true;
-    source_ = NvcompLibrarySource::app_local;
+    source_ = explicit_path ? NvcompLibrarySource::explicit_path : NvcompLibrarySource::app_local;
   }
   if (!opened) {
+    integrity_verified_ = false;
+    library_sha256_.clear();
     status_ = NvcompLoadStatus::library_unavailable;
     error_ = library_.error();
+    if (error_.empty()) {
+      error_ = "app-local nvCOMP runtime was not found beside xVRAM";
+    }
     return {status_, true};
   }
 
   loaded_name_ = library_.loaded_name();
+  if (!validate_integrity(loaded_path, options)) {
+    library_.close();
+    return {status_, true};
+  }
   resolve_symbols();
   validate_dispatch();
   validate_version();
@@ -119,6 +180,18 @@ NvcompLibrarySource NvcompApi::library_source() const noexcept {
 
 const std::string& NvcompApi::loaded_name() const noexcept {
   return loaded_name_;
+}
+
+const std::string& NvcompApi::library_sha256() const noexcept {
+  return library_sha256_;
+}
+
+const std::string& NvcompApi::version_string() const noexcept {
+  return version_string_;
+}
+
+bool NvcompApi::integrity_verified() const noexcept {
+  return integrity_verified_;
 }
 
 const std::string& NvcompApi::error() const noexcept {
@@ -154,8 +227,7 @@ void NvcompApi::resolve_symbols() {
   require(dispatch_.lz4_compress_async, "nvcompBatchedLZ4CompressAsync");
   require(dispatch_.lz4_decompress_get_required_alignments,
           "nvcompBatchedLZ4DecompressGetRequiredAlignments");
-  require(dispatch_.lz4_decompress_get_temp_size,
-          "nvcompBatchedLZ4DecompressGetTempSizeAsync");
+  require(dispatch_.lz4_decompress_get_temp_size, "nvcompBatchedLZ4DecompressGetTempSizeAsync");
   require(dispatch_.lz4_decompress_async, "nvcompBatchedLZ4DecompressAsync");
 }
 
@@ -176,8 +248,7 @@ void NvcompApi::validate_dispatch() {
   check(dispatch_.lz4_compress_async, "nvcompBatchedLZ4CompressAsync");
   check(dispatch_.lz4_decompress_get_required_alignments,
         "nvcompBatchedLZ4DecompressGetRequiredAlignments");
-  check(dispatch_.lz4_decompress_get_temp_size,
-        "nvcompBatchedLZ4DecompressGetTempSizeAsync");
+  check(dispatch_.lz4_decompress_get_temp_size, "nvcompBatchedLZ4DecompressGetTempSizeAsync");
   check(dispatch_.lz4_decompress_async, "nvcompBatchedLZ4DecompressAsync");
   if (!missing_symbols_.empty()) {
     status_ = NvcompLoadStatus::symbols_missing;
@@ -194,10 +265,41 @@ void NvcompApi::validate_version() {
   }
   properties_ = {};
   const nvcompStatus_t result = dispatch_.get_properties(&properties_);
-  if (result != nvcompSuccess || properties_.version < 5300U || properties_.version >= 6000U) {
+  if (result != nvcompSuccess || properties_.version != NVCOMP_VER) {
     status_ = NvcompLoadStatus::incompatible_version;
-    error_ = "xVRAM requires nvCOMP 5.3 or newer within major version 5";
+    error_ = "xVRAM requires exact nvCOMP semantic version 5.3.0";
+    version_string_.clear();
+    return;
   }
+  version_string_ =
+      source_ == NvcompLibrarySource::injected ? "5.3.0" : std::string(pinned_package_version);
+}
+
+bool NvcompApi::validate_integrity(const std::filesystem::path& loaded_path,
+                                   const NvcompLoadOptions& options) {
+  integrity_verified_ = false;
+  const std::string expected =
+      lowercase(options.expected_library_sha256.value_or(std::string(pinned_library_sha256)));
+  if (!is_sha256(expected)) {
+    status_ = NvcompLoadStatus::integrity_failure;
+    error_ = "the configured nvCOMP shared-library SHA-256 pin is malformed";
+    return false;
+  }
+
+  const platform::FileSha256Result actual = platform::sha256_file(loaded_path);
+  if (!actual) {
+    status_ = NvcompLoadStatus::integrity_failure;
+    error_ = "nvCOMP shared-library SHA-256 verification failed: " + actual.error;
+    return false;
+  }
+  library_sha256_ = actual.digest;
+  if (library_sha256_ != expected) {
+    status_ = NvcompLoadStatus::integrity_failure;
+    error_ = "the loaded nvCOMP shared library does not match its SHA-256 pin";
+    return false;
+  }
+  integrity_verified_ = true;
+  return true;
 }
 
 const char* nvcomp_load_status_name(const NvcompLoadStatus status) noexcept {
@@ -210,6 +312,8 @@ const char* nvcomp_load_status_name(const NvcompLoadStatus status) noexcept {
     return "symbols_missing";
   case NvcompLoadStatus::incompatible_version:
     return "incompatible_version";
+  case NvcompLoadStatus::integrity_failure:
+    return "integrity_failure";
   case NvcompLoadStatus::invalid_path:
     return "invalid_path";
   }

@@ -80,6 +80,9 @@ struct CpuCodecResult {
   std::vector<std::byte> output;
   std::size_t input_bytes = 0;
   std::size_t output_bytes = 0;
+  // An encode that would not shrink the input returns the original bytes through output. This
+  // lets the caller build a raw block without a second authoritative-backing read.
+  bool encoded_as_raw = false;
 };
 
 struct CpuCodecPoolTelemetry {

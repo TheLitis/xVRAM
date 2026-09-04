@@ -4,6 +4,9 @@
 
 #include <limits>
 
+static_assert(LZ4_VERSION_NUMBER == 11000,
+              "xVRAM Phase 5 requires the hash-pinned LZ4 1.10.0 codec");
+
 namespace xvram::residency {
 
 CompressionCodec Lz4BlockCodec::codec() const noexcept {
