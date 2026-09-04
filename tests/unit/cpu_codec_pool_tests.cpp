@@ -221,19 +221,34 @@ void deterministic_close_drains_jobs_test() {
 }
 
 void timeout_test() {
+  std::atomic<bool> worker_released{false};
   CpuCodecFunctions functions = passthrough_functions();
-  functions.compress = [](const std::span<const std::byte> input, const std::span<std::byte> output,
-                          std::size_t& written) {
-    std::this_thread::sleep_for(25ms);
+  functions.compress = [&worker_released](const std::span<const std::byte> input,
+                                          const std::span<std::byte> output, std::size_t& written) {
+    worker_released.wait(false, std::memory_order_acquire);
     std::copy(input.begin(), input.end(), output.begin());
     written = input.size();
     return CodecStatus::success;
   };
   CpuCodecWorkerPool pool({1, 1}, std::move(functions));
+  // Release before the pool joins its worker, including assertion failures or stack unwinding.
+  struct WorkerGateRelease {
+    std::atomic<bool>& gate;
+
+    void release() const noexcept {
+      gate.store(true, std::memory_order_release);
+      gate.notify_all();
+    }
+
+    ~WorkerGateRelease() {
+      release();
+    }
+  } release_worker{worker_released};
   CpuCodecTicket ticket;
   CHECK(pool.submit_encode_copy(key, 77, std::vector<std::byte>(32), ticket) ==
         CpuCodecPoolStatus::success);
   CHECK(pool.wait(ticket, 0ms) == CpuCodecPoolStatus::timeout);
+  release_worker.release();
   CpuCodecResult result;
   CHECK(pool.wait(ticket, 5s, &result) == CpuCodecPoolStatus::success);
   CHECK(pool.wait(ticket, -1ms) == CpuCodecPoolStatus::invalid_argument);

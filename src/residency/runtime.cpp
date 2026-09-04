@@ -1844,6 +1844,22 @@ public:
   }
 
 private:
+  [[nodiscard]] std::chrono::nanoseconds
+  compression_cost_duration(const CompressionPath path,
+                            const std::chrono::nanoseconds observed) const noexcept {
+    if (config_.compression_cost_sample) {
+      try {
+        const auto sample = config_.compression_cost_sample(path, observed);
+        if (sample.count() >= 0) {
+          return sample;
+        }
+      } catch (...) {
+        // Test instrumentation must not invalidate measured costs or alter runtime safety.
+      }
+    }
+    return observed;
+  }
+
   void notify_lifecycle_progress() noexcept {
     if (!config_.lifecycle_progress) {
       return;
@@ -2667,7 +2683,10 @@ private:
       const auto elapsed =
           std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
       telemetry_.cpu_encode_nanoseconds += static_cast<std::uint64_t>(elapsed.count());
-      const double encode_us = static_cast<double>(elapsed.count()) / 1000.0;
+      const double encode_us =
+          static_cast<double>(
+              compression_cost_duration(CompressionPath::cpu_lz4_gpu_decode, elapsed).count()) /
+          1000.0;
       if (encoded != BackingStatus::success) {
         if (cpu_codec_timeout_) {
           launches_blocked_ = true;
@@ -3781,7 +3800,8 @@ private:
       if (raw_h2d_started != Clock::time_point{} && valid != 0U) {
         const auto elapsed =
             std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - raw_h2d_started);
-        observe_latency_per_byte(raw_h2d_us_per_byte_, valid, elapsed);
+        const auto cost_elapsed = compression_cost_duration(CompressionPath::raw, elapsed);
+        observe_latency_per_byte(raw_h2d_us_per_byte_, valid, cost_elapsed);
         if (transfer_content_identity != 0U) {
           CompressionCostModel& model = cost_models_.try_emplace(plan.key).first->second;
           if (model.generation() != transfer_content_identity) {
@@ -3789,7 +3809,7 @@ private:
           }
           (void)model.observe(transfer_content_identity,
                               CostObservation{CompressionPath::raw, valid, valid, 0.0, 0.0,
-                                              static_cast<double>(elapsed.count()) / 1000.0});
+                                              static_cast<double>(cost_elapsed.count()) / 1000.0});
         }
       }
     }

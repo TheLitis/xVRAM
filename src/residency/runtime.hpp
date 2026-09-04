@@ -80,6 +80,11 @@ struct RuntimeConfig {
   // Reports exact codec and PCIe generation boundaries without exposing CUDA addresses or native
   // handles. The callback is advisory, may be absent, and is isolated if it throws.
   std::function<void(const CompressionTraceEvent&)> compression_trace;
+  // Internal test seam for cost-model raw-H2D and CPU-candidate durations only. Runtime
+  // telemetry and safety deadlines always retain actual measurements. An unset callback,
+  // negative returned duration, or exception retains the observed cost sample.
+  std::function<std::chrono::nanoseconds(CompressionPath, std::chrono::nanoseconds)>
+      compression_cost_sample;
   // Optional injected dispatch owner for fault/state-machine tests. Production runtimes own and
   // dynamically load an app-local nvCOMP instance when this is null.
   nvcomp::NvcompApi* nvcomp_api = nullptr;

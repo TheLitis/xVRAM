@@ -333,7 +333,10 @@ void cost_model_context_and_phase_switch_tests() {
   CHECK(cpu_pressure.decide(CompressionMode::adaptive, 1000, true, false).path ==
         CompressionPath::raw);
 
-  raw.transfer_us = 130.0;
+  // Test SM contention away from the exact 50 us decision boundary. The conservative
+  // ceil(ratio * bytes) forecast may charge one extra byte when long double retains
+  // the positive rounding error of 400.0 / 1000.0 (as on Linux x86-64).
+  raw.transfer_us = 140.0;
   CostObservation gpu = observation(CompressionPath::nvcomp_gpu_codec, true);
   gpu.sm_opportunity_us = 20.0;
   CompressionCostModel gpu_pressure(1.0);

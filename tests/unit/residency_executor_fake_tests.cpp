@@ -1884,6 +1884,28 @@ void adaptive_cpu_compression_commits_after_reuse_history_test() {
   config.codec_slots = 2;
   config.codec_workers = 2;
   config.nvcomp_api = &unavailable_codec;
+  std::uint64_t raw_cost_samples = 0;
+  std::uint64_t cpu_cost_samples = 0;
+  std::uint64_t observed_cpu_encode_nanoseconds = 0;
+  config.compression_cost_sample =
+      [&](const xvram::residency::CompressionPath path,
+          const std::chrono::nanoseconds observed) -> std::chrono::nanoseconds {
+    if (path == xvram::residency::CompressionPath::raw) {
+      ++raw_cost_samples;
+      return std::chrono::milliseconds(1);
+    }
+    CHECK(path == xvram::residency::CompressionPath::cpu_lz4_gpu_decode);
+    ++cpu_cost_samples;
+    observed_cpu_encode_nanoseconds += static_cast<std::uint64_t>(observed.count());
+    // The incompressible priming probes also cover safe rejection of broken timing hooks.
+    if (cpu_cost_samples == 1U) {
+      return std::chrono::nanoseconds(-1);
+    }
+    if (cpu_cost_samples == 2U) {
+      throw std::bad_alloc{};
+    }
+    return std::chrono::milliseconds(20);
+  };
   xvram::residency::Runtime runtime(api, config);
   CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
 
@@ -1908,6 +1930,9 @@ void adaptive_cpu_compression_commits_after_reuse_history_test() {
   const auto after_priming = runtime.telemetry();
   CHECK(after_priming.cpu_codec_blocks_submitted - before_priming.cpu_codec_blocks_submitted ==
         3U * block_count);
+  CHECK(after_priming.never_compress_decisions == before_priming.never_compress_decisions + 1U);
+  CHECK(cpu_cost_samples == 3U);
+  CHECK(after_priming.cpu_encode_nanoseconds == observed_cpu_encode_nanoseconds);
   CHECK(runtime.release(priming_allocation.id) == xvram::residency::RuntimeStatus::success);
 
   xvram::residency::RuntimeAllocation reused_allocation;
@@ -1932,6 +1957,28 @@ void adaptive_cpu_compression_commits_after_reuse_history_test() {
                 repeated.data(),
                 static_cast<std::size_t>(xvram::residency::compression_block_bytes));
   }
+  // Identical bytes must remain raw without reuse: the fixed 20-ms encode cost loses to one
+  // raw transfer, but is amortized by the hot allocation's 65 accesses. The old historical
+  // queue-peak penalty would still make that hot case lose, even with these fixed samples.
+  xvram::residency::RuntimeAllocation cold_allocation;
+  CHECK(runtime.allocate(test_chunk_bytes, xvram::residency::ResidencyHint::normal,
+                         cold_allocation) == xvram::residency::RuntimeStatus::success);
+  const auto before_cold_write = runtime.telemetry();
+  CHECK(runtime.write(cold_allocation.id, 0, repeated.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto after_cold_write = runtime.telemetry();
+  CHECK(after_cold_write.compression_commits == before_cold_write.compression_commits);
+  CHECK(after_cold_write.cpu_lz4_gpu_decode_decisions ==
+        before_cold_write.cpu_lz4_gpu_decode_decisions);
+  CHECK(after_cold_write.never_compress_decisions ==
+        before_cold_write.never_compress_decisions + 1U);
+  const auto cold_backing = runtime.backing_info(cold_allocation.id, 0);
+  CHECK(cold_backing.has_value());
+  if (cold_backing.has_value()) {
+    CHECK(cold_backing->representation == xvram::residency::BackingRepresentation::raw);
+  }
+  CHECK(runtime.release(cold_allocation.id) == xvram::residency::RuntimeStatus::success);
+
   const auto before_reused_write = runtime.telemetry();
   const xvram::residency::RuntimeStatus reused_write_status =
       runtime.write(reused_allocation.id, 0, repeated.data(), test_chunk_bytes);
@@ -1957,6 +2004,9 @@ void adaptive_cpu_compression_commits_after_reuse_history_test() {
   if (backing.has_value()) {
     CHECK(backing->representation == xvram::residency::BackingRepresentation::lz4_blocks);
   }
+  CHECK(raw_cost_samples != 0U);
+  CHECK(cpu_cost_samples >= 8U);
+  CHECK(after_reused_write.cpu_encode_nanoseconds == observed_cpu_encode_nanoseconds);
 
   CHECK(runtime.release(reused_allocation.id) == xvram::residency::RuntimeStatus::success);
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
