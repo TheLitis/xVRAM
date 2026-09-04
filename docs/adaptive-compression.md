@@ -351,6 +351,13 @@ The build pins and verifies:
 - LZ4 1.10.0 source archive;
 - NVIDIA nvCOMP 5.3.0.16 CUDA 13 redistributable.
 
+Without a full Toolkit, the CUDA host-header dependency consists of both
+`cuda_cudart 13.3.29` and `cuda_crt 13.3.33` from NVIDIA's
+[CUDA 13.3.0 manifest](https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.3.0.json).
+Both archives are hash-pinned. Configure compiles the combined Driver API, Runtime API,
+and nvCOMP headers without linking to a GPU library, so missing CRT headers fail during
+preflight rather than halfway through the build. An installed Toolkit is never modified.
+
 LZ4 is compiled into the residency core. nvCOMP and its companion runtime are copied
 beside compression-enabled targets and installed with their license and notice. Unless
 an internal caller supplies an explicit absolute path, runtime lookup uses the

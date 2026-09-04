@@ -375,7 +375,10 @@ These are manual hardware gates; their scripts alone are not completion evidence
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
-`-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
+`-DXVRAM_FETCH_CUDA_HEADERS=OFF`. The CUDA Runtime headers must include their
+matching `crt/` headers; if stored separately, set `XVRAM_CUDA_CRT_INCLUDE_DIR`
+to the include root containing `crt/host_config.h`. The automatic CUDA 13.3 path
+fetches both `cuda_cudart 13.3.29` and `cuda_crt 13.3.33` with pinned hashes.
 
 Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`,
 `xvram-gemm-bench --help`, `xvram-compression-bench --help`, and

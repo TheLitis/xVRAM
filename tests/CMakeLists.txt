@@ -135,8 +135,7 @@ add_executable(xvram-nvcomp-dispatch-tests unit/nvcomp_dispatch_tests.cpp)
 target_link_libraries(xvram-nvcomp-dispatch-tests PRIVATE xvram_residency_core)
 target_include_directories(xvram-nvcomp-dispatch-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(
-  xvram-nvcomp-dispatch-tests SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
-                                               "${XVRAM_NVCOMP_INCLUDE_DIR}")
+  xvram-nvcomp-dispatch-tests SYSTEM PRIVATE ${XVRAM_NVCOMP_INCLUDE_DIRS})
 target_compile_features(xvram-nvcomp-dispatch-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-nvcomp-dispatch-tests)
 add_test(NAME xvram.nvcomp.dispatch COMMAND xvram-nvcomp-dispatch-tests)
@@ -145,8 +144,7 @@ add_executable(xvram-nvcomp-load-test-helper helpers/nvcomp_load_test_helper.cpp
 target_link_libraries(xvram-nvcomp-load-test-helper PRIVATE xvram_residency_core)
 target_include_directories(xvram-nvcomp-load-test-helper PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(
-  xvram-nvcomp-load-test-helper SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
-                                                  "${XVRAM_NVCOMP_INCLUDE_DIR}")
+  xvram-nvcomp-load-test-helper SYSTEM PRIVATE ${XVRAM_NVCOMP_INCLUDE_DIRS})
 target_compile_definitions(
   xvram-nvcomp-load-test-helper
   PRIVATE "XVRAM_NVCOMP_LIBRARY_SHA256=\"${XVRAM_NVCOMP_LIBRARY_SHA256}\"")
@@ -159,8 +157,7 @@ add_executable(xvram-nvcomp-pipeline-tests unit/nvcomp_pipeline_tests.cpp)
 target_link_libraries(xvram-nvcomp-pipeline-tests PRIVATE xvram_residency_core)
 target_include_directories(xvram-nvcomp-pipeline-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(
-  xvram-nvcomp-pipeline-tests SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
-                                               "${XVRAM_NVCOMP_INCLUDE_DIR}")
+  xvram-nvcomp-pipeline-tests SYSTEM PRIVATE ${XVRAM_NVCOMP_INCLUDE_DIRS})
 target_compile_features(xvram-nvcomp-pipeline-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-nvcomp-pipeline-tests)
 add_test(NAME xvram.nvcomp.pipeline COMMAND xvram-nvcomp-pipeline-tests)
@@ -339,8 +336,7 @@ target_link_libraries(xvram-residency-executor-fake-tests PRIVATE xvram_residenc
 target_include_directories(xvram-residency-executor-fake-tests
                            PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(xvram-residency-executor-fake-tests
-                           SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
-                                          "${XVRAM_NVCOMP_INCLUDE_DIR}")
+                           SYSTEM PRIVATE ${XVRAM_NVCOMP_INCLUDE_DIRS})
 target_compile_features(xvram-residency-executor-fake-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-residency-executor-fake-tests)
 

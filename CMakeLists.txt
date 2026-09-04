@@ -156,6 +156,63 @@ message(
     "Using CUDA headers: ${XVRAM_CUDA_INCLUDE_DIR} (CUDA_VERSION=${XVRAM_CUDA_HEADERS_VERSION})"
 )
 
+# cuda_cudart contains the Driver/Runtime API headers, but CUDA 13 ships their
+# host compiler support headers in a separate cuda_crt archive. nvCOMP includes
+# cuda_runtime.h even in ordinary host-C++ builds. Never alter an installed Toolkit.
+set(XVRAM_CUDA_CRT_INCLUDE_DIR "" CACHE PATH
+    "Optional matching CUDA host compiler include root containing crt/host_config.h")
+# Keep automatic discovery out of the cache: switching Toolkit versions must not
+# silently keep an automatically selected CRT directory from the previous Toolkit.
+set(XVRAM_CUDA_CRT_HEADERS_DIR "${XVRAM_CUDA_CRT_INCLUDE_DIR}")
+if(NOT XVRAM_CUDA_CRT_HEADERS_DIR)
+  unset(XVRAM_CUDA_CRT_HEADERS_DIR)
+  find_path(
+    XVRAM_CUDA_CRT_HEADERS_DIR
+    NAMES crt/host_config.h
+    PATHS "${XVRAM_CUDA_INCLUDE_DIR}"
+    NO_DEFAULT_PATH
+    NO_CACHE)
+endif()
+if(NOT XVRAM_CUDA_CRT_HEADERS_DIR AND XVRAM_FETCH_CUDA_HEADERS)
+  if(NOT XVRAM_CUDA_HEADERS_VERSION EQUAL 13030)
+    message(FATAL_ERROR
+            "Incomplete CUDA Toolkit headers: set XVRAM_CUDA_CRT_INCLUDE_DIR to the matching include directory containing crt/host_config.h")
+  endif()
+  # Both versions belong to NVIDIA's redistrib_13.3.0.json manifest:
+  # cuda_cudart 13.3.29 + cuda_crt 13.3.33.
+  if(WIN32)
+    set(XVRAM_CRT_HEADERS_URL
+        "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.3.33-archive.zip")
+    set(XVRAM_CRT_HEADERS_HASH
+        "SHA256=752C528281A06A0DDF89237D760FFD6ACDE1B9CD59EFC35803C2591127EF55F0")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(XVRAM_CRT_HEADERS_URL
+        "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.3.33-archive.tar.xz")
+    set(XVRAM_CRT_HEADERS_HASH
+        "SHA256=4755D36D24C6EF7697A2D3E1DBB23C4562C9C0D97D48390D4CBD8AB32DEC5B5F")
+  else()
+    message(FATAL_ERROR
+            "Automatic CUDA CRT fetching supports Windows x64 and Linux x86_64 only; set XVRAM_CUDA_CRT_INCLUDE_DIR")
+  endif()
+  message(STATUS "Fetching NVIDIA cuda_crt 13.3.33 host compiler headers")
+  FetchContent_Declare(
+    xvram_cuda_crt_headers
+    URL "${XVRAM_CRT_HEADERS_URL}"
+    URL_HASH "${XVRAM_CRT_HEADERS_HASH}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(xvram_cuda_crt_headers)
+  find_path(
+    XVRAM_CUDA_CRT_HEADERS_DIR
+    NAMES crt/host_config.h
+    PATHS "${xvram_cuda_crt_headers_SOURCE_DIR}/include"
+    NO_DEFAULT_PATH
+    NO_CACHE)
+endif()
+if(NOT EXISTS "${XVRAM_CUDA_CRT_HEADERS_DIR}/crt/host_config.h")
+  message(FATAL_ERROR
+          "crt/host_config.h is required by nvCOMP. Set XVRAM_CUDA_CRT_INCLUDE_DIR or enable XVRAM_FETCH_CUDA_HEADERS.")
+endif()
+
 configure_file(cmake/version.hpp.in generated/xvram/version.hpp @ONLY)
 
 set(XVRAM_SYNTHETIC_OVERLAP_MODULE_VERSION 1)
@@ -361,6 +418,31 @@ foreach(version_component IN ITEMS "MAJOR;5" "MINOR;3" "PATCH;0" "BUILD;16")
 endforeach()
 message(STATUS "Using nvCOMP headers/runtime: ${XVRAM_NVCOMP_REDIST_ROOT}")
 
+set(XVRAM_NVCOMP_INCLUDE_DIRS "${XVRAM_CUDA_INCLUDE_DIR}"
+                             "${XVRAM_CUDA_CRT_HEADERS_DIR}"
+                             "${XVRAM_NVCOMP_INCLUDE_DIR}")
+function(xvram_check_nvcomp_headers)
+  set(CMAKE_REQUIRED_INCLUDES ${XVRAM_NVCOMP_INCLUDE_DIRS})
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+  unset(XVRAM_NVCOMP_HEADERS_COMPILE CACHE)
+  check_cxx_source_compiles(
+    [=[
+      #include <cuda.h>
+      #include <cuda_runtime.h>
+      #include <nvcomp/lz4.h>
+      using Compress = decltype(&nvcompBatchedLZ4CompressAsync);
+      static_assert(sizeof(Compress) == sizeof(void*));
+      int main() { return 0; }
+    ]=]
+    XVRAM_NVCOMP_HEADERS_COMPILE)
+  if(NOT XVRAM_NVCOMP_HEADERS_COMPILE)
+    message(FATAL_ERROR
+            "CUDA Runtime/CRT and nvCOMP headers cannot compile together; check the configured include directories and CMake configure log")
+  endif()
+  unset(XVRAM_NVCOMP_HEADERS_COMPILE CACHE)
+endfunction()
+xvram_check_nvcomp_headers()
+
 if(WIN32)
   set(XVRAM_NVCOMP_OFFICIAL_LIBRARY_SHA256
       "86af6147413d09233c7ac78c968163a1b529c4e22f20c9fd8b8bab7894a29c35")
@@ -511,7 +593,7 @@ add_library(
 target_compile_features(xvram_residency_core PUBLIC cxx_std_20)
 target_include_directories(xvram_residency_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(
-  xvram_residency_core SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}" "${XVRAM_NVCOMP_INCLUDE_DIR}")
+  xvram_residency_core SYSTEM PRIVATE ${XVRAM_NVCOMP_INCLUDE_DIRS})
 target_link_libraries(xvram_residency_core PRIVATE xvram_probe_lib ${XVRAM_LZ4_TARGET})
 target_compile_definitions(
   xvram_residency_core
@@ -909,8 +991,8 @@ if(XVRAM_TORCH_RUNTIME_ENABLED)
 endif()
 install(FILES include/xvram/xvram.h include/xvram/xvram_v2.h include/xvram/torch_allocator.h
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
-install(FILES include/xvram/compression/report.hpp
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram/compression")
+# Report C++ structures are internal, just like the Phase 1-4 report structures.
+# Install their JSON schemas below, not headers declaring unexported C++ functions.
 install(FILES schemas/capability-report-v1.schema.json
               schemas/capability-report-v2.schema.json
               schemas/vmm-poc-report-v1.schema.json
