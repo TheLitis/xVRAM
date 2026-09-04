@@ -48,7 +48,13 @@ class RuntimeState(str, Enum):
 
 
 class StateProvider(ABC):
-    """Describe named, host-resident model state without copying it."""
+    """Describe named host state, optionally producing it in bounded chunks.
+
+    Ordinary CPU modules expose a real storage through :meth:`describe` and do
+    not use the streaming methods. Elastic/meta providers implement
+    :meth:`read_bytes` (or override :meth:`iter_chunks`) so the native backend
+    never needs a second complete raw model copy.
+    """
 
     @abstractmethod
     def describe(self, target: str) -> StateTensorInfo:
@@ -57,6 +63,32 @@ class StateProvider(ABC):
     @abstractmethod
     def targets(self) -> Tuple[str, ...]:
         """Return all available targets in deterministic order."""
+
+    def read_bytes(self, target: str, offset_bytes: int, length_bytes: int) -> Any:
+        """Return one contiguous CPU byte tensor for an elastic state target."""
+
+        del target, offset_bytes, length_bytes
+        raise NotImplementedError("elastic StateProvider must implement read_bytes()")
+
+    def iter_chunks(
+        self, target: str, chunk_bytes: int
+    ) -> Iterable[Tuple[int, Any]]:
+        """Yield ``(target-relative offset, CPU byte tensor)`` chunks.
+
+        Providers may override this for native storage formats. The default
+        implementation is bounded and delegates to :meth:`read_bytes`.
+        """
+
+        size = int(chunk_bytes)
+        if size <= 0:
+            raise ValueError("chunk_bytes must be positive")
+        info = self.describe(target)
+        logical_bytes = int(info.spec.numel) * int(info.spec.element_size)
+        offset = 0
+        while offset < logical_bytes:
+            length = min(size, logical_bytes - offset)
+            yield offset, self.read_bytes(target, offset, length)
+            offset += length
 
 
 class CpuModuleStateProvider(StateProvider):
@@ -432,7 +464,7 @@ def run_benchmark_plan(
     progress: Optional[Callable[[Mapping[str, Any]], None]] = None,
     trace: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
 ) -> Dict[str, Any]:
-    """Execute one isolated Phase 4b acceptance plan and build its v1 report.
+    """Execute one isolated acceptance plan and build its selected report contract.
 
     Imports that can initialize PyTorch or CUDA stay inside this worker-only
     entry point.  The controller can therefore import :mod:`xvram.torch_runtime`
@@ -459,6 +491,7 @@ def run_benchmark_plan(
         EXIT_USAGE,
         empty_report,
         finalize_proof,
+        report_schema_version,
         validate_report_envelope,
     )
     from .torch_workload import Llama2LikeConfig
@@ -466,6 +499,7 @@ def run_benchmark_plan(
     emit_progress = progress or (lambda _event: None)
     emit_trace_batch = trace or (lambda _records: None)
     config = dict(configuration)
+    report_version = report_schema_version(config)
     report = empty_report(
         config,
         exit_code=EXIT_RUNTIME,
@@ -495,6 +529,7 @@ def run_benchmark_plan(
         region_id: Optional[int] = None,
         reason: str = "",
         progress_fields: Optional[Mapping[str, Any]] = None,
+        trace_fields: Optional[Mapping[str, Any]] = None,
     ) -> None:
         nonlocal trace_sequence
         payload: Dict[str, Any] = {
@@ -511,7 +546,7 @@ def run_benchmark_plan(
         emit_trace_batch(
             [
                 {
-                    "schema_version": 1,
+                    "schema_version": report_version,
                     "record_type": "xvram.pytorch_trace",
                     "sequence": trace_sequence,
                     "monotonic_ns": time.monotonic_ns(),
@@ -521,6 +556,26 @@ def run_benchmark_plan(
                     "operation": operation,
                     "bytes": max(0, int(bytes_value)),
                     "reason": str(reason),
+                    **(
+                        {
+                            "chunk_index": (trace_fields or {}).get("chunk_index"),
+                            "source_generation": (trace_fields or {}).get(
+                                "source_generation"
+                            ),
+                            "target_generation": (trace_fields or {}).get(
+                                "target_generation"
+                            ),
+                            "slot_generation": (trace_fields or {}).get(
+                                "slot_generation"
+                            ),
+                            "representation": (trace_fields or {}).get(
+                                "representation"
+                            ),
+                            "codec_path": (trace_fields or {}).get("codec_path"),
+                        }
+                        if report_version == 2
+                        else {}
+                    ),
                 }
             ]
         )
@@ -532,6 +587,9 @@ def run_benchmark_plan(
             "prefetch": "prefetch",
             "discard": "discard",
             "scratch": "scratch",
+            "compression": "compression",
+            "codec": "codec",
+            "generation": "generation",
         }.get(stage, "transition")
         region = event.get("region_id")
         worker_event(
@@ -551,6 +609,17 @@ def run_benchmark_plan(
                     "storage_id",
                 }
                 and isinstance(value, (str, int, float, bool))
+            },
+            trace_fields={
+                key: event.get(key)
+                for key in (
+                    "chunk_index",
+                    "source_generation",
+                    "target_generation",
+                    "slot_generation",
+                    "representation",
+                    "codec_path",
+                )
             },
         )
 
@@ -613,6 +682,7 @@ def run_benchmark_plan(
             seed=int(str(config["seed"]), 16),
             dtype=dtype,
             chunk_bytes=int(config["chunk_size_bytes"]),
+            state_pattern=str(config.get("state_pattern", "incompressible")),
         )
         worker_event(kind="transition", operation="state_plan", reason="prepared")
         captured = capture_inference(
@@ -672,6 +742,15 @@ def run_benchmark_plan(
             cache_target=int(config["cache_target_bytes"]),
             device_headroom=int(config["device_headroom_bytes"]),
             scratch_cap=int(config["scratch_cap_bytes"]),
+            compression=str(config.get("compression", "off")),
+            compression_codec=str(config.get("compression_codec", "auto")),
+            host_store_cap=int(config.get("host_store_cap_bytes", 0)),
+            host_headroom=int(config.get("host_headroom_bytes", 0)),
+            compression_scratch_cap=int(
+                config.get("compression_scratch_cap_bytes", 256 * 1024**2)
+            ),
+            codec_slots=int(config.get("codec_slots", 2)),
+            codec_workers=int(config.get("codec_workers", 2)),
             prefetch_distance=int(config["prefetch_distance"]),
             sdpa_backend=str(config["sdpa_backend"]),
         )
@@ -836,8 +915,18 @@ def _apply_benchmark_telemetry(
     gemm_tiles_completed = value("gemm_tiles_completed")
     leases_acquired = value("leases_acquired")
     leases_retired = value("leases_retired")
-    events_recorded = value("events_recorded") + value("gemm_events_recorded")
-    events_retired = value("events_retired") + value("gemm_events_retired")
+    codec_events_recorded = value("codec_events_recorded")
+    codec_events_retired = value("codec_events_retired")
+    events_recorded = (
+        value("events_recorded")
+        + value("gemm_events_recorded")
+        + codec_events_recorded
+    )
+    events_retired = (
+        value("events_retired")
+        + value("gemm_events_retired")
+        + codec_events_retired
+    )
     timings = [
         _finite_report_number(item)
         for item in telemetry.get("region_timings_ms", [])
@@ -867,7 +956,11 @@ def _apply_benchmark_telemetry(
         misses=value("cache_misses"),
         h2d_bytes=value("h2d_bytes"),
         d2h_bytes=value("d2h_bytes"),
-        weight_d2h_bytes=0 if persistent_read_only else value("d2h_bytes"),
+        weight_d2h_bytes=(
+            value("hot_allocation_d2h_bytes")
+            if int(report.get("schema_version", 1)) == 2
+            else (0 if persistent_read_only else value("d2h_bytes"))
+        ),
         evictions=value("clean_evictions") + value("dirty_evictions"),
         frame_reuses=value("handles_reused"),
         prefetch_submitted=value("prefetches"),
@@ -878,6 +971,68 @@ def _apply_benchmark_telemetry(
     report["proof"]["stable_addresses"] = bool(
         telemetry.get("stable_addresses", False)
     ) and bool(telemetry.get("no_physical_aliases", False))
+    if int(report.get("schema_version", 1)) == 2:
+        compression = report["compression"]
+        compression.update(
+            host_store_cap_bytes=value(
+                "effective_host_store_cap_bytes",
+                compression["host_store_cap_bytes"],
+            ),
+            host_headroom_bytes=value(
+                "effective_host_headroom_bytes",
+                compression["host_headroom_bytes"],
+            ),
+            host_budget_bytes=value("host_budget_bytes"),
+            host_budget_peak_bytes=value("host_budget_peak_bytes"),
+            conversion_scratch_peak_bytes=value("conversion_scratch_peak_bytes"),
+            logical_bytes=value("logical_bytes"),
+            stored_bytes=value("host_stored_bytes"),
+            stored_peak_bytes=value("host_stored_peak_bytes"),
+            raw_bytes=value("host_raw_bytes"),
+            compressed_bytes=value("host_compressed_bytes"),
+            implicit_zero_bytes=value("host_implicit_zero_bytes"),
+            invalid_bytes=value("host_invalid_bytes"),
+            logical_h2d_bytes=value("logical_h2d_bytes"),
+            pcie_h2d_bytes=value("pcie_h2d_bytes"),
+            pcie_h2d_payload_bytes=value("pcie_h2d_payload_bytes"),
+            pcie_h2d_metadata_bytes=value("pcie_h2d_metadata_bytes"),
+            logical_d2h_bytes=value("logical_d2h_bytes"),
+            pcie_d2h_bytes=value("pcie_d2h_bytes"),
+            pcie_d2h_payload_bytes=value("pcie_d2h_payload_bytes"),
+            pcie_d2h_metadata_bytes=value("pcie_d2h_metadata_bytes"),
+            rejected_candidate_logical_d2h_bytes=value(
+                "rejected_candidate_logical_d2h_bytes"
+            ),
+            hot_allocation_d2h_bytes=value("hot_allocation_d2h_bytes"),
+            non_hot_allocation_d2h_bytes=value("non_hot_allocation_d2h_bytes"),
+            raw_path_decisions=value("raw_path_decisions"),
+            cpu_lz4_gpu_decode_decisions=value("cpu_lz4_gpu_decode_decisions"),
+            gpu_lz4_decisions=value("gpu_lz4_decisions"),
+            never_compress_decisions=value("never_compress_decisions"),
+            raw_fallbacks=value("raw_fallbacks"),
+            cpu_codec_fallbacks=value("cpu_codec_fallbacks"),
+            gpu_codec_fallbacks=value("gpu_codec_fallbacks"),
+            compression_attempts=value("compression_attempts"),
+            compression_commits=value("compression_commits"),
+            decompression_attempts=value("decompression_attempts"),
+            decompression_commits=value("decompression_commits"),
+            generations_created=value("generations_created"),
+            generations_committed=value("generations_committed"),
+            generations_discarded=value("generations_discarded"),
+            workspace_bytes=value("codec_workspace_bytes"),
+            workspace_peak_bytes=value("codec_workspace_peak_bytes"),
+            slot_bytes=value("codec_slot_bytes"),
+            slot_peak_bytes=value("codec_slot_peak_bytes"),
+            spill_reserved_bytes=value("spill_reserved_bytes"),
+            spill_reserved_peak_bytes=value("spill_reserved_peak_bytes"),
+            cpu_encode_nanoseconds=value("cpu_encode_nanoseconds"),
+            cpu_decode_nanoseconds=value("cpu_decode_nanoseconds"),
+            gpu_encode_nanoseconds=value("gpu_encode_nanoseconds"),
+            gpu_decode_nanoseconds=value("gpu_decode_nanoseconds"),
+            verification_nanoseconds=value("verification_nanoseconds"),
+            codec_events_recorded=codec_events_recorded,
+            codec_events_retired=codec_events_retired,
+        )
     allocations_reconciled = value("allocations_created") == value("allocations_released")
     mappings_reconciled = value("maps") == value("unmaps") and value("resident_bytes") == 0
     leases_reconciled = (

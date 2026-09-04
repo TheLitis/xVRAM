@@ -37,6 +37,7 @@ from .torch_report import (
     dumps,
     empty_report,
     finalize_proof,
+    report_schema_version,
     success_semantics,
     validate_report_envelope,
     validate_trace_record,
@@ -102,10 +103,13 @@ def parse_size(value: str, *, allow_auto: bool = False) -> Union[int, str]:
 def _normalize_plan(args: argparse.Namespace) -> dict[str, Any]:
     headroom = int(parse_size(args.device_headroom))
     cache_raw = parse_size(args.cache_target, allow_auto=True)
+    host_store_raw = parse_size(args.host_store_cap, allow_auto=True)
+    host_headroom_raw = parse_size(args.host_headroom, allow_auto=True)
+    compression_scratch_bytes = int(parse_size(args.compression_scratch_cap))
     # Zero is the native runtime's sentinel for a live-budget-derived target. The controller
     # never initializes CUDA; only the isolated worker may inspect CUDA/WDDM state.
     cache_target = 0 if cache_raw == "auto" else int(cache_raw)
-    return {
+    plan = {
         "device": args.device,
         "model": args.model,
         "model_ratio": args.model_ratio,
@@ -126,6 +130,22 @@ def _normalize_plan(args: argparse.Namespace) -> dict[str, Any]:
         "seed": f"0x{args.seed:016x}",
         "include_identifiers": bool(args.include_identifiers),
     }
+    if args.compression != "off":
+        plan.update(
+            compression=args.compression,
+            compression_codec=args.compression_codec,
+            state_pattern=args.state_pattern,
+            host_store_cap_bytes=(
+                0 if host_store_raw == "auto" else int(host_store_raw)
+            ),
+            host_headroom_bytes=(
+                0 if host_headroom_raw == "auto" else int(host_headroom_raw)
+            ),
+            compression_scratch_cap_bytes=compression_scratch_bytes,
+            codec_slots=int(args.codec_slots),
+            codec_workers=int(args.codec_workers),
+        )
+    return plan
 
 
 class _WindowsJob:
@@ -208,10 +228,16 @@ class ControllerResult:
     stderr: str
 
 
-def _reader(stream: BinaryIO, messages: queue.Queue[Union[Frame, BaseException]]) -> None:
+def _reader(
+    stream: BinaryIO,
+    messages: queue.Queue[Union[Frame, BaseException]],
+    protocol_version: int,
+) -> None:
     try:
         while True:
-            messages.put(read_frame(stream))
+            messages.put(
+                read_frame(stream, expected_protocol_version=protocol_version)
+            )
     except BaseException as exc:
         messages.put(exc)
 
@@ -268,6 +294,37 @@ def _retired_progress(payload: Mapping[str, Any], previous: int) -> int:
     return retired
 
 
+def _trace_marker(
+    schema_version: int,
+    *,
+    sequence: int,
+    complete: bool,
+    reason: str,
+) -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "schema_version": schema_version,
+        "record_type": "xvram.pytorch_trace",
+        "sequence": sequence,
+        "monotonic_ns": time.monotonic_ns(),
+        "kind": "verification",
+        "region_id": None,
+        "allocation_id": None,
+        "operation": "trace_complete" if complete else "trace_incomplete",
+        "bytes": 0,
+        "reason": reason,
+    }
+    if schema_version == 2:
+        marker.update(
+            chunk_index=None,
+            source_generation=None,
+            target_generation=None,
+            slot_generation=None,
+            representation=None,
+            codec_path=None,
+        )
+    return marker
+
+
 def run_controller(
     plan: Mapping[str, Any],
     *,
@@ -275,6 +332,7 @@ def run_controller(
     stall_timeout_seconds: int = 15,
     worker_command: Optional[Sequence[str]] = None,
 ) -> ControllerResult:
+    protocol_version = report_schema_version(plan)
     command = list(worker_command or (sys.executable, "-m", "xvram.torch_bench", "--worker"))
     popen_kwargs: dict[str, Any] = {
         "stdin": subprocess.PIPE,
@@ -300,18 +358,12 @@ def run_controller(
             {"stage": "controller", "code": "worker_spawn_failure", "message": str(exc)}
         )
         report["cleanup"]["worker_reaped"] = True
-        marker = {
-            "schema_version": 1,
-            "record_type": "xvram.pytorch_trace",
-            "sequence": 1,
-            "monotonic_ns": time.monotonic_ns(),
-            "kind": "verification",
-            "region_id": None,
-            "allocation_id": None,
-            "operation": "trace_incomplete",
-            "bytes": 0,
-            "reason": "worker was not created",
-        }
+        marker = _trace_marker(
+            protocol_version,
+            sequence=1,
+            complete=False,
+            reason="worker was not created",
+        )
         report["execution"]["trace_records"] = 1
         finalize_proof(report)
         return ControllerResult(report, EXIT_RUNTIME, [marker], "")
@@ -334,7 +386,12 @@ def run_controller(
             job = _WindowsJob(process)
         assert process.stdin is not None
         assert process.stdout is not None
-        write_frame(process.stdin, MessageType.PLAN, plan)
+        write_frame(
+            process.stdin,
+            MessageType.PLAN,
+            plan,
+            protocol_version=protocol_version,
+        )
         process.stdin.close()
 
         # A bounded queue preserves pipe backpressure when a faulty worker floods
@@ -342,7 +399,11 @@ def run_controller(
         messages: queue.Queue[Union[Frame, BaseException]] = queue.Queue(
             maxsize=_IPC_QUEUE_FRAMES
         )
-        threading.Thread(target=_reader, args=(process.stdout, messages), daemon=True).start()
+        threading.Thread(
+            target=_reader,
+            args=(process.stdout, messages, protocol_version),
+            daemon=True,
+        ).start()
         started = time.monotonic()
         last_retired_progress = started
         last_protocol_sequence = 0
@@ -382,6 +443,9 @@ def run_controller(
                     break
                 failure = f"worker protocol failure: {item}"
                 break
+            if item.protocol_version != protocol_version:
+                failure = "worker changed XVT protocol version mid-stream"
+                break
             try:
                 last_protocol_sequence = _protocol_sequence(
                     item.payload, last_protocol_sequence
@@ -397,6 +461,10 @@ def run_controller(
                 try:
                     for record in records:
                         validate_trace_record(record)
+                        if int(record["schema_version"]) != protocol_version:
+                            raise ValueError(
+                                "trace schema does not match the XVT protocol"
+                            )
                         sequence = int(record["sequence"])
                         if sequence <= last_trace_sequence:
                             raise ValueError(
@@ -419,6 +487,9 @@ def run_controller(
                     validate_report_envelope(candidate)
                 except ValueError as exc:
                     failure = f"worker final report failed validation: {exc}"
+                    break
+                if int(candidate["schema_version"]) != protocol_version:
+                    failure = "worker report schema does not match the XVT protocol"
                     break
                 if int(candidate["execution"]["trace_records"]) != len(trace_records):
                     failure = "worker final report did not reconcile its trace record count"
@@ -515,22 +586,16 @@ def run_controller(
         (int(record.get("sequence", 0)) for record in trace_records), default=0
     ) + 1
     trace_records.append(
-        {
-            "schema_version": 1,
-            "record_type": "xvram.pytorch_trace",
-            "sequence": trace_sequence,
-            "monotonic_ns": time.monotonic_ns(),
-            "kind": "verification",
-            "region_id": None,
-            "allocation_id": None,
-            "operation": "trace_complete" if worker_trace_complete else "trace_incomplete",
-            "bytes": 0,
-            "reason": (
+        _trace_marker(
+            protocol_version,
+            sequence=trace_sequence,
+            complete=worker_trace_complete,
+            reason=(
                 "worker trace and final received"
                 if worker_trace_complete
                 else "worker trace or final unavailable"
             ),
-        }
+        )
     )
     final_report["execution"]["trace_records"] = len(trace_records)
     final_report["execution"]["trace_complete"] = worker_trace_complete
@@ -580,18 +645,29 @@ def worker_main(stdin: Optional[BinaryIO] = None, stdout: Optional[BinaryIO] = N
     stopped = threading.Event()
     sequence = 0
     operations_retired = 0
+    protocol_version = 1
 
     def emit(message_type: MessageType, payload: Mapping[str, Any]) -> None:
         nonlocal sequence
         with write_lock:
             sequence += 1
-            write_frame(sink, message_type, {**dict(payload), "sequence": sequence})
+            write_frame(
+                sink,
+                message_type,
+                {**dict(payload), "sequence": sequence},
+                protocol_version=protocol_version,
+            )
 
     try:
         frame = read_frame(source)
+        protocol_version = frame.protocol_version
         if frame.message_type is not MessageType.PLAN:
-            raise ProtocolError("first XVT1 frame must be plan")
+            raise ProtocolError(
+                f"first XVT{protocol_version} frame must be plan"
+            )
         plan = frame.payload
+        if report_schema_version(plan) != protocol_version:
+            raise ProtocolError("plan compression mode does not match XVT protocol")
     except Exception as exc:
         report = empty_report({}, exit_code=EXIT_RUNTIME, status="failed", message=str(exc))
         report["diagnostics"].append(
@@ -663,15 +739,24 @@ def _text_summary(report: Mapping[str, Any]) -> str:
     model = report["model"]
     execution = report["execution"]
     cache = report["cache"]
-    return "\n".join(
-        (
-            f"xVRAM PyTorch inference: {outcome['status']} (exit {outcome['exit_code']})",
-            f"model: {model['kind']}, layers={model['layers']}, logical={model['logical_bytes']} bytes",
-            f"regions: {execution['regions_completed']}, leases: {execution['leases_retired']}",
-            f"cache: {cache['hits']} hits, {cache['misses']} misses, {cache['evictions']} evictions",
-            f"message: {outcome['message']}",
+    lines = [
+        f"xVRAM PyTorch inference: {outcome['status']} (exit {outcome['exit_code']})",
+        f"model: {model['kind']}, layers={model['layers']}, logical={model['logical_bytes']} bytes",
+        f"regions: {execution['regions_completed']}, leases: {execution['leases_retired']}",
+        f"cache: {cache['hits']} hits, {cache['misses']} misses, {cache['evictions']} evictions",
+    ]
+    compression = report.get("compression")
+    if isinstance(compression, Mapping):
+        lines.append(
+            "compression: {} / {}, stored={} bytes, PCIe H2D={} bytes".format(
+                compression["policy"],
+                compression["codec"],
+                compression["stored_bytes"],
+                compression["pcie_h2d_bytes"],
+            )
         )
-    )
+    lines.append(f"message: {outcome['message']}")
+    return "\n".join(lines)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -691,6 +776,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-size", default="64MiB")
     parser.add_argument("--device-headroom", default="512MiB")
     parser.add_argument("--scratch-cap", default="512MiB")
+    parser.add_argument(
+        "--compression", choices=("off", "adaptive", "capacity"), default="off"
+    )
+    parser.add_argument("--compression-codec", choices=("auto", "lz4"), default="auto")
+    parser.add_argument(
+        "--state-pattern",
+        choices=("incompressible", "structured"),
+        default="incompressible",
+        help="deterministic streamed weight pattern for compression-enabled runs",
+    )
+    parser.add_argument("--host-store-cap", default="auto")
+    parser.add_argument("--host-headroom", default="auto")
+    parser.add_argument("--compression-scratch-cap", default="256MiB")
+    parser.add_argument("--codec-slots", type=int, choices=range(2, 9), default=2)
+    parser.add_argument("--codec-workers", type=int, choices=range(1, 9), default=2)
     parser.add_argument("--prefetch-distance", type=int, choices=range(0, 9), default=2)
     parser.add_argument("--sdpa-backend", choices=("math", "flash_attention"), default="math")
     parser.add_argument("--seed", type=lambda value: int(value, 0), default=DEFAULT_SEED)
@@ -721,6 +821,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error("timeout-seconds must be positive")
         if args.seed < 0 or args.seed > 0xFFFFFFFFFFFFFFFF:
             parser.error("seed must fit an unsigned 64-bit value")
+        if args.compression == "off" and args.state_pattern != "incompressible":
+            parser.error("structured state requires compression-enabled report v2")
         if args.trace == "-" and args.json == "-":
             parser.error("trace and JSON cannot both be written to stdout")
         if args.trace and args.trace != "-" and args.json != "-":

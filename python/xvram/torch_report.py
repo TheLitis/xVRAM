@@ -15,6 +15,7 @@ from .torch_planner import PLANNER_VERSION, operator_allowlist_hash, supported_o
 
 REPORT_TYPE = "xvram.pytorch_inference"
 SCHEMA_VERSION = 1
+SCHEMA_VERSION_COMPRESSION = 2
 ALLOWLIST_VERSION = PLANNER_VERSION
 ALLOWLIST = supported_operator_targets()
 ALLOWLIST_HASH = operator_allowlist_hash()
@@ -47,6 +48,7 @@ _TOP_LEVEL_KEYS = {
     "cleanup",
     "diagnostics",
 }
+_TOP_LEVEL_KEYS_V2 = _TOP_LEVEL_KEYS | {"compression"}
 _TRACE_KEYS = {
     "schema_version",
     "record_type",
@@ -58,6 +60,14 @@ _TRACE_KEYS = {
     "operation",
     "bytes",
     "reason",
+}
+_TRACE_KEYS_V2 = _TRACE_KEYS | {
+    "chunk_index",
+    "source_generation",
+    "target_generation",
+    "slot_generation",
+    "representation",
+    "codec_path",
 }
 
 _SECTION_KEYS = {
@@ -169,6 +179,60 @@ _SECTION_KEYS = {
         "complete",
     },
 }
+_COMPRESSION_SECTION_KEYS = {
+    "policy",
+    "codec",
+    "host_store_cap_bytes",
+    "host_headroom_bytes",
+    "host_budget_bytes",
+    "host_budget_peak_bytes",
+    "conversion_scratch_peak_bytes",
+    "logical_bytes",
+    "stored_bytes",
+    "stored_peak_bytes",
+    "raw_bytes",
+    "compressed_bytes",
+    "implicit_zero_bytes",
+    "invalid_bytes",
+    "logical_h2d_bytes",
+    "pcie_h2d_bytes",
+    "pcie_h2d_payload_bytes",
+    "pcie_h2d_metadata_bytes",
+    "logical_d2h_bytes",
+    "pcie_d2h_bytes",
+    "pcie_d2h_payload_bytes",
+    "pcie_d2h_metadata_bytes",
+    "rejected_candidate_logical_d2h_bytes",
+    "hot_allocation_d2h_bytes",
+    "non_hot_allocation_d2h_bytes",
+    "raw_path_decisions",
+    "cpu_lz4_gpu_decode_decisions",
+    "gpu_lz4_decisions",
+    "never_compress_decisions",
+    "raw_fallbacks",
+    "cpu_codec_fallbacks",
+    "gpu_codec_fallbacks",
+    "compression_attempts",
+    "compression_commits",
+    "decompression_attempts",
+    "decompression_commits",
+    "generations_created",
+    "generations_committed",
+    "generations_discarded",
+    "workspace_bytes",
+    "workspace_peak_bytes",
+    "slot_bytes",
+    "slot_peak_bytes",
+    "spill_reserved_bytes",
+    "spill_reserved_peak_bytes",
+    "cpu_encode_nanoseconds",
+    "cpu_decode_nanoseconds",
+    "gpu_encode_nanoseconds",
+    "gpu_decode_nanoseconds",
+    "verification_nanoseconds",
+    "codec_events_recorded",
+    "codec_events_retired",
+}
 _CONFIGURATION_REQUIRED_KEYS = {
     "device",
     "model",
@@ -190,6 +254,16 @@ _CONFIGURATION_REQUIRED_KEYS = {
     "seed",
 }
 _CONFIGURATION_OPTIONAL_KEYS = {"include_identifiers"}
+_CONFIGURATION_V2_KEYS = {
+    "compression",
+    "compression_codec",
+    "state_pattern",
+    "host_store_cap_bytes",
+    "host_headroom_bytes",
+    "compression_scratch_cap_bytes",
+    "codec_slots",
+    "codec_workers",
+}
 _DIAGNOSTIC_KEYS = {"stage", "code", "message"}
 _ALLOWED_EXIT_CODES = {
     EXIT_COMPLETED,
@@ -203,11 +277,15 @@ _ALLOWED_EXIT_CODES = {
     EXIT_OUTPUT,
 }
 _TRACE_KINDS = {"lease", "transition", "prefetch", "discard", "scratch", "verification"}
+_TRACE_KINDS_V2 = _TRACE_KINDS | {"compression", "codec", "generation"}
 _FORBIDDEN_IDENTITY_TEXT = re.compile(
-    r"(?:cuda[ _-]?va|raw[ _-]?va|virtual[ _-]?address|(?:native[ _-]?)?stream[ _-]?handle)"
-    r"\s*(?:=|:)?\s*(?:0x[0-9a-f]+|[0-9]{4,})",
+    r"(?:"
+    r"(?:cuda[ _-]?va|raw[ _-]?va|virtual[ _-]?address|(?:device[ _-]?|native[ _-]?|raw[ _-]?)?pointer|(?:native[ _-]?)?stream[ _-]?handle)"
+    r"\s*(?:=|:)?\s*(?:0x[0-9a-f]+|[0-9]{4,})"
+    r")",
     re.IGNORECASE,
 )
+_BARE_ADDRESS_TEXT = re.compile(r"(?<![0-9a-f])0x[0-9a-f]{8,}(?![0-9a-f])", re.IGNORECASE)
 
 
 def _fields_message(expected: set[str], actual: set[Any]) -> str:
@@ -281,6 +359,82 @@ def _device_snapshot(device: int, include_identifiers: bool) -> dict[str, Any]:
     }
 
 
+def report_schema_version(configuration: Mapping[str, Any]) -> int:
+    """Select the frozen v1 report for off mode and v2 for compression.
+
+    Missing ``compression`` is intentionally equivalent to ``off`` so every
+    Phase 4b caller retains its exact report/protocol contract.
+    """
+
+    mode = configuration.get("compression", "off")
+    return (
+        SCHEMA_VERSION
+        if isinstance(mode, str) and mode.lower() == "off"
+        else SCHEMA_VERSION_COMPRESSION
+    )
+
+
+def trace_schema_version(configuration: Mapping[str, Any]) -> int:
+    return report_schema_version(configuration)
+
+
+def _empty_compression_section(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "policy": str(configuration.get("compression", "adaptive")),
+        "codec": str(configuration.get("compression_codec", "auto")),
+        "host_store_cap_bytes": int(configuration.get("host_store_cap_bytes", 0)),
+        "host_headroom_bytes": int(configuration.get("host_headroom_bytes", 0)),
+        "host_budget_bytes": 0,
+        "host_budget_peak_bytes": 0,
+        "conversion_scratch_peak_bytes": 0,
+        "logical_bytes": 0,
+        "stored_bytes": 0,
+        "stored_peak_bytes": 0,
+        "raw_bytes": 0,
+        "compressed_bytes": 0,
+        "implicit_zero_bytes": 0,
+        "invalid_bytes": 0,
+        "logical_h2d_bytes": 0,
+        "pcie_h2d_bytes": 0,
+        "pcie_h2d_payload_bytes": 0,
+        "pcie_h2d_metadata_bytes": 0,
+        "logical_d2h_bytes": 0,
+        "pcie_d2h_bytes": 0,
+        "pcie_d2h_payload_bytes": 0,
+        "pcie_d2h_metadata_bytes": 0,
+        "rejected_candidate_logical_d2h_bytes": 0,
+        "hot_allocation_d2h_bytes": 0,
+        "non_hot_allocation_d2h_bytes": 0,
+        "raw_path_decisions": 0,
+        "cpu_lz4_gpu_decode_decisions": 0,
+        "gpu_lz4_decisions": 0,
+        "never_compress_decisions": 0,
+        "raw_fallbacks": 0,
+        "cpu_codec_fallbacks": 0,
+        "gpu_codec_fallbacks": 0,
+        "compression_attempts": 0,
+        "compression_commits": 0,
+        "decompression_attempts": 0,
+        "decompression_commits": 0,
+        "generations_created": 0,
+        "generations_committed": 0,
+        "generations_discarded": 0,
+        "workspace_bytes": 0,
+        "workspace_peak_bytes": 0,
+        "slot_bytes": 0,
+        "slot_peak_bytes": 0,
+        "spill_reserved_bytes": 0,
+        "spill_reserved_peak_bytes": 0,
+        "cpu_encode_nanoseconds": 0,
+        "cpu_decode_nanoseconds": 0,
+        "gpu_encode_nanoseconds": 0,
+        "gpu_decode_nanoseconds": 0,
+        "verification_nanoseconds": 0,
+        "codec_events_recorded": 0,
+        "codec_events_retired": 0,
+    }
+
+
 def empty_report(
     configuration: Mapping[str, Any],
     *,
@@ -291,8 +445,9 @@ def empty_report(
 ) -> dict[str, Any]:
     torch_version, cuda_version = _torch_versions()
     device = int(configuration.get("device", 0))
-    return {
-        "schema_version": SCHEMA_VERSION,
+    schema_version = report_schema_version(configuration)
+    report = {
+        "schema_version": schema_version,
         "report_type": REPORT_TYPE,
         "build": {
             "version": "0.1.0-dev",
@@ -300,7 +455,7 @@ def empty_report(
             "torch_version": torch_version,
             "cuda_version": cuda_version,
             "torch_target_version": "2.11",
-            "bridge_api_version": 1,
+            "bridge_api_version": schema_version,
         },
         "system": {
             "os": platform.system() or "unknown",
@@ -402,6 +557,9 @@ def empty_report(
         },
         "diagnostics": [],
     }
+    if schema_version == SCHEMA_VERSION_COMPRESSION:
+        report["compression"] = _empty_compression_section(configuration)
+    return report
 
 
 def finalize_proof(report: dict[str, Any]) -> dict[str, Any]:
@@ -512,10 +670,13 @@ def success_semantics(report: Mapping[str, Any]) -> tuple[bool, list[str]]:
     if leases[2] + tiled_regions != regions:
         errors.append("lease and tiled GEMM regions do not reconcile")
     events = (execution["events_recorded"], execution["events_retired"])
+    minimum_event_boundaries = leases[2] + tiled_tiles
+    if int(report.get("schema_version", 0)) == SCHEMA_VERSION_COMPRESSION:
+        minimum_event_boundaries += report["compression"]["codec_events_retired"]
     if (
         events[0] <= 0
         or events[0] != events[1]
-        or events[1] < leases[2] + tiled_tiles
+        or events[1] < minimum_event_boundaries
     ):
         errors.append("events are zero or do not reconcile with execution boundaries")
     if (
@@ -532,6 +693,8 @@ def success_semantics(report: Mapping[str, Any]) -> tuple[bool, list[str]]:
         errors.append("cache mappings were not fully unmapped")
     if cache["maps"] <= 0 or cache["misses"] <= 0 or cache["h2d_bytes"] <= 0:
         errors.append("cache did not perform observable managed transfers")
+    if cache["weight_d2h_bytes"] > cache["d2h_bytes"]:
+        errors.append("weight D2H bytes exceed total D2H bytes")
     if cache["prefetch_submitted"] != cache["prefetch_retired"]:
         errors.append("prefetch requests were not fully retired")
     for name in ("reference_digest", "output_digest"):
@@ -554,11 +717,100 @@ def success_semantics(report: Mapping[str, Any]) -> tuple[bool, list[str]]:
         errors.append("device name was not redacted")
     if report.get("diagnostics"):
         errors.append("diagnostics are not empty")
+    if int(report.get("schema_version", 0)) == SCHEMA_VERSION_COMPRESSION:
+        compression = report["compression"]
+        decisions = (
+            compression["raw_path_decisions"]
+            + compression["cpu_lz4_gpu_decode_decisions"]
+            + compression["gpu_lz4_decisions"]
+            + compression["never_compress_decisions"]
+        )
+        if compression["policy"] not in {"adaptive", "capacity"}:
+            errors.append("compression policy is invalid")
+        if compression["logical_bytes"] != logical_bytes:
+            errors.append("compression logical bytes do not reconcile with the model")
+        if compression["logical_h2d_bytes"] != report["cache"]["h2d_bytes"]:
+            errors.append("compression logical H2D bytes do not reconcile with the cache")
+        if compression["logical_d2h_bytes"] != (
+            report["cache"]["d2h_bytes"]
+            + compression["rejected_candidate_logical_d2h_bytes"]
+        ):
+            errors.append("compression logical D2H bytes do not reconcile with the cache")
+        if compression["hot_allocation_d2h_bytes"] != report["cache"]["weight_d2h_bytes"]:
+            errors.append("measured weight D2H bytes do not reconcile with the cache")
+        if (
+            compression["hot_allocation_d2h_bytes"]
+            + compression["non_hot_allocation_d2h_bytes"]
+            != report["cache"]["d2h_bytes"]
+        ):
+            errors.append("per-allocation-class D2H bytes do not reconcile")
+        if (
+            compression["stored_bytes"]
+            != compression["raw_bytes"] + compression["compressed_bytes"]
+        ):
+            errors.append("compression host representations do not reconcile")
+        if compression["stored_bytes"] > compression["stored_peak_bytes"]:
+            errors.append("compression stored bytes exceed the observed peak")
+        if compression["pcie_h2d_bytes"] != (
+            compression["pcie_h2d_payload_bytes"]
+            + compression["pcie_h2d_metadata_bytes"]
+        ):
+            errors.append("H2D PCIe bytes do not reconcile with payload and metadata")
+        if compression["pcie_d2h_bytes"] != (
+            compression["pcie_d2h_payload_bytes"]
+            + compression["pcie_d2h_metadata_bytes"]
+        ):
+            errors.append("D2H PCIe bytes do not reconcile with payload and metadata")
+        if compression["pcie_h2d_payload_bytes"] > compression["logical_h2d_bytes"]:
+            errors.append("H2D PCIe payload exceeds logical H2D bytes")
+        if compression["pcie_d2h_payload_bytes"] > compression["logical_d2h_bytes"]:
+            errors.append("D2H PCIe payload exceeds logical D2H bytes")
+        if (
+            compression["rejected_candidate_logical_d2h_bytes"]
+            > compression["logical_d2h_bytes"]
+        ):
+            errors.append("rejected-candidate logical D2H exceeds all logical D2H attempts")
+        if decisions <= 0:
+            errors.append("compression path decisions are empty")
+        if compression["compression_commits"] > compression["compression_attempts"]:
+            errors.append("compression commits exceed attempts")
+        if compression["decompression_commits"] > compression["decompression_attempts"]:
+            errors.append("decompression commits exceed attempts")
+        if compression["generations_created"] != (
+            compression["generations_committed"]
+            + compression["generations_discarded"]
+        ):
+            errors.append("compression generations do not reconcile")
+        host_cap = compression["host_store_cap_bytes"]
+        if host_cap <= 0:
+            errors.append("effective compression host storage cap was not observed")
+        elif compression["host_budget_peak_bytes"] > host_cap:
+            errors.append("compression host budget exceeds its effective cap")
+        if compression["host_headroom_bytes"] <= 0:
+            errors.append("effective compression host headroom was not observed")
+        if compression["host_budget_bytes"] > compression["host_budget_peak_bytes"]:
+            errors.append("compression current host budget exceeds its observed peak")
+        if compression["stored_bytes"] > compression["host_budget_bytes"]:
+            errors.append("compression backing bytes exceed the charged host budget")
+        if compression["stored_peak_bytes"] > compression["host_budget_peak_bytes"]:
+            errors.append("compression backing peak exceeds the charged host budget peak")
+        if (
+            compression["conversion_scratch_peak_bytes"]
+            > compression["host_budget_peak_bytes"]
+        ):
+            errors.append("compression conversion scratch exceeds the host budget peak")
+        if compression["codec_events_recorded"] != compression["codec_events_retired"]:
+            errors.append("compression codec events do not reconcile")
+        if (
+            compression["workspace_peak_bytes"]
+            > report["configuration"]["compression_scratch_cap_bytes"]
+        ):
+            errors.append("compression workspace exceeds its configured cap")
     return not errors, errors
 
 
 def validate_report_envelope(report: Mapping[str, Any]) -> None:
-    """Reject protocol data that cannot be a v1 report.
+    """Reject protocol data that cannot be a v1 or v2 report.
 
     Full JSON Schema validation remains part of contract/acceptance tests.  The
     controller also performs this dependency-free boundary check so an invalid
@@ -578,29 +830,55 @@ def validate_report_envelope(report: Mapping[str, Any]) -> None:
 def _validate_report_envelope(report: Mapping[str, Any]) -> None:
     if not isinstance(report, Mapping):
         raise ValueError("report must be an object")
+    schema_version = report.get("schema_version")
+    if schema_version not in {SCHEMA_VERSION, SCHEMA_VERSION_COMPRESSION}:
+        raise ValueError("invalid report type or schema version")
+    expected_top = (
+        _TOP_LEVEL_KEYS
+        if schema_version == SCHEMA_VERSION
+        else _TOP_LEVEL_KEYS_V2
+    )
     actual_top = set(report)
-    if actual_top != _TOP_LEVEL_KEYS:
+    if actual_top != expected_top:
         raise ValueError(
-            f"invalid report sections ({_fields_message(_TOP_LEVEL_KEYS, actual_top)})"
+            f"invalid report sections ({_fields_message(expected_top, actual_top)})"
         )
-    if report.get("schema_version") != SCHEMA_VERSION or report.get("report_type") != REPORT_TYPE:
+    if report.get("report_type") != REPORT_TYPE:
         raise ValueError("invalid report type or schema version")
 
-    def visit(value: Any) -> None:
+    def visit(value: Any, path: tuple[str, ...] = ()) -> None:
         if isinstance(value, Mapping):
             for key, child in value.items():
                 lowered = str(key).lower()
                 if (
-                    lowered in {"cuda_va", "raw_va", "stream_handle", "native_stream_handle"}
+                    lowered
+                    in {
+                        "cuda_va",
+                        "raw_va",
+                        "stream_handle",
+                        "native_stream_handle",
+                        "pointer",
+                        "raw_pointer",
+                        "native_pointer",
+                        "device_pointer",
+                    }
                     or "virtual_address" in lowered
+                    or lowered.endswith("_pointer")
                 ):
                     raise ValueError(f"report contains forbidden field {key}")
-                visit(child)
+                visit(child, (*path, str(key)))
         elif isinstance(value, list):
-            for child in value:
-                visit(child)
-        elif isinstance(value, str) and _FORBIDDEN_IDENTITY_TEXT.search(value):
-            raise ValueError("report contains a serialized CUDA address or stream handle")
+            for index, child in enumerate(value):
+                visit(child, (*path, str(index)))
+        elif isinstance(value, str):
+            tagged_identity = _FORBIDDEN_IDENTITY_TEXT.search(value)
+            bare_address = path != ("configuration", "seed") and _BARE_ADDRESS_TEXT.search(
+                value
+            )
+            if tagged_identity or bare_address:
+                raise ValueError(
+                    "report contains a serialized CUDA address or stream handle"
+                )
 
     visit(report)
 
@@ -612,7 +890,10 @@ def _validate_report_envelope(report: Mapping[str, Any]) -> None:
     build = sections["build"]
     for name in ("version", "git_commit", "torch_version", "cuda_version"):
         _string(build[name], f"build.{name}", nonempty=True)
-    if build["torch_target_version"] != "2.11" or build["bridge_api_version"] != 1:
+    if (
+        build["torch_target_version"] != "2.11"
+        or build["bridge_api_version"] != schema_version
+    ):
         raise ValueError("invalid Stable-ABI build contract")
 
     system = sections["system"]
@@ -630,12 +911,15 @@ def _validate_report_envelope(report: Mapping[str, Any]) -> None:
     if not isinstance(configuration, Mapping):
         raise ValueError("report section configuration must be an object")
     actual_configuration = set(configuration)
-    allowed_configuration = _CONFIGURATION_REQUIRED_KEYS | _CONFIGURATION_OPTIONAL_KEYS
+    required_configuration = set(_CONFIGURATION_REQUIRED_KEYS)
+    if schema_version == SCHEMA_VERSION_COMPRESSION:
+        required_configuration |= _CONFIGURATION_V2_KEYS
+    allowed_configuration = required_configuration | _CONFIGURATION_OPTIONAL_KEYS
     if (
-        not _CONFIGURATION_REQUIRED_KEYS.issubset(actual_configuration)
+        not required_configuration.issubset(actual_configuration)
         or not actual_configuration.issubset(allowed_configuration)
     ):
-        missing = sorted(_CONFIGURATION_REQUIRED_KEYS - actual_configuration)
+        missing = sorted(required_configuration - actual_configuration)
         extra = sorted(
             actual_configuration - allowed_configuration, key=lambda value: str(value)
         )
@@ -667,6 +951,22 @@ def _validate_report_envelope(report: Mapping[str, Any]) -> None:
         raise ValueError("configuration.seed is invalid") from exc
     if "include_identifiers" in configuration:
         _boolean(configuration["include_identifiers"], "configuration.include_identifiers")
+    if schema_version == SCHEMA_VERSION_COMPRESSION:
+        if configuration["compression"] not in {"adaptive", "capacity"}:
+            raise ValueError("configuration.compression is invalid")
+        if configuration["compression_codec"] not in {"auto", "lz4"}:
+            raise ValueError("configuration.compression_codec is invalid")
+        if configuration["state_pattern"] not in {"incompressible", "structured"}:
+            raise ValueError("configuration.state_pattern is invalid")
+        for name in (
+            "host_store_cap_bytes",
+            "host_headroom_bytes",
+            "compression_scratch_cap_bytes",
+        ):
+            _integer(configuration[name], f"configuration.{name}")
+        _integer(configuration["compression_scratch_cap_bytes"], "configuration.compression_scratch_cap_bytes", minimum=1)
+        _integer(configuration["codec_slots"], "configuration.codec_slots", minimum=2, maximum=8)
+        _integer(configuration["codec_workers"], "configuration.codec_workers", minimum=1, maximum=8)
 
     model = sections["model"]
     _string(model["kind"], "model.kind", nonempty=True)
@@ -754,11 +1054,30 @@ def _validate_report_envelope(report: Mapping[str, Any]) -> None:
         _string(diagnostic["code"], f"diagnostics[{index}].code", nonempty=True)
         _string(diagnostic["message"], f"diagnostics[{index}].message")
 
+    if schema_version == SCHEMA_VERSION_COMPRESSION:
+        compression = _object_with_exact_fields(
+            report, "compression", _COMPRESSION_SECTION_KEYS
+        )
+        if compression["policy"] not in {"adaptive", "capacity"}:
+            raise ValueError("compression.policy is invalid")
+        if compression["codec"] not in {"auto", "lz4"}:
+            raise ValueError("compression.codec is invalid")
+        for name in _COMPRESSION_SECTION_KEYS - {"policy", "codec"}:
+            _integer(compression[name], f"compression.{name}")
+
 
 def validate_trace_record(record: Mapping[str, Any]) -> None:
-    if set(record) != _TRACE_KEYS:
+    schema_version = record.get("schema_version")
+    expected_keys = (
+        _TRACE_KEYS
+        if schema_version == SCHEMA_VERSION
+        else _TRACE_KEYS_V2
+        if schema_version == SCHEMA_VERSION_COMPRESSION
+        else set()
+    )
+    if set(record) != expected_keys:
         raise ValueError("invalid trace record fields")
-    if record.get("schema_version") != 1 or record.get("record_type") != "xvram.pytorch_trace":
+    if record.get("record_type") != "xvram.pytorch_trace":
         raise ValueError("invalid trace record contract")
     for name in ("sequence", "monotonic_ns", "bytes"):
         value = record.get(name)
@@ -772,16 +1091,46 @@ def validate_trace_record(record: Mapping[str, Any]) -> None:
             not isinstance(value, int) or isinstance(value, bool) or value < 1
         ):
             raise ValueError(f"trace {name} must be null or a positive integer")
-    if record.get("kind") not in _TRACE_KINDS:
+    trace_kinds = _TRACE_KINDS if schema_version == 1 else _TRACE_KINDS_V2
+    if record.get("kind") not in trace_kinds:
         raise ValueError("trace kind is invalid")
     if not isinstance(record.get("operation"), str) or not record["operation"]:
         raise ValueError("trace operation must be non-empty")
     if not isinstance(record.get("reason"), str):
         raise ValueError("trace reason must be a string")
-    if _FORBIDDEN_IDENTITY_TEXT.search(record["operation"]) or _FORBIDDEN_IDENTITY_TEXT.search(
-        record["reason"]
+    if any(
+        pattern.search(value)
+        for value in (record["operation"], record["reason"])
+        for pattern in (_FORBIDDEN_IDENTITY_TEXT, _BARE_ADDRESS_TEXT)
     ):
         raise ValueError("trace contains a serialized CUDA address or stream handle")
+    if schema_version == SCHEMA_VERSION_COMPRESSION:
+        for name in (
+            "chunk_index",
+            "source_generation",
+            "target_generation",
+            "slot_generation",
+        ):
+            value = record.get(name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"trace {name} must be null or non-negative")
+        if record.get("representation") not in {
+            None,
+            "invalid",
+            "implicit_zero",
+            "raw",
+            "lz4_blocks",
+        }:
+            raise ValueError("trace representation is invalid")
+        if record.get("codec_path") not in {
+            None,
+            "raw",
+            "cpu_lz4_gpu_decode",
+            "nvcomp_gpu_codec",
+        }:
+            raise ValueError("trace codec path is invalid")
 
 
 def dumps(report: Mapping[str, Any], *, compact: bool = False) -> str:

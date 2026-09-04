@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO, Mapping
 
 
-MAGIC = b"XVT1"
+MAGIC_V1 = b"XVT1"
+MAGIC_V2 = b"XVT2"
+# Backward-compatible public aliases.  Calls which do not opt into v2 must
+# continue to emit the byte-identical Phase 4b framing contract.
+MAGIC = MAGIC_V1
 PROTOCOL_VERSION = 1
 MAX_PAYLOAD_BYTES = 1024 * 1024
 MAX_TRACE_BATCH_BYTES = 64 * 1024
@@ -37,22 +41,44 @@ class MessageType(enum.IntEnum):
 class Frame:
     message_type: MessageType
     payload: dict[str, Any]
+    protocol_version: int = 1
 
 
-def encode_frame(message_type: MessageType, payload: Mapping[str, Any]) -> bytes:
+def _magic_for(protocol_version: int) -> bytes:
+    if protocol_version == 1:
+        return MAGIC_V1
+    if protocol_version == 2:
+        return MAGIC_V2
+    raise ProtocolError(f"unsupported XVT protocol version {protocol_version}")
+
+
+def encode_frame(
+    message_type: MessageType,
+    payload: Mapping[str, Any],
+    *,
+    protocol_version: int = 1,
+) -> bytes:
     data = json.dumps(
         dict(payload), ensure_ascii=False, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     limit = MAX_TRACE_BATCH_BYTES if message_type is MessageType.TRACE else MAX_PAYLOAD_BYTES
     if len(data) > limit:
         raise ProtocolError(f"{message_type.name.lower()} payload exceeds {limit} bytes")
-    return _HEADER.pack(MAGIC, PROTOCOL_VERSION, int(message_type), len(data)) + data
+    return _HEADER.pack(
+        _magic_for(protocol_version), protocol_version, int(message_type), len(data)
+    ) + data
 
 
 def write_frame(
-    stream: BinaryIO, message_type: MessageType, payload: Mapping[str, Any]
+    stream: BinaryIO,
+    message_type: MessageType,
+    payload: Mapping[str, Any],
+    *,
+    protocol_version: int = 1,
 ) -> None:
-    stream.write(encode_frame(message_type, payload))
+    stream.write(
+        encode_frame(message_type, payload, protocol_version=protocol_version)
+    )
     stream.flush()
 
 
@@ -62,23 +88,38 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
     while remaining:
         chunk = stream.read(remaining)
         if not chunk:
-            raise ProtocolError("truncated XVT1 frame")
+            raise ProtocolError("truncated XVT frame")
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
 
 
-def read_frame(stream: BinaryIO) -> Frame:
+def read_frame(stream: BinaryIO, *, expected_protocol_version: int | None = None) -> Frame:
     header = _read_exact(stream, _HEADER.size)
     magic, version, raw_type, length = _HEADER.unpack(header)
-    if magic != MAGIC:
-        raise ProtocolError("invalid XVT1 magic")
-    if version != PROTOCOL_VERSION:
-        raise ProtocolError(f"unsupported XVT1 version {version}")
+    if magic == MAGIC_V1:
+        protocol_version = 1
+    elif magic == MAGIC_V2:
+        protocol_version = 2
+    else:
+        raise ProtocolError("invalid XVT magic")
+    if (
+        expected_protocol_version is not None
+        and protocol_version != expected_protocol_version
+    ):
+        raise ProtocolError(
+            "unexpected XVT{} frame in XVT{} stream".format(
+                protocol_version, expected_protocol_version
+            )
+        )
+    if version != protocol_version:
+        raise ProtocolError(f"unsupported XVT{protocol_version} version {version}")
     try:
         message_type = MessageType(raw_type)
     except ValueError as exc:
-        raise ProtocolError(f"unknown XVT1 message type {raw_type}") from exc
+        raise ProtocolError(
+            f"unknown XVT{protocol_version} message type {raw_type}"
+        ) from exc
     limit = MAX_TRACE_BATCH_BYTES if message_type is MessageType.TRACE else MAX_PAYLOAD_BYTES
     if length > limit:
         raise ProtocolError(f"{message_type.name.lower()} payload exceeds {limit} bytes")
@@ -86,7 +127,13 @@ def read_frame(stream: BinaryIO) -> Frame:
     try:
         payload = json.loads(raw_payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ProtocolError("XVT1 payload is not valid UTF-8 JSON") from exc
+        raise ProtocolError(
+            f"XVT{protocol_version} payload is not valid UTF-8 JSON"
+        ) from exc
     if not isinstance(payload, dict):
-        raise ProtocolError("XVT1 payload must be a JSON object")
-    return Frame(message_type=message_type, payload=payload)
+        raise ProtocolError(f"XVT{protocol_version} payload must be a JSON object")
+    return Frame(
+        message_type=message_type,
+        payload=payload,
+        protocol_version=protocol_version,
+    )

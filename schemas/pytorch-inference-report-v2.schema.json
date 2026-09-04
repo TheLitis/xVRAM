@@ -1,0 +1,954 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/pytorch-inference-report-v2.schema.json",
+  "title": "xVRAM PyTorch inference report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "build",
+    "system",
+    "device",
+    "configuration",
+    "model",
+    "graph",
+    "execution",
+    "cache",
+    "verification",
+    "proof",
+    "outcome",
+    "cleanup",
+    "diagnostics",
+    "compression"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "report_type": {
+      "const": "xvram.pytorch_inference"
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "git_commit",
+        "torch_version",
+        "cuda_version",
+        "torch_target_version",
+        "bridge_api_version"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "git_commit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "torch_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cuda_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "torch_target_version": {
+          "const": "2.11"
+        },
+        "bridge_api_version": {
+          "const": 2
+        }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "python_version"
+      ],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "python_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "name",
+        "total_vram_bytes",
+        "compute_capability",
+        "identifiers_included"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "total_vram_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "compute_capability": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identifiers_included": {
+          "type": "boolean"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "model",
+        "model_ratio",
+        "layers",
+        "batch",
+        "sequence",
+        "hidden",
+        "intermediate",
+        "heads",
+        "dtype",
+        "policy",
+        "cache_target_bytes",
+        "chunk_size_bytes",
+        "device_headroom_bytes",
+        "scratch_cap_bytes",
+        "prefetch_distance",
+        "sdpa_backend",
+        "seed",
+        "compression",
+        "compression_codec",
+        "state_pattern",
+        "host_store_cap_bytes",
+        "host_headroom_bytes",
+        "compression_scratch_cap_bytes",
+        "codec_slots",
+        "codec_workers"
+      ],
+      "properties": {
+        "device": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model": {
+          "enum": [
+            "llama2-like",
+            "operator-smoke"
+          ]
+        },
+        "model_ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "layers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "batch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hidden": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "intermediate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "heads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dtype": {
+          "enum": [
+            "float16",
+            "bfloat16",
+            "float32"
+          ]
+        },
+        "policy": {
+          "enum": [
+            "clock",
+            "lru"
+          ]
+        },
+        "cache_target_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "chunk_size_bytes": {
+          "$ref": "#/$defs/positiveBytes"
+        },
+        "device_headroom_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "scratch_cap_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "prefetch_distance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "sdpa_backend": {
+          "enum": [
+            "math",
+            "flash_attention"
+          ]
+        },
+        "seed": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{1,16}$"
+        },
+        "include_identifiers": {
+          "type": "boolean"
+        },
+        "compression": {
+          "enum": [
+            "adaptive",
+            "capacity"
+          ]
+        },
+        "compression_codec": {
+          "enum": [
+            "auto",
+            "lz4"
+          ]
+        },
+        "state_pattern": {
+          "enum": [
+            "incompressible",
+            "structured"
+          ]
+        },
+        "host_store_cap_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "host_headroom_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "compression_scratch_cap_bytes": {
+          "$ref": "#/$defs/positiveBytes"
+        },
+        "codec_slots": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 8
+        },
+        "codec_workers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "layers",
+        "batch",
+        "sequence",
+        "hidden",
+        "intermediate",
+        "heads",
+        "logical_bytes",
+        "parameter_bytes",
+        "activation_bytes"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "batch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hidden": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "intermediate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "heads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "logical_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "parameter_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "activation_bytes": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture",
+        "hash",
+        "backend_hash",
+        "allowlist_version",
+        "allowlist_hash",
+        "node_count",
+        "region_count",
+        "unsupported_nodes"
+      ],
+      "properties": {
+        "capture": {
+          "const": "torch.export.strict"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "backend_hash": {
+          "type": "string"
+        },
+        "allowlist_version": {
+          "const": 1
+        },
+        "allowlist_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "region_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupported_nodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leases_acquired",
+        "leases_sealed",
+        "leases_retired",
+        "tiled_gemm_regions",
+        "tiled_gemm_tiles",
+        "events_recorded",
+        "events_retired",
+        "live_views_peak",
+        "live_views_final",
+        "regions_completed",
+        "region_timings_ms",
+        "scratch_peak_bytes",
+        "scratch_cap_bytes",
+        "prefetch_distance",
+        "trace_records",
+        "trace_complete"
+      ],
+      "properties": {
+        "leases_acquired": {
+          "$ref": "#/$defs/count"
+        },
+        "leases_sealed": {
+          "$ref": "#/$defs/count"
+        },
+        "leases_retired": {
+          "$ref": "#/$defs/count"
+        },
+        "tiled_gemm_regions": {
+          "$ref": "#/$defs/count"
+        },
+        "tiled_gemm_tiles": {
+          "$ref": "#/$defs/count"
+        },
+        "events_recorded": {
+          "$ref": "#/$defs/count"
+        },
+        "events_retired": {
+          "$ref": "#/$defs/count"
+        },
+        "live_views_peak": {
+          "$ref": "#/$defs/count"
+        },
+        "live_views_final": {
+          "$ref": "#/$defs/count"
+        },
+        "regions_completed": {
+          "$ref": "#/$defs/count"
+        },
+        "region_timings_ms": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "scratch_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "scratch_cap_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "prefetch_distance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "trace_records": {
+          "$ref": "#/$defs/count"
+        },
+        "trace_complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_bytes",
+        "chunk_bytes",
+        "resident_bytes",
+        "resident_peak_bytes",
+        "maps",
+        "set_access",
+        "unmaps",
+        "hits",
+        "misses",
+        "h2d_bytes",
+        "d2h_bytes",
+        "weight_d2h_bytes",
+        "evictions",
+        "frame_reuses",
+        "prefetch_submitted",
+        "prefetch_retired",
+        "unsafe_remaps",
+        "unsafe_transitions"
+      ],
+      "properties": {
+        "target_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "chunk_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "resident_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "resident_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "maps": {
+          "$ref": "#/$defs/count"
+        },
+        "set_access": {
+          "$ref": "#/$defs/count"
+        },
+        "unmaps": {
+          "$ref": "#/$defs/count"
+        },
+        "hits": {
+          "$ref": "#/$defs/count"
+        },
+        "misses": {
+          "$ref": "#/$defs/count"
+        },
+        "h2d_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "weight_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "evictions": {
+          "$ref": "#/$defs/count"
+        },
+        "frame_reuses": {
+          "$ref": "#/$defs/count"
+        },
+        "prefetch_submitted": {
+          "$ref": "#/$defs/count"
+        },
+        "prefetch_retired": {
+          "$ref": "#/$defs/count"
+        },
+        "unsafe_remaps": {
+          "$ref": "#/$defs/count"
+        },
+        "unsafe_transitions": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_digest",
+        "output_digest",
+        "max_abs_error",
+        "max_rel_error",
+        "mismatch_count"
+      ],
+      "properties": {
+        "reference_digest": {
+          "type": "string"
+        },
+        "output_digest": {
+          "type": "string"
+        },
+        "max_abs_error": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_rel_error": {
+          "type": "number",
+          "minimum": 0
+        },
+        "mismatch_count": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_exceeds_vram",
+        "real_oversubscription",
+        "stable_addresses",
+        "maps_match_set_access",
+        "event_safe",
+        "zero_weight_writeback",
+        "bounded_scratch",
+        "reference_matches",
+        "zero_live_views",
+        "full_cleanup"
+      ],
+      "properties": {
+        "logical_exceeds_vram": {
+          "type": "boolean"
+        },
+        "real_oversubscription": {
+          "type": "boolean"
+        },
+        "stable_addresses": {
+          "type": "boolean"
+        },
+        "maps_match_set_access": {
+          "type": "boolean"
+        },
+        "event_safe": {
+          "type": "boolean"
+        },
+        "zero_weight_writeback": {
+          "type": "boolean"
+        },
+        "bounded_scratch": {
+          "type": "boolean"
+        },
+        "reference_matches": {
+          "type": "boolean"
+        },
+        "zero_live_views": {
+          "type": "boolean"
+        },
+        "full_cleanup": {
+          "type": "boolean"
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code",
+        "message"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "skipped",
+            "corruption",
+            "oom",
+            "timeout",
+            "failed"
+          ]
+        },
+        "exit_code": {
+          "enum": [
+            0,
+            23,
+            24,
+            25,
+            26,
+            27,
+            64,
+            70,
+            74
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker_reaped",
+        "leases_drained",
+        "views_released",
+        "mappings_unmapped",
+        "handles_released",
+        "reservations_released",
+        "streams_destroyed",
+        "context_released",
+        "complete"
+      ],
+      "properties": {
+        "worker_reaped": {
+          "type": "boolean"
+        },
+        "leases_drained": {
+          "type": "boolean"
+        },
+        "views_released": {
+          "type": "boolean"
+        },
+        "mappings_unmapped": {
+          "type": "boolean"
+        },
+        "handles_released": {
+          "type": "boolean"
+        },
+        "reservations_released": {
+          "type": "boolean"
+        },
+        "streams_destroyed": {
+          "type": "boolean"
+        },
+        "context_released": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "compression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "codec",
+        "host_store_cap_bytes",
+        "host_headroom_bytes",
+        "host_budget_bytes",
+        "host_budget_peak_bytes",
+        "conversion_scratch_peak_bytes",
+        "logical_bytes",
+        "stored_bytes",
+        "stored_peak_bytes",
+        "raw_bytes",
+        "compressed_bytes",
+        "implicit_zero_bytes",
+        "invalid_bytes",
+        "logical_h2d_bytes",
+        "pcie_h2d_bytes",
+        "pcie_h2d_payload_bytes",
+        "pcie_h2d_metadata_bytes",
+        "logical_d2h_bytes",
+        "pcie_d2h_bytes",
+        "pcie_d2h_payload_bytes",
+        "pcie_d2h_metadata_bytes",
+        "rejected_candidate_logical_d2h_bytes",
+        "hot_allocation_d2h_bytes",
+        "non_hot_allocation_d2h_bytes",
+        "raw_path_decisions",
+        "cpu_lz4_gpu_decode_decisions",
+        "gpu_lz4_decisions",
+        "never_compress_decisions",
+        "raw_fallbacks",
+        "cpu_codec_fallbacks",
+        "gpu_codec_fallbacks",
+        "compression_attempts",
+        "compression_commits",
+        "decompression_attempts",
+        "decompression_commits",
+        "generations_created",
+        "generations_committed",
+        "generations_discarded",
+        "workspace_bytes",
+        "workspace_peak_bytes",
+        "slot_bytes",
+        "slot_peak_bytes",
+        "spill_reserved_bytes",
+        "spill_reserved_peak_bytes",
+        "cpu_encode_nanoseconds",
+        "cpu_decode_nanoseconds",
+        "gpu_encode_nanoseconds",
+        "gpu_decode_nanoseconds",
+        "verification_nanoseconds",
+        "codec_events_recorded",
+        "codec_events_retired"
+      ],
+      "properties": {
+        "policy": {
+          "enum": [
+            "adaptive",
+            "capacity"
+          ]
+        },
+        "codec": {
+          "enum": [
+            "auto",
+            "lz4"
+          ]
+        },
+        "host_store_cap_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "host_headroom_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "host_budget_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "host_budget_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "conversion_scratch_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "logical_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "stored_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "stored_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "raw_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "compressed_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "implicit_zero_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "invalid_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "logical_h2d_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_h2d_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_h2d_payload_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_h2d_metadata_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "logical_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_d2h_payload_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "pcie_d2h_metadata_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "rejected_candidate_logical_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "hot_allocation_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "non_hot_allocation_d2h_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "raw_path_decisions": {
+          "$ref": "#/$defs/count"
+        },
+        "cpu_lz4_gpu_decode_decisions": {
+          "$ref": "#/$defs/count"
+        },
+        "gpu_lz4_decisions": {
+          "$ref": "#/$defs/count"
+        },
+        "never_compress_decisions": {
+          "$ref": "#/$defs/count"
+        },
+        "raw_fallbacks": {
+          "$ref": "#/$defs/count"
+        },
+        "cpu_codec_fallbacks": {
+          "$ref": "#/$defs/count"
+        },
+        "gpu_codec_fallbacks": {
+          "$ref": "#/$defs/count"
+        },
+        "compression_attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "compression_commits": {
+          "$ref": "#/$defs/count"
+        },
+        "decompression_attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "decompression_commits": {
+          "$ref": "#/$defs/count"
+        },
+        "generations_created": {
+          "$ref": "#/$defs/count"
+        },
+        "generations_committed": {
+          "$ref": "#/$defs/count"
+        },
+        "generations_discarded": {
+          "$ref": "#/$defs/count"
+        },
+        "workspace_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "workspace_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "slot_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "slot_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "spill_reserved_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "spill_reserved_peak_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "cpu_encode_nanoseconds": {
+          "$ref": "#/$defs/count"
+        },
+        "cpu_decode_nanoseconds": {
+          "$ref": "#/$defs/count"
+        },
+        "gpu_encode_nanoseconds": {
+          "$ref": "#/$defs/count"
+        },
+        "gpu_decode_nanoseconds": {
+          "$ref": "#/$defs/count"
+        },
+        "verification_nanoseconds": {
+          "$ref": "#/$defs/count"
+        },
+        "codec_events_recorded": {
+          "$ref": "#/$defs/count"
+        },
+        "codec_events_retired": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "positiveBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

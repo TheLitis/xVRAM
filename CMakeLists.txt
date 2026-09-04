@@ -907,7 +907,7 @@ if(XVRAM_TORCH_RUNTIME_ENABLED)
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 endif()
-install(FILES include/xvram/xvram.h include/xvram/torch_allocator.h
+install(FILES include/xvram/xvram.h include/xvram/xvram_v2.h include/xvram/torch_allocator.h
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
 install(FILES include/xvram/compression/report.hpp
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram/compression")
@@ -919,6 +919,8 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/gemm-bench-report-v1.schema.json
               schemas/pytorch-inference-report-v1.schema.json
               schemas/pytorch-inference-trace-record-v1.schema.json
+              schemas/pytorch-inference-report-v2.schema.json
+              schemas/pytorch-inference-trace-record-v2.schema.json
               schemas/adaptive-compression-report-v1.schema.json
               schemas/compression-trace-record-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")

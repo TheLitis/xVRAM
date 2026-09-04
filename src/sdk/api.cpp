@@ -1,7 +1,7 @@
 #include "sdk/backend.hpp"
 #include "sdk/deadline.hpp"
 #include "sdk/status.hpp"
-#include "xvram/xvram.h"
+#include "xvram/xvram_v2.h"
 
 #include <atomic>
 #include <cstring>
@@ -206,6 +206,33 @@ template <typename Structure> [[nodiscard]] bool has_v1_size(const Structure* st
   return {};
 }
 
+[[nodiscard]] Error validate_session_config_v2(const xvram_session_config_v2* config) {
+  if (!has_v1_size(config)) {
+    return incompatible("session_create_v2", "session config is null or smaller than v2");
+  }
+  if (config->flags != 0U ||
+      !all_zero(config->reserved, sizeof(config->reserved) / sizeof(config->reserved[0]))) {
+    return invalid("session_create_v2", "unknown flags or non-zero reserved field");
+  }
+  if (Error error = validate_session_config(&config->v1); error) {
+    return error;
+  }
+  if (config->compression_mode != XVRAM_COMPRESSION_DISABLED &&
+      config->compression_mode != XVRAM_COMPRESSION_ADAPTIVE &&
+      config->compression_mode != XVRAM_COMPRESSION_CAPACITY) {
+    return invalid("session_create_v2", "invalid compression mode");
+  }
+  if (config->compression_codec != XVRAM_COMPRESSION_CODEC_AUTO &&
+      config->compression_codec != XVRAM_COMPRESSION_CODEC_LZ4) {
+    return invalid("session_create_v2", "invalid compression codec");
+  }
+  if (config->compression_workspace_cap_bytes == 0U || config->codec_slots < 2U ||
+      config->codec_slots > 8U || config->codec_workers == 0U || config->codec_workers > 8U) {
+    return invalid("session_create_v2", "invalid compression workspace, slots, or workers");
+  }
+  return {};
+}
+
 [[nodiscard]] Error collect_accesses(const std::shared_ptr<SessionState>& owner,
                                      const xvram_access_range_v1* ranges,
                                      const std::uint64_t range_count, const bool allow_empty,
@@ -369,6 +396,55 @@ template <typename Structure> [[nodiscard]] bool has_v1_size(const Structure* st
   });
 }
 
+[[nodiscard]] xvram_status XVRAM_CALL session_create_v2_entry(const xvram_session_config_v2* config,
+                                                              xvram_session* out_session) noexcept {
+  if (out_session == nullptr) {
+    return XVRAM_STATUS_INVALID_ARGUMENT;
+  }
+  *out_session = nullptr;
+
+  return boundary({}, "session_create_v2", [&]() -> Error {
+    if (Error error = validate_session_config_v2(config); error) {
+      return error;
+    }
+    const xvram::sdk::BackendFactoryProvider provider =
+        xvram::sdk::factory_provider.load(std::memory_order_acquire);
+    if (provider == nullptr) {
+      return xvram::sdk::make_error(XVRAM_STATUS_UNAVAILABLE, "sdk", "session_create_v2",
+                                    "runtime backend is not installed");
+    }
+    xvram::sdk::BackendFactory* factory = provider();
+    if (factory == nullptr) {
+      return xvram::sdk::make_error(XVRAM_STATUS_UNAVAILABLE, "sdk", "session_create_v2",
+                                    "runtime backend provider returned null");
+    }
+
+    std::shared_ptr<xvram::sdk::BackendSession> backend;
+    if (Error error = factory->create_session_v2(*config, backend); error) {
+      return error;
+    }
+    if (!backend) {
+      return xvram::sdk::make_error(XVRAM_STATUS_INTERNAL, "sdk", "session_create_v2",
+                                    "backend returned success without a session");
+    }
+
+    const std::uint64_t effective_chunk_bytes = backend->chunk_size_bytes();
+    if (effective_chunk_bytes == 0U) {
+      return xvram::sdk::make_error(XVRAM_STATUS_INTERNAL, "sdk", "session_create_v2",
+                                    "backend reported a zero effective chunk size");
+    }
+    auto state = std::make_shared<SessionState>(std::move(backend), effective_chunk_bytes,
+                                                config->v1.workspace_cap_bytes);
+    auto* handle = new (std::nothrow) xvram_session_t{std::move(state)};
+    if (handle == nullptr) {
+      return xvram::sdk::make_error(XVRAM_STATUS_HOST_OUT_OF_MEMORY, "sdk", "session_create_v2",
+                                    "failed to allocate session handle");
+    }
+    *out_session = handle;
+    return {};
+  });
+}
+
 [[nodiscard]] xvram_status XVRAM_CALL
 session_get_error_entry(const xvram_session session, xvram_error_info_v1* out_error) noexcept {
   if (session == nullptr || !session->state || !has_v1_size(out_error)) {
@@ -390,6 +466,25 @@ session_get_error_entry(const xvram_session session, xvram_error_info_v1* out_er
     xvram_session_telemetry_v1 local{};
     local.struct_size = sizeof(local);
     if (Error error = session->state->backend->telemetry(local); error) {
+      return error;
+    }
+    local.struct_size = caller_size;
+    *out_telemetry = local;
+    return {};
+  });
+}
+
+[[nodiscard]] xvram_status XVRAM_CALL session_get_telemetry_v2_entry(
+    const xvram_session session, xvram_session_telemetry_v2* out_telemetry) noexcept {
+  if (session == nullptr || !session->state || !has_v1_size(out_telemetry)) {
+    return XVRAM_STATUS_INVALID_ARGUMENT;
+  }
+  return boundary(session->state, "session_get_telemetry_v2", [&]() -> Error {
+    const std::uint32_t caller_size = out_telemetry->struct_size;
+    xvram_session_telemetry_v2 local{};
+    local.struct_size = sizeof(local);
+    local.v1.struct_size = sizeof(local.v1);
+    if (Error error = session->state->backend->telemetry_v2(local); error) {
       return error;
     }
     local.struct_size = caller_size;
@@ -904,17 +999,37 @@ void XVRAM_CALL operation_release_entry(const xvram_operation operation) noexcep
   return api;
 }
 
+[[nodiscard]] const xvram_api_v2& api_v2() noexcept {
+  static const xvram_api_v2 api = [] {
+    xvram_api_v2 value{};
+    value.v1 = api_v1();
+    value.v1.struct_size = sizeof(value);
+    value.v1.abi_version = XVRAM_ABI_VERSION_2;
+    value.session_create_v2 = &session_create_v2_entry;
+    value.session_get_telemetry_v2 = &session_get_telemetry_v2_entry;
+    return value;
+  }();
+  return api;
+}
+
 } // namespace
 
 extern "C" XVRAM_API xvram_status XVRAM_CALL xvram_get_api(const uint32_t requested_abi_version,
                                                            const uint32_t caller_api_size,
                                                            void* out_api) {
-  if (requested_abi_version != XVRAM_ABI_VERSION_1) {
-    return XVRAM_STATUS_INCOMPATIBLE_ABI;
+  if (requested_abi_version == XVRAM_ABI_VERSION_1) {
+    if (out_api == nullptr || caller_api_size < sizeof(xvram_api_v1)) {
+      return XVRAM_STATUS_INVALID_ARGUMENT;
+    }
+    std::memcpy(out_api, &api_v1(), sizeof(xvram_api_v1));
+    return XVRAM_STATUS_SUCCESS;
   }
-  if (out_api == nullptr || caller_api_size < sizeof(xvram_api_v1)) {
-    return XVRAM_STATUS_INVALID_ARGUMENT;
+  if (requested_abi_version == XVRAM_ABI_VERSION_2) {
+    if (out_api == nullptr || caller_api_size < sizeof(xvram_api_v2)) {
+      return XVRAM_STATUS_INVALID_ARGUMENT;
+    }
+    std::memcpy(out_api, &api_v2(), sizeof(xvram_api_v2));
+    return XVRAM_STATUS_SUCCESS;
   }
-  std::memcpy(out_api, &api_v1(), sizeof(xvram_api_v1));
-  return XVRAM_STATUS_SUCCESS;
+  return XVRAM_STATUS_INCOMPATIBLE_ABI;
 }

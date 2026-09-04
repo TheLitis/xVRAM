@@ -5,6 +5,7 @@
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
+#include "platform/system_info.hpp"
 #include "residency/runtime.hpp"
 
 #include <algorithm>
@@ -324,6 +325,11 @@ public:
         runtime_(cuda_, runtime_config_),
         close_operation_(std::make_shared<RuntimeOperation>(0, 1)) {}
 
+  RuntimeSession(xvram_session_config_v2 config, cuda::abi::Context attached_context)
+      : config_(config.v1), runtime_config_(make_runtime_config(config, attached_context)),
+        runtime_(cuda_, runtime_config_),
+        close_operation_(std::make_shared<RuntimeOperation>(0, 1)) {}
+
   ~RuntimeSession() override {
     (void)close(XVRAM_TIMEOUT_INFINITE);
   }
@@ -556,6 +562,63 @@ public:
     return {};
   }
 
+  [[nodiscard]] Error telemetry_v2(xvram_session_telemetry_v2& output) const override {
+    output.v1 = {};
+    output.v1.struct_size = sizeof(output.v1);
+    if (Error error = telemetry(output.v1); error) {
+      return error;
+    }
+    const std::scoped_lock lock(telemetry_mutex_);
+    const residency::RuntimeTelemetry& source = telemetry_snapshot_;
+    output.logical_bytes = source.logical_bytes;
+    output.host_stored_bytes = source.host_stored_bytes;
+    output.host_stored_peak_bytes = source.host_stored_peak_bytes;
+    output.host_raw_bytes = source.host_raw_bytes;
+    output.host_compressed_bytes = source.host_compressed_bytes;
+    output.host_implicit_zero_bytes = source.host_implicit_zero_bytes;
+    output.host_invalid_bytes = source.host_invalid_bytes;
+    output.logical_h2d_bytes = source.logical_h2d_bytes;
+    output.pcie_h2d_bytes = source.pcie_h2d_bytes;
+    output.logical_d2h_bytes = source.logical_d2h_bytes;
+    output.pcie_d2h_bytes = source.pcie_d2h_bytes;
+    output.raw_path_decisions = source.raw_path_decisions;
+    output.cpu_lz4_gpu_decode_decisions = source.cpu_lz4_gpu_decode_decisions;
+    output.gpu_lz4_decisions = source.gpu_lz4_decisions;
+    output.never_compress_decisions = source.never_compress_decisions;
+    output.raw_fallbacks = source.raw_fallbacks;
+    output.cpu_codec_fallbacks = source.cpu_codec_fallbacks;
+    output.gpu_codec_fallbacks = source.gpu_codec_fallbacks;
+    output.compression_attempts = source.compression_attempts;
+    output.compression_commits = source.compression_commits;
+    output.decompression_attempts = source.decompression_attempts;
+    output.decompression_commits = source.decompression_commits;
+    output.generations_created = source.generations_created;
+    output.generations_committed = source.generations_committed;
+    output.generations_discarded = source.generations_discarded;
+    output.codec_workspace_bytes = source.codec_workspace_bytes;
+    output.codec_workspace_peak_bytes = source.codec_workspace_peak_bytes;
+    output.codec_slot_bytes = source.codec_slot_bytes;
+    output.codec_slot_peak_bytes = source.codec_slot_peak_bytes;
+    output.spill_reserved_bytes = source.spill_reserved_bytes;
+    output.spill_reserved_peak_bytes = source.spill_reserved_peak_bytes;
+    output.cpu_encode_nanoseconds = source.cpu_encode_nanoseconds;
+    output.cpu_decode_nanoseconds = source.cpu_decode_nanoseconds;
+    output.gpu_encode_nanoseconds = source.gpu_encode_nanoseconds;
+    output.gpu_decode_nanoseconds = source.gpu_decode_nanoseconds;
+    output.verification_nanoseconds = source.verification_nanoseconds;
+    // ABI-v1 sessions predate split logical/PCIe counters. Preserve exact raw
+    // accounting until the compression runtime starts publishing both values.
+    if (output.logical_h2d_bytes == 0U && output.pcie_h2d_bytes == 0U) {
+      output.logical_h2d_bytes = output.v1.bytes_h2d;
+      output.pcie_h2d_bytes = output.v1.bytes_h2d;
+    }
+    if (output.logical_d2h_bytes == 0U && output.pcie_d2h_bytes == 0U) {
+      output.logical_d2h_bytes = output.v1.bytes_d2h;
+      output.pcie_d2h_bytes = output.v1.bytes_d2h;
+    }
+    return {};
+  }
+
   [[nodiscard]] Error drain(const std::uint64_t timeout_ms) override {
     return invoke_sync(
         [this]() {
@@ -732,6 +795,26 @@ private:
     output.maximum_transaction_duration =
         config.max_transaction_ms == 0 ? std::chrono::milliseconds(250)
                                        : std::chrono::milliseconds(config.max_transaction_ms);
+    return output;
+  }
+
+  [[nodiscard]] static residency::RuntimeConfig
+  make_runtime_config(const xvram_session_config_v2& config,
+                      const cuda::abi::Context attached_context) {
+    residency::RuntimeConfig output = make_runtime_config(config.v1, attached_context);
+    output.compression_mode = config.compression_mode == XVRAM_COMPRESSION_CAPACITY
+                                  ? residency::CompressionMode::capacity
+                                  : (config.compression_mode == XVRAM_COMPRESSION_ADAPTIVE
+                                         ? residency::CompressionMode::adaptive
+                                         : residency::CompressionMode::disabled);
+    output.compression_codec = config.compression_codec == XVRAM_COMPRESSION_CODEC_LZ4
+                                   ? residency::CompressionCodec::lz4
+                                   : residency::CompressionCodec::automatic;
+    output.host_store_cap_bytes = config.host_store_cap_bytes;
+    output.host_headroom_bytes = config.host_headroom_bytes;
+    output.compression_workspace_cap_bytes = config.compression_workspace_cap_bytes;
+    output.codec_slots = config.codec_slots;
+    output.codec_workers = config.codec_workers;
     return output;
   }
 
@@ -1118,14 +1201,14 @@ public:
              plan = plan_](RuntimeOperation& progress) {
               gemm::ExecutionHooks hooks;
               hooks.boundary = [&](const gemm::ExecutionBoundary boundary, std::size_t) {
-                return progress.deadline_error("gemm",
-                                               gemm::execution_boundary_operation(boundary))
+                return progress.deadline_error("gemm", gemm::execution_boundary_operation(boundary))
                            ? gemm::ExecutionControl::deadline_expired
                            : gemm::ExecutionControl::proceed;
               };
               hooks.progress = [&](std::size_t, std::size_t) { progress.advance_unit(); };
-              hooks.algorithm =
-                  [&](const cublas::PreferredGemmResult& result) { owner->record_algorithm(result); };
+              hooks.algorithm = [&](const cublas::PreferredGemmResult& result) {
+                owner->record_algorithm(result);
+              };
               const gemm::TiledGemmResources resources{
                   owner->runtime(),
                   gemm::NativeGemmResources{owner->cublas_dispatch(), owner->cublas_handle(),
@@ -1164,9 +1247,9 @@ private:
                                "CUBLAS_STATUS", result.message);
     case gemm::ExecutionStatus::deadline_expired: {
       Error deadline = progress.deadline_error(result.stage.c_str(), result.operation.c_str());
-      return deadline ? deadline
-                      : make_error(XVRAM_STATUS_TIMEOUT, result.stage, result.operation,
-                                   result.message);
+      return deadline
+                 ? deadline
+                 : make_error(XVRAM_STATUS_TIMEOUT, result.stage, result.operation, result.message);
     }
     case gemm::ExecutionStatus::cancelled:
       return make_error(XVRAM_STATUS_CANCELLED, result.stage, result.operation, result.message);
@@ -1280,6 +1363,54 @@ public:
                                      std::shared_ptr<BackendSession>& output) override {
     cuda::abi::Context attached = nullptr;
     if (config.context_mode == XVRAM_CONTEXT_ATTACH_CURRENT) {
+      cuda::CudaApi capture;
+      const auto load = capture.load();
+      if (load.status != cuda::CudaApi::LoadStatus::loaded || capture.init_ == nullptr ||
+          capture.context_get_current_ == nullptr) {
+        return make_error(XVRAM_STATUS_UNAVAILABLE, "session", "capture_context",
+                          "CUDA driver is unavailable for attach-current mode");
+      }
+      if (capture.init_(0) != cuda::abi::success ||
+          capture.context_get_current_(&attached) != cuda::abi::success || attached == nullptr) {
+        return make_error(XVRAM_STATUS_INVALID_ARGUMENT, "session", "capture_context",
+                          "no CUDA context is current on the calling thread");
+      }
+    }
+    auto session = std::make_shared<RuntimeSession>(config, attached);
+    if (Error error = session->start(); error) {
+      return error;
+    }
+    output = std::move(session);
+    return {};
+  }
+
+  [[nodiscard]] Error create_session_v2(const xvram_session_config_v2& requested,
+                                        std::shared_ptr<BackendSession>& output) override {
+    if (requested.compression_mode == XVRAM_COMPRESSION_DISABLED) {
+      return create_session(requested.v1, output);
+    }
+    xvram_session_config_v2 config = requested;
+    if (config.host_store_cap_bytes == 0U || config.host_headroom_bytes == 0U) {
+      const probe::SystemInfo system = platform::collect_system_info();
+      if (!system.physical_memory_bytes.has_value() || !system.available_memory_bytes.has_value()) {
+        return make_error(XVRAM_STATUS_UNAVAILABLE, "session", "host_budget",
+                          "automatic compressed backing admission requires host memory telemetry");
+      }
+      constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+      if (config.host_headroom_bytes == 0U) {
+        config.host_headroom_bytes = std::max(minimum_headroom, *system.physical_memory_bytes / 4U);
+      }
+      if (config.host_store_cap_bytes == 0U) {
+        if (*system.available_memory_bytes <= config.host_headroom_bytes) {
+          return make_error(XVRAM_STATUS_HOST_OUT_OF_MEMORY, "session", "host_budget",
+                            "available host memory does not satisfy automatic headroom");
+        }
+        config.host_store_cap_bytes = *system.available_memory_bytes - config.host_headroom_bytes;
+      }
+    }
+
+    cuda::abi::Context attached = nullptr;
+    if (config.v1.context_mode == XVRAM_CONTEXT_ATTACH_CURRENT) {
       cuda::CudaApi capture;
       const auto load = capture.load();
       if (load.status != cuda::CudaApi::LoadStatus::loaded || capture.init_ == nullptr ||

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sdk/status.hpp"
-#include "xvram/xvram.h"
+#include "xvram/xvram_v2.h"
 
 #include <cstdint>
 #include <memory>
@@ -108,6 +108,20 @@ public:
   [[nodiscard]] virtual Error create_gemm_plan(const GemmRequest& request,
                                                std::shared_ptr<BackendGemmPlan>& output) = 0;
   [[nodiscard]] virtual Error telemetry(xvram_session_telemetry_v1& output) const = 0;
+  [[nodiscard]] virtual Error telemetry_v2(xvram_session_telemetry_v2& output) const {
+    output.v1 = {};
+    output.v1.struct_size = sizeof(output.v1);
+    if (Error error = telemetry(output.v1); error) {
+      return error;
+    }
+    // The default adapter describes an ABI-v1 raw session. Compression-aware
+    // backends override this method with authoritative representation counters.
+    output.logical_h2d_bytes = output.v1.bytes_h2d;
+    output.pcie_h2d_bytes = output.v1.bytes_h2d;
+    output.logical_d2h_bytes = output.v1.bytes_d2h;
+    output.pcie_d2h_bytes = output.v1.bytes_d2h;
+    return {};
+  }
   [[nodiscard]] virtual Error drain(std::uint64_t timeout_ms) = 0;
   [[nodiscard]] virtual Error close(std::uint64_t timeout_ms) = 0;
 };
@@ -118,6 +132,14 @@ public:
 
   [[nodiscard]] virtual Error create_session(const xvram_session_config_v1& config,
                                              std::shared_ptr<BackendSession>& output) = 0;
+  [[nodiscard]] virtual Error create_session_v2(const xvram_session_config_v2& config,
+                                                std::shared_ptr<BackendSession>& output) {
+    if (config.compression_mode != XVRAM_COMPRESSION_DISABLED) {
+      return make_error(XVRAM_STATUS_UNSUPPORTED, "sdk", "session_create_v2",
+                        "backend does not implement compressed host backing");
+    }
+    return create_session(config.v1, output);
+  }
 };
 
 /*

@@ -36,6 +36,38 @@ from .torch_workload import Llama2LikeConfig, build_llama2_like, deterministic_v
 DEFAULT_TORCH_SEED = 0x585652414D503034
 DEFAULT_STATE_CHUNK_BYTES = 64 << 20
 _GENERATION_BLOCK_ELEMENTS = 1 << 20
+_STRUCTURED_PERIOD_ELEMENTS = 4093
+_STATE_PATTERNS = frozenset({"incompressible", "structured"})
+
+
+def structured_values(
+    element_offset: int,
+    element_count: int,
+    *,
+    seed: int,
+    dtype: Any,
+    scale: float = 0.02,
+) -> Any:
+    """Generate a losslessly compressible, numerically non-trivial state range.
+
+    The same LCG used by the incompressible fixture is evaluated over a small
+    prime-period address space.  A 64 KiB LZ4 block therefore contains several
+    byte-identical periods while adjacent matrix rows begin at different
+    phases.  Absolute offsets keep partial/chunked reads order-independent.
+    """
+
+    if element_offset < 0 or element_count < 0:
+        raise ValueError("element offset and count must be non-negative")
+    torch = _torch()
+    indices = torch.arange(
+        element_offset,
+        element_offset + element_count,
+        dtype=torch.int64,
+        device="cpu",
+    ).remainder(_STRUCTURED_PERIOD_ELEMENTS)
+    mixed = (indices * 1103515245 + (int(seed) & 0x7FFFFFFF)) & 0x7FFFFFFF
+    values = mixed.to(torch.float32).mul_(1.0 / 1073741824.0).sub_(1.0)
+    return values.mul_(float(scale)).to(dtype=dtype)
 
 
 @dataclass(frozen=True)
@@ -164,15 +196,26 @@ class _ParameterStorage(_GeneratedStorage):
         absolute_element_offset: int,
         seed: int,
         scale: float,
+        state_pattern: str,
     ) -> None:
         super().__init__(dtype=dtype, storage_bytes=storage_bytes)
         self._absolute_element_offset = int(absolute_element_offset)
         self._seed = int(seed)
         self._scale = float(scale)
+        self._state_pattern = _normalize_state_pattern(state_pattern)
 
     def _generate_elements(self, element_offset: int, element_count: int) -> Any:
+        absolute_offset = self._absolute_element_offset + element_offset
+        if self._state_pattern == "structured":
+            return structured_values(
+                absolute_offset,
+                element_count,
+                seed=self._seed,
+                dtype=self.dtype,
+                scale=self._scale,
+            )
         return deterministic_values(
-            self._absolute_element_offset + element_offset,
+            absolute_offset,
             element_count,
             seed=self._seed,
             dtype=self.dtype,
@@ -233,6 +276,7 @@ class DeterministicLlamaStateProvider(StateProvider):
         dtype: Any = None,
         chunk_bytes: int = DEFAULT_STATE_CHUNK_BYTES,
         scale: float = 0.02,
+        state_pattern: str = "incompressible",
     ) -> None:
         torch = _torch()
         if getattr(module, "training", False):
@@ -242,6 +286,7 @@ class DeterministicLlamaStateProvider(StateProvider):
         self.dtype = _resolve_dtype(dtype, torch)
         self.chunk_bytes = int(chunk_bytes)
         self.scale = float(scale)
+        self.state_pattern = _normalize_state_pattern(state_pattern)
         if self.chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be positive")
         if not math.isfinite(self.scale) or self.scale <= 0.0:
@@ -295,6 +340,7 @@ class DeterministicLlamaStateProvider(StateProvider):
                         absolute_element_offset=parameter_cursor,
                         seed=self.seed,
                         scale=self.scale,
+                        state_pattern=self.state_pattern,
                     )
                     parameter_cursor += storage_bytes // spec.element_size
                     parameter_bytes += storage_bytes
@@ -450,6 +496,7 @@ def prepare_meta_llama(
     seed: int = DEFAULT_TORCH_SEED,
     dtype: Any = None,
     chunk_bytes: int = DEFAULT_STATE_CHUNK_BYTES,
+    state_pattern: str = "incompressible",
 ) -> PreparedMetaLlama:
     """Build a strict meta model, streaming provider, and CPU example input."""
 
@@ -462,6 +509,7 @@ def prepare_meta_llama(
         seed=seed,
         dtype=resolved_dtype,
         chunk_bytes=chunk_bytes,
+        state_pattern=state_pattern,
     )
     example = deterministic_token_ids(config, seed=seed)
     return PreparedMetaLlama(
@@ -480,12 +528,17 @@ def strict_export_meta_llama(
     seed: int = DEFAULT_TORCH_SEED,
     dtype: Any = None,
     chunk_bytes: int = DEFAULT_STATE_CHUNK_BYTES,
+    state_pattern: str = "incompressible",
 ) -> StrictMetaLlamaExport:
     """Run canonical ``torch.export.export(..., strict=True)`` on the meta model."""
 
     torch = _torch()
     prepared = prepare_meta_llama(
-        config, seed=seed, dtype=dtype, chunk_bytes=chunk_bytes
+        config,
+        seed=seed,
+        dtype=dtype,
+        chunk_bytes=chunk_bytes,
+        state_pattern=state_pattern,
     )
     captured = capture_inference(
         prepared.module,
@@ -1002,6 +1055,13 @@ def _resolve_dtype(dtype: Any, torch: Any) -> Any:
     return dtype
 
 
+def _normalize_state_pattern(value: str) -> str:
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized not in _STATE_PATTERNS:
+        raise ValueError("state_pattern must be incompressible or structured")
+    return normalized
+
+
 def _torch() -> Any:
     try:
         import torch
@@ -1028,4 +1088,5 @@ __all__ = [
     "run_layer_streamed_reference",
     "run_streamed_decoder_layer",
     "strict_export_meta_llama",
+    "structured_values",
 ]

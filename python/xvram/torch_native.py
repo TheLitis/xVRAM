@@ -36,7 +36,11 @@ from .torch_runtime import (
 )
 
 
-TORCH_RUNTIME_ABI_VERSION = 1
+TORCH_RUNTIME_ABI_VERSION_1 = 1
+TORCH_RUNTIME_ABI_VERSION_2 = 2
+# Kept as the Phase 4b value for source compatibility. Code that selects an
+# ABI must use NativeRuntimeConfig.native_abi_version.
+TORCH_RUNTIME_ABI_VERSION = TORCH_RUNTIME_ABI_VERSION_1
 XVRAM_TORCH_RUNTIME_ENV = "XVRAM_TORCH_RUNTIME_LIBRARY"
 
 _STATUS_SUCCESS = 0
@@ -44,6 +48,8 @@ _STATUS_VIEWS_LIVE = 5
 _STATUS_TIMEOUT = 11
 
 _POLICIES = {"clock": 1, "lru": 2}
+_COMPRESSION_MODES = {"off": 0, "adaptive": 1, "capacity": 2}
+_COMPRESSION_CODECS = {"auto": 0, "lz4": 1}
 _HINTS = {"normal": 1, "hot": 2, "streaming": 3}
 _ACCESS_MODES = {
     AccessMode.READ: 1,
@@ -129,6 +135,13 @@ class NativeRuntimeConfig:
     cache_target: Union[int, str] = "auto"
     device_headroom: Union[int, str] = "512MiB"
     scratch_cap: Union[int, str] = "512MiB"
+    compression: str = "off"
+    compression_codec: str = "auto"
+    host_store_cap: Union[int, str] = "auto"
+    host_headroom: Union[int, str] = "auto"
+    compression_scratch_cap: Union[int, str] = "256MiB"
+    codec_slots: int = 2
+    codec_workers: int = 2
     staging_slots: int = 4
     stall_timeout_ms: int = 5000
     budget_poll_ms: int = 100
@@ -150,15 +163,36 @@ class NativeRuntimeConfig:
         target = _parse_bytes(self.cache_target, allow_auto=True)
         headroom = _parse_bytes(self.device_headroom, allow_auto=False)
         scratch = _parse_bytes(self.scratch_cap, allow_auto=False)
+        host_store_cap = _parse_bytes(self.host_store_cap, allow_auto=True)
+        host_headroom = _parse_bytes(self.host_headroom, allow_auto=True)
+        compression_scratch = _parse_bytes(
+            self.compression_scratch_cap, allow_auto=False
+        )
         workspace = _parse_bytes(self.gemm_workspace, allow_auto=False)
-        if chunk <= 0 or headroom <= 0 or scratch <= 0 or target < 0:
+        if (
+            chunk <= 0
+            or headroom <= 0
+            or scratch <= 0
+            or compression_scratch <= 0
+            or target < 0
+            or host_store_cap < 0
+            or host_headroom < 0
+        ):
             raise ValueError("runtime sizes must be positive (cache target may be auto)")
+        if str(self.compression).lower() not in _COMPRESSION_MODES:
+            raise ValueError("compression must be 'off', 'adaptive', or 'capacity'")
+        if str(self.compression_codec).lower() not in _COMPRESSION_CODECS:
+            raise ValueError("compression_codec must be 'auto' or 'lz4'")
         if workspace > scratch:
             raise ValueError("gemm_workspace cannot exceed scratch_cap")
         if not 2 <= int(self.staging_slots) <= 8:
             raise ValueError("staging_slots must be in [2, 8]")
         if not 0 <= int(self.prefetch_distance) <= 8:
             raise ValueError("prefetch_distance must be in [0, 8]")
+        if isinstance(self.codec_slots, bool) or not 2 <= int(self.codec_slots) <= 8:
+            raise ValueError("codec_slots must be in [2, 8]")
+        if isinstance(self.codec_workers, bool) or not 1 <= int(self.codec_workers) <= 8:
+            raise ValueError("codec_workers must be in [1, 8]")
         for name, value in (
             ("gemm_tile_m", self.gemm_tile_m),
             ("gemm_tile_n", self.gemm_tile_n),
@@ -193,6 +227,34 @@ class NativeRuntimeConfig:
     @property
     def scratch_bytes(self) -> int:
         return _parse_bytes(self.scratch_cap, allow_auto=False)
+
+    @property
+    def compression_mode(self) -> int:
+        return _COMPRESSION_MODES[str(self.compression).lower()]
+
+    @property
+    def compression_codec_id(self) -> int:
+        return _COMPRESSION_CODECS[str(self.compression_codec).lower()]
+
+    @property
+    def host_store_cap_bytes(self) -> int:
+        return _parse_bytes(self.host_store_cap, allow_auto=True)
+
+    @property
+    def host_headroom_bytes(self) -> int:
+        return _parse_bytes(self.host_headroom, allow_auto=True)
+
+    @property
+    def compression_scratch_bytes(self) -> int:
+        return _parse_bytes(self.compression_scratch_cap, allow_auto=False)
+
+    @property
+    def native_abi_version(self) -> int:
+        return (
+            TORCH_RUNTIME_ABI_VERSION_1
+            if self.compression_mode == _COMPRESSION_MODES["off"]
+            else TORCH_RUNTIME_ABI_VERSION_2
+        )
 
     @property
     def gemm_workspace_bytes(self) -> int:
@@ -249,6 +311,22 @@ class _SessionConfigV1(ctypes.Structure):
         ("stall_timeout_milliseconds", ctypes.c_uint32),
         ("budget_poll_milliseconds", ctypes.c_uint32),
         ("maximum_transaction_milliseconds", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint64 * 8),
+    ]
+
+
+class _SessionConfigV2(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("abi_version", ctypes.c_uint32),
+        ("v1", _SessionConfigV1),
+        ("compression_mode", ctypes.c_uint32),
+        ("compression_codec", ctypes.c_uint32),
+        ("host_store_cap_bytes", ctypes.c_uint64),
+        ("host_headroom_bytes", ctypes.c_uint64),
+        ("compression_workspace_cap_bytes", ctypes.c_uint64),
+        ("codec_slots", ctypes.c_uint32),
+        ("codec_workers", ctypes.c_uint32),
         ("reserved", ctypes.c_uint64 * 8),
     ]
 
@@ -358,6 +436,99 @@ class _TelemetryV1(ctypes.Structure):
             ("reserved0", ctypes.c_uint32),
             ("reserved", ctypes.c_uint64 * 8),
         ]
+    )
+
+
+_COMPRESSION_TELEMETRY_COUNTERS = (
+    "logical_bytes",
+    "host_stored_bytes",
+    "host_stored_peak_bytes",
+    "host_raw_bytes",
+    "host_compressed_bytes",
+    "host_implicit_zero_bytes",
+    "host_invalid_bytes",
+    "effective_host_store_cap_bytes",
+    "effective_host_headroom_bytes",
+    "host_budget_bytes",
+    "host_budget_peak_bytes",
+    "conversion_scratch_peak_bytes",
+    "logical_h2d_bytes",
+    "pcie_h2d_bytes",
+    "pcie_h2d_payload_bytes",
+    "pcie_h2d_metadata_bytes",
+    "logical_d2h_bytes",
+    "pcie_d2h_bytes",
+    "pcie_d2h_payload_bytes",
+    "pcie_d2h_metadata_bytes",
+    "rejected_candidate_logical_d2h_bytes",
+    "hot_allocation_d2h_bytes",
+    "non_hot_allocation_d2h_bytes",
+    "raw_path_decisions",
+    "cpu_lz4_gpu_decode_decisions",
+    "gpu_lz4_decisions",
+    "never_compress_decisions",
+    "raw_fallbacks",
+    "cpu_codec_fallbacks",
+    "gpu_codec_fallbacks",
+    "compression_attempts",
+    "compression_commits",
+    "decompression_attempts",
+    "decompression_commits",
+    "generations_created",
+    "generations_committed",
+    "generations_discarded",
+    "codec_workspace_bytes",
+    "codec_workspace_peak_bytes",
+    "codec_slot_bytes",
+    "codec_slot_peak_bytes",
+    "spill_reserved_bytes",
+    "spill_reserved_peak_bytes",
+    "cpu_encode_nanoseconds",
+    "cpu_decode_nanoseconds",
+    "gpu_encode_nanoseconds",
+    "gpu_decode_nanoseconds",
+    "verification_nanoseconds",
+    "codec_events_recorded",
+    "codec_events_retired",
+)
+
+_WORKLOAD_FINAL_TELEMETRY_FIELDS = (
+    "logical_bytes",
+    "host_stored_bytes",
+    "host_raw_bytes",
+    "host_compressed_bytes",
+    "host_implicit_zero_bytes",
+    "host_invalid_bytes",
+    "host_budget_bytes",
+)
+
+_COMPRESSION_TRACE_DECISIONS = (
+    ("raw_path_decisions", "raw", "raw"),
+    ("never_compress_decisions", "raw", "raw"),
+    ("cpu_lz4_gpu_decode_decisions", "cpu_lz4_gpu_decode", "lz4_blocks"),
+    ("gpu_lz4_decisions", "nvcomp_gpu_codec", "lz4_blocks"),
+)
+_COMPRESSION_TRACE_GENERATIONS = (
+    "generations_created",
+    "generations_committed",
+    "generations_discarded",
+)
+_COMPRESSION_TRACE_FALLBACKS = (
+    "raw_fallbacks",
+    "cpu_codec_fallbacks",
+    "gpu_codec_fallbacks",
+)
+
+
+class _TelemetryV2(ctypes.Structure):
+    _fields_ = (
+        [
+            ("struct_size", ctypes.c_uint32),
+            ("abi_version", ctypes.c_uint32),
+            ("v1", _TelemetryV1),
+        ]
+        + [(name, ctypes.c_uint64) for name in _COMPRESSION_TELEMETRY_COUNTERS]
+        + [("reserved", ctypes.c_uint64 * 8)]
     )
 
 
@@ -482,8 +653,16 @@ class _GemmResultV1(ctypes.Structure):
 _CALL = ctypes.CFUNCTYPE
 _StatusNameFn = _CALL(ctypes.c_char_p, ctypes.c_uint32)
 _SessionCreateFn = _CALL(ctypes.c_uint32, ctypes.POINTER(_SessionConfigV1), ctypes.POINTER(ctypes.c_uint64))
+_SessionCreateV2Fn = _CALL(
+    ctypes.c_uint32,
+    ctypes.POINTER(_SessionConfigV2),
+    ctypes.POINTER(ctypes.c_uint64),
+)
 _SessionErrorFn = _CALL(ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(_ErrorV1))
 _SessionTelemetryFn = _CALL(ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(_TelemetryV1))
+_SessionTelemetryV2Fn = _CALL(
+    ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(_TelemetryV2)
+)
 _SessionCloseFn = _CALL(ctypes.c_uint32, ctypes.c_uint64, ctypes.c_uint64)
 _AllocationCreateFn = _CALL(ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(_AllocationDescV1), ctypes.POINTER(ctypes.c_uint64))
 _AllocationInfoFn = _CALL(ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(_AllocationInfoV1))
@@ -530,11 +709,22 @@ class _ApiV1(ctypes.Structure):
     ]
 
 
+class _ApiV2(ctypes.Structure):
+    _fields_ = [
+        ("v1", _ApiV1),
+        ("session_create_v2", _SessionCreateV2Fn),
+        ("session_get_telemetry_v2", _SessionTelemetryV2Fn),
+        ("reserved", ctypes.c_uint64 * 14),
+    ]
+
+
 class _CtypesControl:
     """Typed, exception-based facade over ``xvram_torch_runtime_api_v1``."""
 
-    def __init__(self, api: _ApiV1) -> None:
-        if int(api.abi_version) != TORCH_RUNTIME_ABI_VERSION:
+    def __init__(
+        self, api: _ApiV1, *, expected_abi: int = TORCH_RUNTIME_ABI_VERSION_1
+    ) -> None:
+        if int(api.abi_version) != int(expected_abi):
             raise NativeTorchUnavailableError(
                 "load", 2, "native API version {} is unsupported".format(api.abi_version)
             )
@@ -553,18 +743,7 @@ class _CtypesControl:
 
     def create_session(self, config: NativeRuntimeConfig) -> int:
         config.validate()
-        native = _SessionConfigV1()
-        _tag(native)
-        native.device_ordinal = int(config.device)
-        native.policy = _POLICIES[str(config.policy).lower()]
-        native.chunk_bytes = config.chunk_bytes
-        native.cache_target_bytes = config.cache_target_bytes
-        native.device_headroom_bytes = config.headroom_bytes
-        native.scratch_arena_bytes = config.scratch_bytes
-        native.staging_slots = int(config.staging_slots)
-        native.stall_timeout_milliseconds = int(config.stall_timeout_ms)
-        native.budget_poll_milliseconds = int(config.budget_poll_ms)
-        native.maximum_transaction_milliseconds = int(config.maximum_region_ms)
+        native = _session_config_v1(config)
         output = ctypes.c_uint64(0)
         status = int(self._api.session_create(ctypes.byref(native), ctypes.byref(output)))
         self._check(status, "session_create")
@@ -593,15 +772,7 @@ class _CtypesControl:
         self._check(status, "session_get_telemetry", session)
         if int(value.abi_version) != TORCH_RUNTIME_ABI_VERSION:
             raise NativeTorchRuntimeError("session_get_telemetry", 2, "telemetry ABI changed")
-        result: Dict[str, Union[int, bool]] = {
-            name: int(getattr(value, name)) for name in _TELEMETRY_COUNTERS
-        }
-        result.update(
-            stable_addresses=bool(value.stable_addresses),
-            no_physical_aliases=bool(value.no_physical_aliases),
-            quarantined=bool(value.quarantined),
-        )
-        return result
+        return _telemetry_v1_snapshot(value)
 
     def close_session(self, session: int, timeout_ms: int) -> None:
         status = int(self._api.session_close(int(session), int(timeout_ms)))
@@ -744,8 +915,72 @@ class _CtypesControl:
         raise NativeTorchRuntimeError(operation, status, detail, native_code=native_code)
 
 
+class _CtypesControlV2(_CtypesControl):
+    """Compression-aware facade over ``xvram_torch_runtime_api_v2``."""
+
+    def __init__(self, api: _ApiV2) -> None:
+        super().__init__(api.v1, expected_abi=TORCH_RUNTIME_ABI_VERSION_2)
+        if int(api.v1.struct_size) < _ApiV2.reserved.offset:
+            raise NativeTorchUnavailableError(
+                "load", 2, "native v2 API prefix is too small"
+            )
+        self._api_v2 = api
+
+    def create_session(self, config: NativeRuntimeConfig) -> int:
+        config.validate()
+        if config.native_abi_version != TORCH_RUNTIME_ABI_VERSION_2:
+            raise NativeTorchRuntimeError(
+                "session_create_v2", 1, "compression must be enabled for ABI v2"
+            )
+        native = _SessionConfigV2()
+        _tag_v2(native)
+        native.v1 = _session_config_v1(config)
+        native.compression_mode = config.compression_mode
+        native.compression_codec = config.compression_codec_id
+        native.host_store_cap_bytes = config.host_store_cap_bytes
+        native.host_headroom_bytes = config.host_headroom_bytes
+        native.compression_workspace_cap_bytes = config.compression_scratch_bytes
+        native.codec_slots = int(config.codec_slots)
+        native.codec_workers = int(config.codec_workers)
+        output = ctypes.c_uint64(0)
+        status = int(
+            self._api_v2.session_create_v2(ctypes.byref(native), ctypes.byref(output))
+        )
+        self._check(status, "session_create_v2")
+        if output.value == 0:
+            raise NativeTorchRuntimeError(
+                "session_create_v2", 15, "native returned a null session"
+            )
+        return int(output.value)
+
+    def telemetry(self, session: int) -> Dict[str, Union[int, bool]]:
+        value = _TelemetryV2()
+        _tag_v2(value)
+        status = int(
+            self._api_v2.session_get_telemetry_v2(int(session), ctypes.byref(value))
+        )
+        self._check(status, "session_get_telemetry_v2", session)
+        if int(value.abi_version) != TORCH_RUNTIME_ABI_VERSION_2:
+            raise NativeTorchRuntimeError(
+                "session_get_telemetry_v2", 2, "telemetry ABI changed"
+            )
+        if int(value.struct_size) < ctypes.sizeof(_TelemetryV2):
+            raise NativeTorchRuntimeError(
+                "session_get_telemetry_v2",
+                2,
+                "compression telemetry prefix is too small for measured v2 counters",
+            )
+        result = _telemetry_v1_snapshot(value.v1)
+        result.update(
+            {name: int(getattr(value, name)) for name in _COMPRESSION_TELEMETRY_COUNTERS}
+        )
+        return result
+
+
 class _LoadedLibrary:
-    def __init__(self, path: Path, torch_module: Any) -> None:
+    def __init__(
+        self, path: Path, torch_module: Any, config: NativeRuntimeConfig
+    ) -> None:
         self.path = path
         self.torch = torch_module
         self.dll_directories = _open_windows_dll_directories(path, torch_module)
@@ -760,15 +995,24 @@ class _LoadedLibrary:
             get_api = self.native.xvram_torch_runtime_get_api
             get_api.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
             get_api.restype = ctypes.c_uint32
-            api = _ApiV1()
-            status = int(
-                get_api(TORCH_RUNTIME_ABI_VERSION, ctypes.sizeof(_ApiV1), ctypes.byref(api))
-            )
+            requested_abi = config.native_abi_version
+            api_type = _ApiV1 if requested_abi == TORCH_RUNTIME_ABI_VERSION_1 else _ApiV2
+            api = api_type()
+            status = int(get_api(requested_abi, ctypes.sizeof(api_type), ctypes.byref(api)))
             if status != _STATUS_SUCCESS:
-                raise NativeTorchUnavailableError(
-                    "get_api", status, "private v1 ABI is unavailable"
+                detail = (
+                    "private v1 ABI is unavailable"
+                    if requested_abi == TORCH_RUNTIME_ABI_VERSION_1
+                    else "compression requires the private v2 ABI; no v1 fallback is allowed"
                 )
-            self.control = _CtypesControl(api)
+                raise NativeTorchUnavailableError(
+                    "get_api", status, detail
+                )
+            self.control = (
+                _CtypesControl(api)
+                if requested_abi == TORCH_RUNTIME_ABI_VERSION_1
+                else _CtypesControlV2(api)
+            )
         except BaseException:
             _close_dll_directories(self.dll_directories)
             raise
@@ -823,6 +1067,7 @@ class NativeInferenceBackend(InferenceBackend):
         self._active_token: Optional[Union[NativeLeaseToken, NativeGemmToken]] = None
         self._gemm_results: List[Mapping[str, Union[int, float]]] = []
         self._region_timings_ms: List[float] = []
+        self._compression_trace_snapshot: Dict[str, int] = {}
         self._active_region_started_ns = 0
         self._active_region_bytes = 0
         self._active_region_adapter = ""
@@ -1075,9 +1320,22 @@ class NativeInferenceBackend(InferenceBackend):
             return
         self._require_owner_thread(allow_unowned=True)
         errors: List[BaseException] = []
+        workload_telemetry: Optional[Dict[str, Any]] = None
         if self._active_token is not None:
             try:
                 self.retire(self._active_token)
+            except BaseException as error:
+                errors.append(error)
+        if (
+            self._session
+            and self.config.native_abi_version == TORCH_RUNTIME_ABI_VERSION_2
+        ):
+            try:
+                # Preserve the workload-final authoritative backing state. Allocation
+                # release intentionally erases every host generation, while reports
+                # must describe the backing that actually served inference.
+                workload_telemetry = self._collect_telemetry()
+                self._emit_compression_telemetry_deltas(workload_telemetry)
             except BaseException as error:
                 errors.append(error)
         for storage_id, allocation in reversed(tuple(self._allocations.items())):
@@ -1090,6 +1348,11 @@ class NativeInferenceBackend(InferenceBackend):
         if self._session:
             try:
                 self._final_telemetry = self._collect_telemetry()
+                self._emit_compression_telemetry_deltas(self._final_telemetry)
+                if workload_telemetry is not None:
+                    for name in _WORKLOAD_FINAL_TELEMETRY_FIELDS:
+                        if name in workload_telemetry:
+                            self._final_telemetry[name] = workload_telemetry[name]
             except BaseException as error:
                 errors.append(error)
         if self._session:
@@ -1127,6 +1390,117 @@ class NativeInferenceBackend(InferenceBackend):
         self._active_region_started_ns = 0
         self._active_region_bytes = 0
         self._active_region_adapter = ""
+        self._emit_compression_telemetry_deltas(region_id=sequence)
+
+    def _emit_compression_telemetry_deltas(
+        self,
+        telemetry: Optional[Mapping[str, Any]] = None,
+        *,
+        region_id: Optional[int] = None,
+    ) -> None:
+        if (
+            self.config.native_abi_version != TORCH_RUNTIME_ABI_VERSION_2
+            or self._progress_callback is None
+            or not self._session
+        ):
+            return
+        current = dict(telemetry) if telemetry is not None else self._collect_telemetry()
+
+        def delta(name: str) -> int:
+            value = max(0, int(current.get(name, 0)))
+            prior = max(0, int(self._compression_trace_snapshot.get(name, 0)))
+            return max(0, value - prior)
+
+        for name, path, representation in _COMPRESSION_TRACE_DECISIONS:
+            change = delta(name)
+            if change:
+                self._emit_progress(
+                    stage="codec",
+                    operation="decision",
+                    region_id=region_id,
+                    adapter="{}={}".format(name, change),
+                    decision_count=change,
+                    codec_path=path,
+                    representation=representation,
+                )
+        for name in _COMPRESSION_TRACE_FALLBACKS:
+            change = delta(name)
+            if change:
+                self._emit_progress(
+                    stage="compression",
+                    operation="fallback",
+                    region_id=region_id,
+                    adapter="{}={}".format(name, change),
+                    fallback_count=change,
+                )
+        for name in _COMPRESSION_TRACE_GENERATIONS:
+            change = delta(name)
+            if change:
+                self._emit_progress(
+                    stage="generation",
+                    operation=name.removeprefix("generations_"),
+                    region_id=region_id,
+                    adapter="count={}".format(change),
+                    generation_count=change,
+                )
+        recorded = delta("codec_events_recorded")
+        retired = delta("codec_events_retired")
+        if recorded or retired:
+            self._emit_progress(
+                stage="codec",
+                operation="event_delta",
+                region_id=region_id,
+                adapter="recorded={},retired={}".format(recorded, retired),
+                events_recorded=recorded,
+                events_retired=retired,
+            )
+        for direction in ("h2d", "d2h"):
+            logical = delta("logical_{}_bytes".format(direction))
+            pcie = delta("pcie_{}_bytes".format(direction))
+            payload = delta("pcie_{}_payload_bytes".format(direction))
+            metadata = delta("pcie_{}_metadata_bytes".format(direction))
+            if logical or pcie:
+                rejected = (
+                    delta("rejected_candidate_logical_d2h_bytes")
+                    if direction == "d2h"
+                    else 0
+                )
+                self._emit_progress(
+                    stage="compression",
+                    operation="transfer_{}".format(direction),
+                    bytes_value=pcie,
+                    region_id=region_id,
+                    adapter=(
+                        "logical_bytes={},payload_bytes={},metadata_bytes={},"
+                        "rejected_candidate_logical_bytes={}"
+                    ).format(logical, payload, metadata, rejected),
+                    logical_bytes=logical,
+                    pcie_bytes=pcie,
+                    payload_bytes=payload,
+                    metadata_bytes=metadata,
+                    rejected_candidate_logical_bytes=rejected,
+                )
+        self._compression_trace_snapshot.update(
+            {
+                name: max(0, int(current.get(name, 0)))
+                for name in (
+                    *(item[0] for item in _COMPRESSION_TRACE_DECISIONS),
+                    *_COMPRESSION_TRACE_FALLBACKS,
+                    *_COMPRESSION_TRACE_GENERATIONS,
+                    "codec_events_recorded",
+                    "codec_events_retired",
+                    "logical_h2d_bytes",
+                    "pcie_h2d_bytes",
+                    "pcie_h2d_payload_bytes",
+                    "pcie_h2d_metadata_bytes",
+                    "logical_d2h_bytes",
+                    "pcie_d2h_bytes",
+                    "pcie_d2h_payload_bytes",
+                    "pcie_d2h_metadata_bytes",
+                    "rejected_candidate_logical_d2h_bytes",
+                )
+            }
+        )
 
     def _emit_progress(self, *, stage: str, operation: str, bytes_value: int = 0, **fields: Any) -> None:
         callback = self._progress_callback
@@ -1146,7 +1520,7 @@ class NativeInferenceBackend(InferenceBackend):
         if self._control is not None:
             return
         path = find_runtime_library(self._library_path)
-        owner = _LoadedLibrary(path, self._torch)
+        owner = _LoadedLibrary(path, self._torch, self.config)
         self._library_owner = owner
         self._control = owner.control
 
@@ -1859,7 +2233,42 @@ def _lease_snapshot(lease: int, value: _LeaseInfoV1) -> NativeLeaseInfo:
 
 def _tag(value: ctypes.Structure) -> None:
     value.struct_size = ctypes.sizeof(type(value))
-    value.abi_version = TORCH_RUNTIME_ABI_VERSION
+    value.abi_version = TORCH_RUNTIME_ABI_VERSION_1
+
+
+def _tag_v2(value: ctypes.Structure) -> None:
+    value.struct_size = ctypes.sizeof(type(value))
+    value.abi_version = TORCH_RUNTIME_ABI_VERSION_2
+
+
+def _session_config_v1(config: NativeRuntimeConfig) -> _SessionConfigV1:
+    native = _SessionConfigV1()
+    _tag(native)
+    native.device_ordinal = int(config.device)
+    native.policy = _POLICIES[str(config.policy).lower()]
+    native.chunk_bytes = config.chunk_bytes
+    native.cache_target_bytes = config.cache_target_bytes
+    native.device_headroom_bytes = config.headroom_bytes
+    native.scratch_arena_bytes = config.scratch_bytes
+    native.staging_slots = int(config.staging_slots)
+    native.stall_timeout_milliseconds = int(config.stall_timeout_ms)
+    native.budget_poll_milliseconds = int(config.budget_poll_ms)
+    native.maximum_transaction_milliseconds = int(config.maximum_region_ms)
+    return native
+
+
+def _telemetry_v1_snapshot(
+    value: _TelemetryV1,
+) -> Dict[str, Union[int, bool]]:
+    result: Dict[str, Union[int, bool]] = {
+        name: int(getattr(value, name)) for name in _TELEMETRY_COUNTERS
+    }
+    result.update(
+        stable_addresses=bool(value.stable_addresses),
+        no_physical_aliases=bool(value.no_physical_aliases),
+        quarantined=bool(value.quarantined),
+    )
+    return result
 
 
 def _u64(value: int, name: str) -> int:
@@ -2124,6 +2533,8 @@ __all__ = [
     "NativeTorchRuntimeError",
     "NativeTorchUnavailableError",
     "TORCH_RUNTIME_ABI_VERSION",
+    "TORCH_RUNTIME_ABI_VERSION_1",
+    "TORCH_RUNTIME_ABI_VERSION_2",
     "XVRAM_TORCH_RUNTIME_ENV",
     "find_runtime_library",
 ]

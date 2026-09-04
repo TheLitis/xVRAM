@@ -4,7 +4,9 @@
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
+#include "platform/system_info.hpp"
 #include "residency/runtime.hpp"
+#include "xvram/internal/torch_runtime_v2.h"
 
 #include <algorithm>
 #include <array>
@@ -92,6 +94,8 @@ struct SessionState {
   xvram_torch_runtime_session handle = XVRAM_TORCH_RUNTIME_INVALID_HANDLE;
   std::int32_t device = -1;
   std::uint64_t scratch_arena_bytes = 0;
+  std::uint64_t effective_host_store_cap_bytes = 0;
+  std::uint64_t effective_host_headroom_bytes = 0;
   std::thread::id owner_thread;
   cuda::CudaApi api;
   std::unique_ptr<residency::Runtime> runtime;
@@ -202,11 +206,30 @@ template <typename Structure>
 }
 
 template <typename Structure>
+[[nodiscard]] bool compatible_v2(const Structure* value, const std::size_t minimum) noexcept {
+  return value != nullptr && value->struct_size >= minimum &&
+         value->abi_version == XVRAM_TORCH_RUNTIME_ABI_VERSION_2;
+}
+
+template <typename Structure>
 [[nodiscard]] xvram_torch_runtime_status copy_output(Structure* output,
                                                      const Structure& value) noexcept {
   constexpr std::size_t prefix = sizeof(std::uint32_t) * 2U;
   if (output == nullptr || output->struct_size < prefix ||
       output->abi_version != XVRAM_TORCH_RUNTIME_ABI_VERSION_1) {
+    return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+  }
+  std::memcpy(output, &value,
+              std::min(static_cast<std::size_t>(output->struct_size), sizeof(Structure)));
+  return XVRAM_TORCH_RUNTIME_SUCCESS;
+}
+
+template <typename Structure>
+[[nodiscard]] xvram_torch_runtime_status copy_output_v2(Structure* output,
+                                                        const Structure& value) noexcept {
+  constexpr std::size_t prefix = sizeof(std::uint32_t) * 2U;
+  if (output == nullptr || output->struct_size < prefix ||
+      output->abi_version != XVRAM_TORCH_RUNTIME_ABI_VERSION_2) {
     return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
   }
   std::memcpy(output, &value,
@@ -633,6 +656,137 @@ session_create_entry(const xvram_torch_runtime_session_config_v1* config,
   });
 }
 
+[[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL
+session_create_v2_entry(const xvram_torch_runtime_session_config_v2* config,
+                        xvram_torch_runtime_session* output) noexcept {
+  return boundary([&]() -> xvram_torch_runtime_status {
+    // This implementation validates every reserved word below, so require the
+    // complete current v2 structure before reading it. A short size tag must
+    // never make the reserved-array validation read beyond the caller's object.
+    constexpr std::size_t minimum = sizeof(xvram_torch_runtime_session_config_v2);
+    if (output == nullptr || !compatible_v2(config, minimum)) {
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    *output = XVRAM_TORCH_RUNTIME_INVALID_HANDLE;
+    if (config->compression_mode != XVRAM_TORCH_RUNTIME_COMPRESSION_DISABLED &&
+        config->compression_mode != XVRAM_TORCH_RUNTIME_COMPRESSION_ADAPTIVE &&
+        config->compression_mode != XVRAM_TORCH_RUNTIME_COMPRESSION_CAPACITY) {
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+    if ((config->compression_codec != XVRAM_TORCH_RUNTIME_COMPRESSION_CODEC_AUTO &&
+         config->compression_codec != XVRAM_TORCH_RUNTIME_COMPRESSION_CODEC_LZ4) ||
+        config->compression_workspace_cap_bytes == 0U || config->codec_slots < 2U ||
+        config->codec_slots > 8U || config->codec_workers == 0U || config->codec_workers > 8U ||
+        std::any_of(std::begin(config->reserved), std::end(config->reserved),
+                    [](const std::uint64_t value) { return value != 0U; })) {
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+    constexpr std::size_t v1_minimum = offsetof(xvram_torch_runtime_session_config_v1, reserved);
+    if (!compatible(&config->v1, v1_minimum)) {
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    if (config->compression_mode == XVRAM_TORCH_RUNTIME_COMPRESSION_DISABLED) {
+      return session_create_entry(&config->v1, output);
+    }
+    const auto& base = config->v1;
+    if (base.device_ordinal < 0 || base.chunk_bytes == 0U || base.staging_slots < 2U ||
+        base.staging_slots > 8U ||
+        (base.policy != XVRAM_TORCH_RUNTIME_POLICY_CLOCK &&
+         base.policy != XVRAM_TORCH_RUNTIME_POLICY_LRU)) {
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+    Registry& global = registry();
+    {
+      std::lock_guard lock(global.mutex);
+      if (!global.sessions.empty()) {
+        return XVRAM_TORCH_RUNTIME_INVALID_STATE;
+      }
+    }
+    auto session = std::make_shared<SessionState>();
+    session->handle = next_handle();
+    session->device = base.device_ordinal;
+    session->scratch_arena_bytes = base.scratch_arena_bytes;
+    session->owner_thread = std::this_thread::get_id();
+    const auto load = session->api.load();
+    if (load.status != cuda::CudaApi::LoadStatus::loaded || session->api.init_ == nullptr ||
+        session->api.context_get_current_ == nullptr ||
+        session->api.context_get_device_ == nullptr) {
+      return XVRAM_TORCH_RUNTIME_UNAVAILABLE;
+    }
+    if (session->api.init_(0) != cuda::abi::success) {
+      return XVRAM_TORCH_RUNTIME_CUDA_ERROR;
+    }
+    cuda::abi::Context current = nullptr;
+    cuda::abi::Device current_device = -1;
+    if (session->api.context_get_current_(&current) != cuda::abi::success || current == nullptr ||
+        session->api.context_get_device_(&current_device) != cuda::abi::success) {
+      return XVRAM_TORCH_RUNTIME_INVALID_STATE;
+    }
+    if (current_device != base.device_ordinal) {
+      return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
+    }
+
+    std::uint64_t host_headroom = config->host_headroom_bytes;
+    std::uint64_t host_cap = config->host_store_cap_bytes;
+    if (host_headroom == 0U || host_cap == 0U) {
+      const probe::SystemInfo system = platform::collect_system_info();
+      if (!system.physical_memory_bytes.has_value() || !system.available_memory_bytes.has_value()) {
+        return XVRAM_TORCH_RUNTIME_UNAVAILABLE;
+      }
+      constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+      if (host_headroom == 0U) {
+        host_headroom = std::max(minimum_headroom, *system.physical_memory_bytes / 4U);
+      }
+      if (host_cap == 0U) {
+        if (*system.available_memory_bytes <= host_headroom) {
+          return XVRAM_TORCH_RUNTIME_HOST_OUT_OF_MEMORY;
+        }
+        host_cap = *system.available_memory_bytes - host_headroom;
+      }
+    }
+
+    residency::RuntimeConfig runtime_config{};
+    runtime_config.device_ordinal = base.device_ordinal;
+    runtime_config.context_mode = residency::RuntimeContextMode::attach_current;
+    runtime_config.attached_context = current;
+    runtime_config.chunk_bytes = base.chunk_bytes;
+    runtime_config.cache_target_bytes = base.cache_target_bytes;
+    runtime_config.device_headroom_bytes = base.device_headroom_bytes;
+    runtime_config.workspace_reserve_bytes = base.scratch_arena_bytes;
+    runtime_config.staging_slots = base.staging_slots;
+    runtime_config.policy = base.policy == XVRAM_TORCH_RUNTIME_POLICY_LRU
+                                ? residency::RuntimePolicy::lru
+                                : residency::RuntimePolicy::clock;
+    runtime_config.stall_timeout = std::chrono::milliseconds(base.stall_timeout_milliseconds);
+    runtime_config.budget_poll_interval = std::chrono::milliseconds(base.budget_poll_milliseconds);
+    runtime_config.maximum_transaction_duration =
+        std::chrono::milliseconds(base.maximum_transaction_milliseconds);
+    runtime_config.compression_mode =
+        config->compression_mode == XVRAM_TORCH_RUNTIME_COMPRESSION_CAPACITY
+            ? residency::CompressionMode::capacity
+            : residency::CompressionMode::adaptive;
+    runtime_config.compression_codec = residency::CompressionCodec::lz4;
+    runtime_config.host_store_cap_bytes = host_cap;
+    runtime_config.host_headroom_bytes = host_headroom;
+    runtime_config.compression_workspace_cap_bytes = config->compression_workspace_cap_bytes;
+    runtime_config.codec_slots = config->codec_slots;
+    runtime_config.codec_workers = config->codec_workers;
+    session->effective_host_store_cap_bytes = host_cap;
+    session->effective_host_headroom_bytes = host_headroom;
+    session->runtime = std::make_unique<residency::Runtime>(session->api, runtime_config);
+    const residency::RuntimeStatus setup = session->runtime->setup();
+    if (setup != residency::RuntimeStatus::success) {
+      return record_runtime_error(*session, setup);
+    }
+    {
+      std::lock_guard lock(global.mutex);
+      global.sessions.emplace(session->handle, session);
+    }
+    *output = session->handle;
+    return XVRAM_TORCH_RUNTIME_SUCCESS;
+  });
+}
+
 [[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL session_get_error_entry(
     const xvram_torch_runtime_session handle, xvram_torch_runtime_error_v1* output) noexcept {
   return boundary([&]() -> xvram_torch_runtime_status {
@@ -703,6 +857,92 @@ session_create_entry(const xvram_torch_runtime_session_config_v1* config,
     value.no_physical_aliases = source.no_physical_aliases ? 1U : 0U;
     value.quarantined = source.quarantined ? 1U : 0U;
     return copy_output(output, value);
+  });
+}
+
+[[nodiscard]] xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL session_get_telemetry_v2_entry(
+    const xvram_torch_runtime_session handle, xvram_torch_runtime_telemetry_v2* output) noexcept {
+  return boundary([&]() -> xvram_torch_runtime_status {
+    constexpr std::size_t minimum = sizeof(xvram_torch_runtime_telemetry_v2);
+    if (!compatible_v2(output, minimum)) {
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    xvram_torch_runtime_telemetry_v2 value = XVRAM_TORCH_RUNTIME_TELEMETRY_V2_INIT;
+    const xvram_torch_runtime_status status = session_get_telemetry_entry(handle, &value.v1);
+    if (status != XVRAM_TORCH_RUNTIME_SUCCESS) {
+      return status;
+    }
+    const std::shared_ptr<SessionState> session = find_session(handle);
+    if (session == nullptr) {
+      return XVRAM_TORCH_RUNTIME_NOT_FOUND;
+    }
+    std::lock_guard lock(session->mutex);
+    const residency::RuntimeTelemetry& source = session->runtime->telemetry();
+    value.logical_bytes = source.logical_bytes;
+    value.host_stored_bytes = source.host_stored_bytes;
+    value.host_stored_peak_bytes = source.host_stored_peak_bytes;
+    value.host_raw_bytes = source.host_raw_bytes;
+    value.host_compressed_bytes = source.host_compressed_bytes;
+    value.host_implicit_zero_bytes = source.host_implicit_zero_bytes;
+    value.host_invalid_bytes = source.host_invalid_bytes;
+    value.effective_host_store_cap_bytes = session->effective_host_store_cap_bytes;
+    value.effective_host_headroom_bytes = session->effective_host_headroom_bytes;
+    value.host_budget_bytes = source.host_budget_bytes;
+    value.host_budget_peak_bytes = source.host_budget_peak_bytes;
+    value.conversion_scratch_peak_bytes = source.conversion_scratch_peak_bytes;
+    value.logical_h2d_bytes = source.logical_h2d_bytes;
+    value.pcie_h2d_bytes = source.pcie_h2d_bytes;
+    value.pcie_h2d_payload_bytes = source.pcie_h2d_payload_bytes;
+    value.pcie_h2d_metadata_bytes = source.pcie_h2d_metadata_bytes;
+    value.logical_d2h_bytes = source.logical_d2h_bytes;
+    value.pcie_d2h_bytes = source.pcie_d2h_bytes;
+    value.pcie_d2h_payload_bytes = source.pcie_d2h_payload_bytes;
+    value.pcie_d2h_metadata_bytes = source.pcie_d2h_metadata_bytes;
+    value.rejected_candidate_logical_d2h_bytes =
+        source.rejected_candidate_logical_d2h_bytes;
+    value.hot_allocation_d2h_bytes = source.hot_allocation_d2h_bytes;
+    value.non_hot_allocation_d2h_bytes = source.non_hot_allocation_d2h_bytes;
+    value.raw_path_decisions = source.raw_path_decisions;
+    value.cpu_lz4_gpu_decode_decisions = source.cpu_lz4_gpu_decode_decisions;
+    value.gpu_lz4_decisions = source.gpu_lz4_decisions;
+    value.never_compress_decisions = source.never_compress_decisions;
+    value.raw_fallbacks = source.raw_fallbacks;
+    value.cpu_codec_fallbacks = source.cpu_codec_fallbacks;
+    value.gpu_codec_fallbacks = source.gpu_codec_fallbacks;
+    value.compression_attempts = source.compression_attempts;
+    value.compression_commits = source.compression_commits;
+    value.decompression_attempts = source.decompression_attempts;
+    value.decompression_commits = source.decompression_commits;
+    value.generations_created = source.generations_created;
+    value.generations_committed = source.generations_committed;
+    value.generations_discarded = source.generations_discarded;
+    value.codec_workspace_bytes = source.codec_workspace_bytes;
+    value.codec_workspace_peak_bytes = source.codec_workspace_peak_bytes;
+    value.codec_slot_bytes = source.codec_slot_bytes;
+    value.codec_slot_peak_bytes = source.codec_slot_peak_bytes;
+    value.spill_reserved_bytes = source.spill_reserved_bytes;
+    value.spill_reserved_peak_bytes = source.spill_reserved_peak_bytes;
+    value.cpu_encode_nanoseconds = source.cpu_encode_nanoseconds;
+    value.cpu_decode_nanoseconds = source.cpu_decode_nanoseconds;
+    value.gpu_encode_nanoseconds = source.gpu_encode_nanoseconds;
+    value.gpu_decode_nanoseconds = source.gpu_decode_nanoseconds;
+    value.verification_nanoseconds = source.verification_nanoseconds;
+    value.codec_events_recorded = source.codec_events_recorded;
+    value.codec_events_retired = source.codec_events_retired;
+    if (value.logical_h2d_bytes == 0U && value.pcie_h2d_bytes == 0U) {
+      value.logical_h2d_bytes = value.v1.h2d_bytes;
+      value.pcie_h2d_bytes = value.v1.h2d_bytes;
+      value.pcie_h2d_payload_bytes = value.v1.h2d_bytes;
+      value.pcie_h2d_metadata_bytes = 0U;
+    }
+    if (value.logical_d2h_bytes == 0U && value.pcie_d2h_bytes == 0U) {
+      value.logical_d2h_bytes = value.v1.d2h_bytes;
+      value.pcie_d2h_bytes = value.v1.d2h_bytes;
+      value.pcie_d2h_payload_bytes = value.v1.d2h_bytes;
+      value.pcie_d2h_metadata_bytes = 0U;
+      value.rejected_candidate_logical_d2h_bytes = 0U;
+    }
+    return copy_output_v2(output, value);
   });
 }
 
@@ -1641,31 +1881,55 @@ extern "C" xvram_torch_runtime_status XVRAM_TORCH_RUNTIME_CALL
 xvram_torch_runtime_get_api(const std::uint32_t requested_abi_version,
                             const std::uint32_t caller_api_size, void* output_api) {
   using namespace xvram::torch_runtime;
-  if (requested_abi_version != XVRAM_TORCH_RUNTIME_ABI_VERSION_1 || output_api == nullptr ||
-      caller_api_size < sizeof(xvram_torch_runtime_api_v1)) {
+  if (output_api == nullptr) {
     return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
   }
-  xvram_torch_runtime_api_v1 value{};
-  value.struct_size = sizeof(value);
-  value.abi_version = XVRAM_TORCH_RUNTIME_ABI_VERSION_1;
-  value.status_name = &status_name_entry;
-  value.session_create = &session_create_entry;
-  value.session_get_error = &session_get_error_entry;
-  value.session_get_telemetry = &session_get_telemetry_entry;
-  value.session_close = &session_close_entry;
-  value.allocation_create = &allocation_create_entry;
-  value.allocation_get_info = &allocation_get_info_entry;
-  value.allocation_write = &allocation_write_entry;
-  value.allocation_read = &allocation_read_entry;
-  value.allocation_release = &allocation_release_entry;
-  value.allocation_discard = &allocation_discard_entry;
-  value.session_prefetch = &session_prefetch_entry;
-  value.lease_acquire = &lease_acquire_entry;
-  value.lease_get_info = &lease_get_info_entry;
-  value.lease_seal = &lease_seal_entry;
-  value.lease_poll = &lease_poll_entry;
-  value.lease_wait = &lease_wait_entry;
-  value.gemm_execute = &gemm_execute_entry;
-  std::memcpy(output_api, &value, sizeof(value));
-  return XVRAM_TORCH_RUNTIME_SUCCESS;
+  const auto populate_v1 = [](xvram_torch_runtime_api_v1& value, const std::uint32_t abi_version,
+                              const std::uint32_t struct_size) {
+    value = {};
+    value.struct_size = struct_size;
+    value.abi_version = abi_version;
+    value.status_name = &status_name_entry;
+    value.session_create = &session_create_entry;
+    value.session_get_error = &session_get_error_entry;
+    value.session_get_telemetry = &session_get_telemetry_entry;
+    value.session_close = &session_close_entry;
+    value.allocation_create = &allocation_create_entry;
+    value.allocation_get_info = &allocation_get_info_entry;
+    value.allocation_write = &allocation_write_entry;
+    value.allocation_read = &allocation_read_entry;
+    value.allocation_release = &allocation_release_entry;
+    value.allocation_discard = &allocation_discard_entry;
+    value.session_prefetch = &session_prefetch_entry;
+    value.lease_acquire = &lease_acquire_entry;
+    value.lease_get_info = &lease_get_info_entry;
+    value.lease_seal = &lease_seal_entry;
+    value.lease_poll = &lease_poll_entry;
+    value.lease_wait = &lease_wait_entry;
+    value.gemm_execute = &gemm_execute_entry;
+  };
+
+  if (requested_abi_version == XVRAM_TORCH_RUNTIME_ABI_VERSION_1) {
+    if (caller_api_size < sizeof(xvram_torch_runtime_api_v1)) {
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    xvram_torch_runtime_api_v1 value{};
+    populate_v1(value, XVRAM_TORCH_RUNTIME_ABI_VERSION_1,
+                static_cast<std::uint32_t>(sizeof(value)));
+    std::memcpy(output_api, &value, sizeof(value));
+    return XVRAM_TORCH_RUNTIME_SUCCESS;
+  }
+  if (requested_abi_version == XVRAM_TORCH_RUNTIME_ABI_VERSION_2) {
+    if (caller_api_size < sizeof(xvram_torch_runtime_api_v2)) {
+      return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
+    }
+    xvram_torch_runtime_api_v2 value{};
+    populate_v1(value.v1, XVRAM_TORCH_RUNTIME_ABI_VERSION_2,
+                static_cast<std::uint32_t>(sizeof(value)));
+    value.session_create_v2 = &session_create_v2_entry;
+    value.session_get_telemetry_v2 = &session_get_telemetry_v2_entry;
+    std::memcpy(output_api, &value, sizeof(value));
+    return XVRAM_TORCH_RUNTIME_SUCCESS;
+  }
+  return XVRAM_TORCH_RUNTIME_INCOMPATIBLE_ABI;
 }

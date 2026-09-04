@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/pytorch-inference-trace-record-v2.schema.json",
+  "title": "xVRAM PyTorch inference trace record v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_type",
+    "sequence",
+    "monotonic_ns",
+    "kind",
+    "region_id",
+    "allocation_id",
+    "operation",
+    "bytes",
+    "reason",
+    "chunk_index",
+    "source_generation",
+    "target_generation",
+    "slot_generation",
+    "representation",
+    "codec_path"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "record_type": { "const": "xvram.pytorch_trace" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "monotonic_ns": { "type": "integer", "minimum": 0 },
+    "kind": {
+      "enum": [
+        "lease",
+        "transition",
+        "prefetch",
+        "discard",
+        "scratch",
+        "verification",
+        "compression",
+        "codec",
+        "generation"
+      ]
+    },
+    "region_id": { "type": ["integer", "null"], "minimum": 1 },
+    "allocation_id": { "type": ["integer", "null"], "minimum": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "reason": { "type": "string" },
+    "chunk_index": { "type": ["integer", "null"], "minimum": 0 },
+    "source_generation": { "type": ["integer", "null"], "minimum": 0 },
+    "target_generation": { "type": ["integer", "null"], "minimum": 0 },
+    "slot_generation": { "type": ["integer", "null"], "minimum": 0 },
+    "representation": {
+      "enum": [null, "invalid", "implicit_zero", "raw", "lz4_blocks"]
+    },
+    "codec_path": {
+      "enum": [null, "raw", "cpu_lz4_gpu_decode", "nvcomp_gpu_codec"]
+    }
+  }
+}
