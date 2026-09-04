@@ -101,7 +101,7 @@ This boundary does not oversubscribe PyTorch tensors. The allocator API cannot s
 operator access ranges, so live tensor mappings remain resident and immutable until
 PyTorch releases their complete backing segment.
 
-### Phase 4b: lease-scoped static inference — implementation and local gate complete
+### Phase 4b: lease-scoped static inference — complete
 
 - Two-phase external leases over the Phase 2 pageable residency runtime, with one
   runtime-owned compute stream, monotonically generated events, live-view accounting,
@@ -144,7 +144,7 @@ backward/optimizer scheduling, CUDA Graphs, dynamic control flow, distributed/NC
 arbitrary extensions, and transparent execution of unsupported oversized operators are
 future work.
 
-## Phase 5: adaptive lossless compressed backing — local gates complete, CI pending
+## Phase 5: adaptive lossless compressed backing — complete
 
 - Production `xvram_residency` owns an authoritative `HostBackingStore`; the frozen
   Phase 2 `CacheManager` remains the raw regression implementation.
@@ -203,8 +203,11 @@ PyTorch v2 passed the 42-layer incompressible adaptive case, all three 47-layer
 structured capacity cases (CLOCK/LRU and prefetch 0/2), and sequence-128 attention smoke.
 The three 47-layer graph hashes and output digests matched; weight D2H remained zero.
 See the [acceptance evidence](adaptive-compression.md#recorded-local-results) for exact
-artifact locations and accounting. The full Phase 5 GitHub Actions run remains the
-outstanding delivery gate; Phase 5 is not yet marked fully complete.
+artifact locations and accounting. The full Windows/Linux Debug/Release, Clang
+ASan/UBSan, installed-package/relocation, and PyTorch Stable-ABI 2.11→2.13 matrix passed
+at commit `97dde36184ebd25dc70553606aba5a468dedb0d6` in
+[GitHub Actions run 33928261245](https://github.com/TheLitis/xVRAM/actions/runs/33928261245).
+This completes Phase 5 within its stated scope; version remains `0.1.0-dev`.
 
 ## Phase 6+: interception and instrumentation
 

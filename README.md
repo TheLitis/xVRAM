@@ -14,9 +14,9 @@ WDDM-aware budgeting, cache policy, and library-aware tiling.
 > resident-only PyTorch MemPool adapter. A separate lease-scoped PyTorch inference
 > runtime is implemented and has passed its local six-scenario RTX 3070 gate and the
 > complete Windows/Linux GitHub Actions matrix. Phase 5 adds opt-in, lossless compressed
-> host backing and has passed both local RTX 3070 gates; its full CI gate is pending. The SDK remains
-> pre-release, does not transparently extend an arbitrary application's VRAM, and must
-> not be used for production workloads.
+> host backing and has passed both RTX 3070 gates and the complete Windows/Linux CI matrix.
+> The SDK remains pre-release, does not transparently extend an arbitrary application's
+> VRAM, and must not be used for production workloads.
 
 ## Memory model
 
@@ -403,7 +403,8 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
    boundaries and the Phase 4b oversubscription gate are complete.
 6. Adaptive lossless compressed host backing with SDK/PyTorch v2 opt-in; implementation,
    69 local tests, 12 core hardware runs, SDK v2 smoke, and 11 PyTorch hardware runs passed.
-   The full Phase 5 GitHub Actions gate remains pending.
+   The [full Phase 5 CI matrix](https://github.com/TheLitis/xVRAM/actions/runs/33928261245)
+   also passed; Phase 5 is complete within its stated scope.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),

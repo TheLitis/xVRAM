@@ -6,9 +6,9 @@ lossy approximation: every representation can be recovered byte-for-byte, and th
 working set of every GPU operation must still fit the live resident target.
 
 > [!IMPORTANT]
-> The implementation, benchmark, contracts, and acceptance automation belong to this
-> phase. The RTX 3070 core and compression-enabled PyTorch gates are not recorded as
-> complete in this document. The presence of the scripts is not acceptance evidence.
+> Phase 5 is complete within its stated scope: both RTX 3070 hardware gates and the full
+> Windows/Linux CI matrix passed. The [recorded results](#recorded-local-results) identify
+> the tested revision, retained artifacts, and successful CI run. xVRAM remains pre-release.
 
 Phase 1--4 ABI and schema files remain frozen. The old Phase 2 `CacheManager` remains a
 raw-backing regression implementation; Phase 5 changes the production `Runtime` used by
@@ -437,7 +437,7 @@ python scripts/validate_phase5_compression_trace.py `
   --report compression.json --trace compression.jsonl
 ```
 
-## RTX 3070 acceptance — local gates passed
+## RTX 3070 acceptance — passed
 
 `scripts/run-phase5-compression-acceptance.ps1` derives exact byte sizes from the probe,
 runs the core matrix, validates every report/trace against the strict schemas, checks
@@ -470,7 +470,7 @@ hardware gates and the full GitHub Actions matrix actually pass.
 
 Both hardware gates completed on 2026-09-05 on RTX 3070/WDDM with PyTorch
 2.13.0+cu130. The tested clean Release revision was
-`5220b86114db2750729f4a0ea3aa8c12bdf13b62`; its unchanged source fingerprint was
+`5220b86114db2750729f4a0ea3aa8c12bdf13b62`; the source fingerprint recorded for that matrix was
 `d4acd3ca3e1852c593d1057a951a70462b303ef337690bed76e4ee19bbe780b9`.
 The warnings-as-errors build and all 69 local tests passed before the hardware matrix.
 The reproducibility manifests and reports are retained locally at:
@@ -515,5 +515,15 @@ payload bytes. Its CLOCK/LRU and prefetch 0/2 variants shared one graph hash and
 digest; prefetch-zero recorded zero submitted prefetches. The sequence-128 v2 attention
 smoke also passed.
 
-The full Phase 5 GitHub Actions gate is still pending; local hardware success does not
-substitute for the Windows/Linux and Stable-ABI CI matrix.
+The full Phase 5 Windows/Linux Debug/Release, Clang ASan/UBSan, installed-package and
+relocation, and PyTorch Stable-ABI 2.11→2.13 matrix passed at commit
+`97dde36184ebd25dc70553606aba5a468dedb0d6` in
+[GitHub Actions run 33928261245](https://github.com/TheLitis/xVRAM/actions/runs/33928261245).
+CI portability corrections supplied the separate CUDA CRT headers, made aggregate
+initializers explicit, and removed platform-dependent timing assumptions from fake tests.
+Production cost measurements, telemetry, safety deadlines, and adaptive thresholds remain
+unchanged; the internal timing injection is unset in every production frontend. The public
+SDK v2 hardware smoke was also rerun successfully after these corrections.
+Its post-correction record is retained at
+`artifacts/phase5-sdk-v2-97dde36-20260905/smoke.json`; it distinguishes the tested source
+commit from the earlier revision string embedded at CMake configure time.
