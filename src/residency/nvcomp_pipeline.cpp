@@ -949,7 +949,10 @@ public:
         return quarantine_after_submission(*slot, "codec event exceeded the polling deadline",
                                            std::nullopt);
       }
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
+      // Match Runtime's event polling: on Windows a sub-millisecond sleep may suspend this
+      // thread until the next scheduler tick, adding about 15 ms to every codec generation.
+      // Yield without changing system timer resolution; the same query/deadline rules apply.
+      std::this_thread::yield();
     }
   }
 

@@ -511,93 +511,89 @@ std::string_view backing_status_name(const BackingStatus status) noexcept {
 // HostBackingStore implementation follows below. Keeping it in this translation unit ensures that
 // immutable payload generations and budget reservations cannot be bypassed by runtime callers.
 
-namespace {
-
-class StoredPayload {
-public:
-  explicit StoredPayload(const std::size_t bytes) {
-#ifdef _WIN32
-    // Hundreds of thousands of separately retained 64-KiB vectors cause the Windows process
-    // heap's large-block allocation/free path to degrade as an elastic raw store grows. Give
-    // complete raw blocks their own pageable reservation instead. Ownership stays per block:
-    // replacing one block never retains an otherwise dead chunk-sized slab, and capacity remains
-    // exactly the 64 KiB already charged by the host ledger. VirtualAlloc zeroes committed pages.
-    if (bytes == compression_block_bytes) {
-      if (!pages_.allocate(bytes)) {
-        throw std::bad_alloc();
-      }
-      return;
-    }
-#endif
-    bytes_.resize(bytes);
-  }
-
-  explicit StoredPayload(const std::span<const std::byte> bytes) : StoredPayload(bytes.size()) {
-    std::copy(bytes.begin(), bytes.end(), begin());
-  }
-
-  // Codec containers already own and charge their exact-sized vectors. Adopt those allocations
-  // without an intermediate raw-page copy, so committing a candidate needs no extra spill credit.
-  explicit StoredPayload(std::vector<std::byte>&& bytes) noexcept : bytes_(std::move(bytes)) {}
-
-  [[nodiscard]] std::size_t size() const noexcept {
-#ifdef _WIN32
-    if (pages_.size() != 0U) {
-      return pages_.size();
-    }
-#endif
-    return bytes_.size();
-  }
-
-  [[nodiscard]] std::size_t capacity() const noexcept {
-#ifdef _WIN32
-    if (pages_.size() != 0U) {
-      return pages_.size();
-    }
-#endif
-    return bytes_.capacity();
-  }
-
-  [[nodiscard]] bool empty() const noexcept {
-    return size() == 0U;
-  }
-
-  [[nodiscard]] std::byte* begin() noexcept {
-#ifdef _WIN32
-    if (pages_.size() != 0U) {
-      return static_cast<std::byte*>(pages_.data());
-    }
-#endif
-    return bytes_.data();
-  }
-
-  [[nodiscard]] const std::byte* begin() const noexcept {
-#ifdef _WIN32
-    if (pages_.size() != 0U) {
-      return static_cast<const std::byte*>(pages_.data());
-    }
-#endif
-    return bytes_.data();
-  }
-
-  [[nodiscard]] const std::byte* end() const noexcept {
-    return empty() ? begin() : begin() + size();
-  }
-
-  [[nodiscard]] std::span<const std::byte> view() const noexcept {
-    return {begin(), size()};
-  }
-
-private:
-  std::vector<std::byte> bytes_;
-#ifdef _WIN32
-  platform::PageableMemory pages_;
-#endif
-};
-
-} // namespace
-
 struct HostBackingStore::Impl {
+  class StoredPayload {
+  public:
+    explicit StoredPayload(const std::size_t bytes) {
+#ifdef _WIN32
+      // Hundreds of thousands of separately retained 64-KiB vectors cause the Windows process
+      // heap's large-block allocation/free path to degrade as an elastic raw store grows. Give
+      // complete raw blocks their own pageable reservation instead. Ownership stays per block:
+      // replacing one block never retains an otherwise dead chunk-sized slab, and capacity remains
+      // exactly the 64 KiB already charged by the host ledger. VirtualAlloc zeroes committed pages.
+      if (bytes == compression_block_bytes) {
+        if (!pages_.allocate(bytes)) {
+          throw std::bad_alloc();
+        }
+        return;
+      }
+#endif
+      bytes_.resize(bytes);
+    }
+
+    explicit StoredPayload(const std::span<const std::byte> bytes) : StoredPayload(bytes.size()) {
+      std::copy(bytes.begin(), bytes.end(), begin());
+    }
+
+    // Codec containers already own and charge their exact-sized vectors. Adopt those allocations
+    // without an intermediate raw-page copy, so committing a candidate needs no extra spill credit.
+    explicit StoredPayload(std::vector<std::byte>&& bytes) noexcept : bytes_(std::move(bytes)) {}
+
+    [[nodiscard]] std::size_t size() const noexcept {
+#ifdef _WIN32
+      if (pages_.size() != 0U) {
+        return pages_.size();
+      }
+#endif
+      return bytes_.size();
+    }
+
+    [[nodiscard]] std::size_t capacity() const noexcept {
+#ifdef _WIN32
+      if (pages_.size() != 0U) {
+        return pages_.size();
+      }
+#endif
+      return bytes_.capacity();
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+      return size() == 0U;
+    }
+
+    [[nodiscard]] std::byte* begin() noexcept {
+#ifdef _WIN32
+      if (pages_.size() != 0U) {
+        return static_cast<std::byte*>(pages_.data());
+      }
+#endif
+      return bytes_.data();
+    }
+
+    [[nodiscard]] const std::byte* begin() const noexcept {
+#ifdef _WIN32
+      if (pages_.size() != 0U) {
+        return static_cast<const std::byte*>(pages_.data());
+      }
+#endif
+      return bytes_.data();
+    }
+
+    [[nodiscard]] const std::byte* end() const noexcept {
+      return empty() ? begin() : begin() + size();
+    }
+
+    [[nodiscard]] std::span<const std::byte> view() const noexcept {
+      return {begin(), size()};
+    }
+
+  private:
+    std::vector<std::byte> bytes_;
+#ifdef _WIN32
+    platform::PageableMemory pages_;
+#endif
+  };
+
   struct StoredBlock {
     BlockStorage storage = BlockStorage::implicit_zero;
     std::uint32_t uncompressed_bytes = 0;
@@ -702,6 +698,7 @@ namespace {
 
 using StoreImage = HostBackingStore::Impl::Image;
 using StoreBlock = HostBackingStore::Impl::StoredBlock;
+using StoredPayload = HostBackingStore::Impl::StoredPayload;
 
 [[nodiscard]] BackingStatus maximum_image_charge(const std::uint64_t valid_bytes,
                                                  std::uint64_t& charge) noexcept {
