@@ -144,7 +144,7 @@ backward/optimizer scheduling, CUDA Graphs, dynamic control flow, distributed/NC
 arbitrary extensions, and transparent execution of unsupported oversized operators are
 future work.
 
-## Phase 5: adaptive lossless compressed backing — implementation/gates in progress
+## Phase 5: adaptive lossless compressed backing — local gates complete, CI pending
 
 - Production `xvram_residency` owns an authoritative `HostBackingStore`; the frozen
   Phase 2 `CacheManager` remains the raw regression implementation.
@@ -184,14 +184,27 @@ future work.
   app-locally, loaded dynamically, and tested after relocation. The Ampere gate uses the
   CUDA codec backend; the Blackwell-only hardware Decompression Engine is out of scope.
 
-Remaining exit criteria are deliberately not marked complete: run the RTX 3070 core
-matrix in `scripts/run-phase5-compression-acceptance.ps1`, then the compression-enabled
-Phase 4b regression matrix. Required evidence includes forced-path digest parity,
-adaptive rejection of incompressible expansion, real compressed H2D/D2H reduction,
-GPU encode-before-D2H, phase-change decisions, event-safe budget shrink/grow, CLOCK/LRU
-parity, the conditional `4x` capacity stress, PyTorch v2 reference equality, complete
-cleanup, empty diagnostics, and no residual worker. Record those results and the full
-GitHub Actions run here only after they actually pass.
+The local gates passed on 2026-09-05 at clean Release commit
+`5220b86114db2750729f4a0ea3aa8c12bdf13b62`: 69/69 no-driver/contract tests, all 12 core
+RTX 3070/WDDM runs, the public SDK v2 hardware smoke, and all 11 PyTorch runs (six
+compression-off Phase 4b regressions plus five v2 cases). Every hardware report exited
+zero, passed schema/trace/semantic validation, matched its reference, completed cleanup,
+and left no worker. All eleven inference outputs matched the reference digest exactly.
+
+The core matrix demonstrated forced-path and CLOCK/LRU parity, adaptive raw selection
+for incompressible data, GPU encode-before-D2H, and event-safe budget shrink/grow. The
+`4x` stress case was executed, not skipped: 34,357,641,216 logical bytes fit in 148,364,448
+stored payload bytes under a 28,923,184,128-byte host cap. This highly compressible
+fixture proves elastic admission, not a typical-model ratio or a product maximum.
+The controlled `3x` scan median was 6,676.4934 ms raw versus 6,590.6049 ms GPU-LZ4
+(1.286% lower); no general workload speedup is claimed.
+
+PyTorch v2 passed the 42-layer incompressible adaptive case, all three 47-layer
+structured capacity cases (CLOCK/LRU and prefetch 0/2), and sequence-128 attention smoke.
+The three 47-layer graph hashes and output digests matched; weight D2H remained zero.
+See the [acceptance evidence](adaptive-compression.md#recorded-local-results) for exact
+artifact locations and accounting. The full Phase 5 GitHub Actions run remains the
+outstanding delivery gate; Phase 5 is not yet marked fully complete.
 
 ## Phase 6+: interception and instrumentation
 

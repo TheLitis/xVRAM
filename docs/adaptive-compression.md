@@ -430,7 +430,7 @@ python scripts/validate_phase5_compression_trace.py `
   --report compression.json --trace compression.jsonl
 ```
 
-## RTX 3070 acceptance — pending
+## RTX 3070 acceptance — local gates passed
 
 `scripts/run-phase5-compression-acceptance.ps1` derives exact byte sizes from the probe,
 runs the core matrix, validates every report/trace against the strict schemas, checks
@@ -458,3 +458,55 @@ The second gate reruns the Phase 4b matrix in compression-off mode and adds the 
 Llama-like/structured-model cases, CLOCK/LRU parity, prefetch distance zero/two, and
 sequence-128 scratch/attention smoke. Do not update the roadmap to “complete” until both
 hardware gates and the full GitHub Actions matrix actually pass.
+
+### Recorded local results
+
+Both hardware gates completed on 2026-09-05 on RTX 3070/WDDM with PyTorch
+2.13.0+cu130. The tested clean Release revision was
+`5220b86114db2750729f4a0ea3aa8c12bdf13b62`; its unchanged source fingerprint was
+`d4acd3ca3e1852c593d1057a951a70462b303ef337690bed76e4ee19bbe780b9`.
+The warnings-as-errors build and all 69 local tests passed before the hardware matrix.
+The reproducibility manifests and reports are retained locally at:
+
+- `artifacts/phase5-compression-rtx3070-release-5220b86-20260905/acceptance-manifest.json`
+- `artifacts/phase5-sdk-v2-5220b86-20260905/smoke.json`
+- `artifacts/phase5-pytorch-rtx3070-release-5220b86-20260905/acceptance-manifest.json`
+
+All 12 core reports passed, including the optional `4x` case without a skip. Across
+the matrix maps, SetAccess calls, and unmaps each totalled 14,504; recorded and retired
+events each totalled 26,373. Mismatches, unsafe remaps/transitions, device-budget
+violations, dropped trace records, and diagnostics were zero. All cleanup fields were
+true and the workers were reaped. Forced-path digests matched; mixed CLOCK/LRU both
+produced `a894ee17748149be9e9b799be3932a2f`. Budget pressure produced three shrinks and
+one grow, with codec reservations included in the target.
+
+The capacity stress case processed 34,357,641,216 logical bytes (31.998 GiB), above its
+28,923,184,128-byte raw host-store cap. Its 512 authoritative LZ4 chunks stored
+148,364,448 payload bytes (141.491 MiB); the complete charged host ledger peaked at
+828,243,392 bytes. This deliberately highly compressible fixture proves elastic
+admission beyond a raw cap. It is neither a typical model compression ratio nor a `4x`
+product limit.
+
+For the controlled `3x` fixture, two warmups and five measured full scans yielded median
+times of 6,676.4934 ms raw and 6,590.6049 ms GPU-LZ4 (1.286% lower). These scan timings
+exclude initial backing preparation and final cleanup; they are not whole-process
+timings. The incompressible adaptive case retained raw authority. Other workloads have
+no speedup threshold, and no general acceleration claim is made.
+
+The SDK v2 smoke passed with 768 MiB logical data, 18 maps/unmaps, 12 handle reuses,
+seven dirty evictions, and 24 compression commits. It sampled 90 coherent telemetry
+snapshots, including 66 while operations were pending, and exited zero with no helper
+remaining. Its artifact pins the SDK and helper binaries.
+
+All six compression-off Phase 4b regressions and all five PyTorch v2 cases passed.
+Every inference output matched its reference digest with zero absolute/relative error;
+views/events/maps and host/device budgets reconciled, weight D2H was zero, diagnostics
+were empty, and cleanup/worker reaping completed. The 42-layer adaptive case predominantly
+selected raw (3,742 raw decisions versus two compressed decisions). The 47-layer
+CLOCK/capacity case stored 19,553,288,448 logical bytes in 2,109,085,409 compressed
+payload bytes. Its CLOCK/LRU and prefetch 0/2 variants shared one graph hash and output
+digest; prefetch-zero recorded zero submitted prefetches. The sequence-128 v2 attention
+smoke also passed.
+
+The full Phase 5 GitHub Actions gate is still pending; local hardware success does not
+substitute for the Windows/Linux and Stable-ABI CI matrix.

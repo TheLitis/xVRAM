@@ -14,7 +14,7 @@ WDDM-aware budgeting, cache policy, and library-aware tiling.
 > resident-only PyTorch MemPool adapter. A separate lease-scoped PyTorch inference
 > runtime is implemented and has passed its local six-scenario RTX 3070 gate and the
 > complete Windows/Linux GitHub Actions matrix. Phase 5 adds opt-in, lossless compressed
-> host backing, but its RTX 3070 acceptance matrix is not yet recorded as complete. The SDK remains
+> host backing and has passed both local RTX 3070 gates; its full CI gate is pending. The SDK remains
 > pre-release, does not transparently extend an arbitrary application's VRAM, and must
 > not be used for production workloads.
 
@@ -212,7 +212,7 @@ the private v2 control table and never silently downgrade. `xvram-compression-be
 isolates the core hardware proof behind `XVZ1`, writes `xvram.adaptive_compression` v1,
 and optionally emits `xvram.compression_trace` v1 JSONL. See the
 [adaptive-compression guide](docs/adaptive-compression.md) for the backing format,
-budget model, CLI, safety rules, and pending RTX gate.
+budget model, CLI, safety rules, and recorded RTX gate results.
 
 ## Build
 
@@ -398,9 +398,9 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 4. Stable C ABI and library-aware tiled operations, starting with GEMM.
 5. PyTorch resident allocator plus lease-scoped static inference; both Phase 4
    boundaries and the Phase 4b oversubscription gate are complete.
-6. Adaptive lossless compressed host backing with SDK/PyTorch v2 opt-in; implementation
-   and automated contracts are being delivered, while the Phase 5 hardware gates remain
-   pending.
+6. Adaptive lossless compressed host backing with SDK/PyTorch v2 opt-in; implementation,
+   69 local tests, 12 core hardware runs, SDK v2 smoke, and 11 PyTorch hardware runs passed.
+   The full Phase 5 GitHub Actions gate remains pending.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
