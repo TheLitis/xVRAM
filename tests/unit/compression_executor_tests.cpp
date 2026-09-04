@@ -128,6 +128,8 @@ void runtime_cleanup_evidence_test() {
   telemetry.unmaps = 8U;
   telemetry.transactions_submitted = 6U;
   telemetry.transactions_completed = 6U;
+  telemetry.cleanup_operations_drained = true;
+  telemetry.cleanup_events_drained = true;
   telemetry.codec_events_recorded = 4U;
   telemetry.codec_events_retired = 4U;
 
@@ -135,7 +137,7 @@ void runtime_cleanup_evidence_test() {
   expect(cleanup.complete.value_or(false),
          "reconciled post-close counters must prove complete runtime cleanup");
   expect(cleanup.operations_drained.value_or(false),
-         "completed transaction counters must prove operation drain");
+         "the explicit post-close retirement ledger must prove operation drain");
   expect(cleanup.mappings_removed.value_or(false),
          "balanced maps with zero residency must prove mapping removal");
   expect(cleanup.physical_handles_released.value_or(false),
@@ -159,6 +161,41 @@ void runtime_cleanup_evidence_test() {
   cleanup = xvram::compression::detail::derive_runtime_cleanup(telemetry, true);
   expect(!cleanup.pinned_staging_released.value_or(true),
          "a non-empty post-close host budget ledger must fail pinned staging cleanup evidence");
+}
+
+void rejected_and_cancelled_transactions_do_not_imply_live_work_test() {
+  xvram::residency::RuntimeTelemetry telemetry;
+  telemetry.transactions_submitted = 7U;
+  telemetry.transactions_completed = 5U;
+  telemetry.cleanup_operations_drained = true;
+  telemetry.cleanup_events_drained = true;
+  auto cleanup = xvram::compression::detail::derive_runtime_cleanup(telemetry, true);
+  expect(cleanup.complete.value_or(false),
+         "rejected or cancelled transactions with no remaining users must permit complete cleanup");
+  expect(cleanup.operations_drained.value_or(false) && cleanup.events_drained.value_or(false),
+         "actual retirement must remain independent of successful workload counts");
+
+  cleanup = xvram::compression::detail::derive_runtime_cleanup(telemetry, false);
+  expect(cleanup.operations_drained.value_or(false) && cleanup.events_drained.value_or(false),
+         "a later resource-destruction failure must not erase proven operation retirement");
+  expect(!cleanup.complete.value_or(true),
+         "a later cleanup failure must still fail aggregate cleanup");
+
+  telemetry.transactions_completed = telemetry.transactions_submitted;
+  telemetry.cleanup_operations_drained = false;
+  telemetry.cleanup_events_drained = false;
+  cleanup = xvram::compression::detail::derive_runtime_cleanup(telemetry, true);
+  expect(!cleanup.operations_drained.value_or(true) && !cleanup.events_drained.value_or(true),
+         "matching successful counters must not hide unknown post-submission completion");
+  expect(!cleanup.complete.value_or(true),
+         "unknown users must fail aggregate cleanup even when all byte counters are zero");
+
+  telemetry.cleanup_operations_drained = true;
+  telemetry.cleanup_events_drained = true;
+  telemetry.codec_events_recorded = 1U;
+  cleanup = xvram::compression::detail::derive_runtime_cleanup(telemetry, true);
+  expect(!cleanup.events_drained.value_or(true) && !cleanup.codec_slots_drained.value_or(true),
+         "a codec event imbalance must independently reject event retirement evidence");
 }
 
 void write_admission_evidence_test() {
@@ -239,6 +276,7 @@ int main() {
   mixed_whole_chunk_classes_and_phase_switch_test();
   other_scenario_patterns_remain_stable_test();
   runtime_cleanup_evidence_test();
+  rejected_and_cancelled_transactions_do_not_imply_live_work_test();
   write_admission_evidence_test();
   trace_callback_failure_report_test();
   if (failures != 0) {

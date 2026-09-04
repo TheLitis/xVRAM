@@ -203,6 +203,10 @@ struct RuntimeTelemetry {
   bool stable_addresses = true;
   bool no_physical_aliases = true;
   bool quarantined = false;
+  // Observed at close, independently of successful transaction counters: an admission failure
+  // or cancelled lease can be fully drained without having completed a successful transaction.
+  bool cleanup_operations_drained = false;
+  bool cleanup_events_drained = false;
 
   // Phase 5 compression/backing telemetry. Logical counters describe uncompressed user bytes;
   // PCIe counters describe bytes actually transferred across the bus.

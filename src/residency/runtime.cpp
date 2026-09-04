@@ -1135,7 +1135,7 @@ public:
                                           chunk_plan.full_write_only;
       if (chunk_plan.marks_dirty &&
           spill_reservations_.find(chunk_plan.key) == spill_reservations_.end()) {
-        const RuntimeStatus spill_status = reserve_spill(chunk_plan.key);
+        const RuntimeStatus spill_status = reserve_spill(chunk_plan.key, plan.chunks);
         if (spill_status != RuntimeStatus::success) {
           if (!rollback()) {
             return poison("transaction", "spill_rollback",
@@ -1507,6 +1507,8 @@ public:
       return close_status_;
     }
     RuntimeStatus aggregate = RuntimeStatus::success;
+    bool cleanup_ledger_known = true;
+    bool cpu_operations_drained = true;
     const auto note_cleanup_failure = [&]() noexcept {
       aggregate = RuntimeStatus::cleanup_failure;
     };
@@ -1541,7 +1543,23 @@ public:
         if (!frame.mapped) {
           continue;
         }
+        if (async_resources_quarantined_) {
+          // An earlier unknown submission may still own a shared transfer staging slot/stream.
+          // Do not start another writeback while cleaning other dirty frames: cycling the pool
+          // could reuse that slot before its unobservable generation has retired. Keep every
+          // mapped frame at the worker boundary; known-safe unmap failures still use best-effort
+          // independent cleanup below because they do not set this asynchronous flag.
+          frame.quarantined = true;
+          if (frame.key.has_value()) {
+            if (Allocation* owner = allocation(frame.key->allocation_id); owner != nullptr) {
+              quarantine_mapping(*owner);
+            }
+          }
+          note_cleanup_failure();
+          continue;
+        }
         if (!frame.key.has_value()) {
+          cleanup_ledger_known = false;
           telemetry_.quarantined = true;
           poisoned_ = true;
           note_cleanup_failure();
@@ -1555,6 +1573,7 @@ public:
             record->frame_index == std::optional<std::uint64_t>{index} &&
             frame.address == owner->logical_base + frame.key->chunk_index * config_.chunk_bytes;
         if (!linked) {
+          cleanup_ledger_known = false;
           if (owner != nullptr) {
             quarantine_mapping(*owner);
           } else {
@@ -1651,6 +1670,15 @@ public:
       }
     }
     refresh_host_telemetry();
+    bool chunk_users_retired = cleanup_ledger_known;
+    for (const auto& [id, owner] : allocations_) {
+      (void)id;
+      for (const ChunkRecord& record : owner->chunks) {
+        chunk_users_retired = chunk_users_retired && record.pin_count == 0 &&
+                              !record.in_current_working_set && !record.staging_slot.has_value() &&
+                              record.event_generation == record.completed_generation;
+      }
+    }
     allocations_.clear();
     if (workspace_ != 0 && !async_resources_quarantined_) {
       if (api_.mem_free_(workspace_) != cuda::abi::success) {
@@ -1706,6 +1734,7 @@ public:
     }
     if (cpu_codec_pool_ != nullptr) {
       if (cpu_codec_pool_->close() != CpuCodecPoolStatus::success) {
+        cpu_operations_drained = false;
         note_cleanup_failure();
       }
       cpu_codec_pool_.reset();
@@ -1761,6 +1790,12 @@ public:
     owns_context_ = false;
     context_ = nullptr;
     setup_complete_ = false;
+    telemetry_.cleanup_events_drained =
+        chunk_users_retired && !active_external_lease_.has_value() &&
+        !async_resources_quarantined_ &&
+        telemetry_.codec_events_recorded == telemetry_.codec_events_retired;
+    telemetry_.cleanup_operations_drained =
+        telemetry_.cleanup_events_drained && cpu_operations_drained;
     closed_ = true;
     close_status_ = aggregate;
     return aggregate;
@@ -2228,7 +2263,8 @@ private:
         std::max(telemetry_.spill_reserved_peak_bytes, budget.spill_peak_bytes);
   }
 
-  [[nodiscard]] RuntimeStatus reserve_spill(const ChunkKey key) {
+  [[nodiscard]] RuntimeStatus reserve_spill(const ChunkKey key,
+                                            const std::span<const ChunkAccessPlan> working_set) {
     if (spill_reservations_.contains(key)) {
       return RuntimeStatus::success;
     }
@@ -2244,8 +2280,44 @@ private:
                   "raw spill size overflowed");
     }
     RawSpill spill;
-    const HostBudgetStatus budget_status = backing_store_->budget().reserve(
+    HostBudgetStatus budget_status = backing_store_->budget().reserve(
         HostBudgetCategory::spill, *maximum_charge, spill.reservation);
+    while (budget_status == HostBudgetStatus::limit_exceeded) {
+      // Retired dirty frames can retain spill credits until VRAM eviction even when the host
+      // budget is the tighter bound. Commit one existing spill at a time before admitting a new
+      // write. Protect the entire upcoming working set, including chunks not yet pinned by the
+      // acquire loop. A successful writeback removes its spill entry, making this loop bounded.
+      std::optional<ChunkKey> victim;
+      for (const auto& [candidate, reserved] : spill_reservations_) {
+        (void)reserved;
+        if (std::any_of(working_set.begin(), working_set.end(),
+                        [&](const ChunkAccessPlan& access) { return access.key == candidate; })) {
+          continue;
+        }
+        const ChunkRecord* record = chunk(candidate);
+        const Frame* frame = frame_for(candidate);
+        if (record == nullptr || record->state != ChunkState::resident_dirty ||
+            !is_victim_eligible(*record) || record->event_generation == 0 ||
+            record->completed_generation != record->event_generation || frame == nullptr ||
+            !frame->mapped || frame->quarantined) {
+          continue;
+        }
+        if (!victim.has_value() || candidate < *victim) {
+          victim = candidate;
+        }
+      }
+      if (!victim.has_value()) {
+        break;
+      }
+      if (const RuntimeStatus status = writeback(*victim); status != RuntimeStatus::success) {
+        return status;
+      }
+      notify_lifecycle_progress();
+      // A compressed/zero authority replaced by raw may release much less than one chunk;
+      // always consult the exact ledger again rather than assuming a full spill was reclaimed.
+      budget_status = backing_store_->budget().reserve(HostBudgetCategory::spill, *maximum_charge,
+                                                       spill.reservation);
+    }
     if (budget_status != HostBudgetStatus::success) {
       return fail(RuntimeStatus::host_oom, "compression", "reserve_spill",
                   "raw spill admission failed before the write-capable lease");

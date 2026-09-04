@@ -2505,6 +2505,255 @@ void runtime_post_map_backing_budget_failure_test(const bool nvcomp_available) {
   CHECK(cuda.violations.empty());
 }
 
+struct SpillPressureFixture {
+  FakeCuda cuda;
+  CudaApi api{CudaApi::InjectedDispatch{}};
+  ActiveFake active{cuda};
+  xvram::nvcomp::NvcompApi codec{xvram::nvcomp::NvcompDispatch{}, "injected-unavailable"};
+  xvram::residency::RuntimeConfig config;
+  std::unique_ptr<xvram::residency::Runtime> runtime;
+  xvram::residency::RuntimeAllocation allocation;
+  std::vector<std::byte> expected;
+  std::uint64_t callbacks = 0;
+
+  [[nodiscard]] bool setup(const bool no_spill_room = false, const std::size_t logical_chunks = 3U,
+                           const std::uint32_t staging_slots = 2U) {
+    cuda.install(api);
+    const auto raw_charge = xvram::residency::maximum_raw_backing_charge(chunk_bytes);
+    CHECK(raw_charge.has_value());
+    if (!raw_charge.has_value()) {
+      return false;
+    }
+    config.chunk_bytes = chunk_bytes;
+    config.cache_target_bytes = 8ULL * chunk_bytes;
+    config.device_headroom_bytes = chunk_bytes;
+    config.staging_slots = staging_slots;
+    config.stall_timeout = std::chrono::milliseconds(100);
+    config.budget_poll_interval = std::chrono::hours(1);
+    config.compression_mode = xvram::residency::CompressionMode::capacity;
+    config.forced_compression_path = xvram::residency::CompressionPath::raw;
+    // All raw authorities plus one fewer raw spill than logical chunks fit.
+    // Retiring a dirty spill replaces its old authority, freeing one raw charge.
+    config.host_store_cap_bytes =
+        staging_slots * chunk_bytes +
+        (logical_chunks + (no_spill_room ? 0U : logical_chunks - 1U)) * *raw_charge +
+        (no_spill_room ? chunk_bytes / 2ULL : 0ULL);
+    config.compression_workspace_cap_bytes = chunk_bytes;
+    config.codec_slots = 2;
+    config.codec_workers = 2;
+    config.nvcomp_api = &codec;
+    runtime = std::make_unique<xvram::residency::Runtime>(api, config);
+    auto status = runtime->setup();
+    CHECK(status == xvram::residency::RuntimeStatus::success);
+    if (status != xvram::residency::RuntimeStatus::success) {
+      return false;
+    }
+    status = runtime->allocate(logical_chunks * chunk_bytes,
+                               xvram::residency::ResidencyHint::normal, allocation);
+    CHECK(status == xvram::residency::RuntimeStatus::success);
+    if (status != xvram::residency::RuntimeStatus::success) {
+      return false;
+    }
+    expected.resize(logical_chunks);
+    std::vector<std::byte> initial(static_cast<std::size_t>(chunk_bytes));
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      expected[index] = static_cast<std::byte>(0x10U + index);
+      std::fill(initial.begin(), initial.end(), expected[index]);
+      status = runtime->write(allocation.id, index * chunk_bytes, initial.data(), chunk_bytes);
+      CHECK(status == xvram::residency::RuntimeStatus::success);
+      if (status != xvram::residency::RuntimeStatus::success) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] xvram::residency::RuntimeStatus
+  write(const std::size_t index, const std::byte value, const bool protect_chunk_zero = false) {
+    std::vector<xvram::residency::AccessRange> ranges;
+    if (protect_chunk_zero) {
+      ranges.push_back({allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read});
+    }
+    ranges.push_back({allocation.id, index * chunk_bytes, chunk_bytes,
+                      xvram::residency::AccessMode::read_write});
+    const auto status = runtime->execute(ranges, 0, [&](const auto& context) {
+      ++callbacks;
+      const auto& output = context.ranges.back();
+      const auto view =
+          cuda.mapping_view(output.device_address, static_cast<std::size_t>(chunk_bytes));
+      CHECK(view.has_value());
+      if (!view.has_value()) {
+        return xvram::residency::RuntimeStatus::callback_failed;
+      }
+      std::fill_n(view->allocation->storage.begin() + static_cast<std::ptrdiff_t>(view->offset),
+                  static_cast<std::size_t>(chunk_bytes), value);
+      cuda.begin_mapping_work(view->base, context.stream);
+      return xvram::residency::RuntimeStatus::success;
+    });
+    if (status == xvram::residency::RuntimeStatus::success) {
+      expected[index] = value;
+    }
+    return status;
+  }
+
+  void verify_and_close() {
+    std::vector<std::byte> output(static_cast<std::size_t>(chunk_bytes));
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      CHECK(runtime->read(allocation.id, index * chunk_bytes, output.data(), chunk_bytes) ==
+            xvram::residency::RuntimeStatus::success);
+      CHECK(std::all_of(output.begin(), output.end(),
+                        [&](const std::byte value) { return value == expected[index]; }));
+    }
+    CHECK(runtime->release(allocation.id) == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime->close() == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime->telemetry().cleanup_operations_drained);
+    CHECK(runtime->telemetry().cleanup_events_drained);
+    CHECK(runtime->telemetry().host_budget_peak_bytes <= config.host_store_cap_bytes);
+    CHECK(runtime->telemetry().maps == runtime->telemetry().set_access);
+    CHECK(runtime->telemetry().maps == runtime->telemetry().unmaps);
+    CHECK(runtime->telemetry().unsafe_remaps == 0U);
+    CHECK(runtime->telemetry().unsafe_transitions == 0U);
+    CHECK(cuda.mappings.empty());
+    CHECK(cuda.reservations.empty());
+    CHECK(cuda.violations.empty());
+  }
+};
+
+void runtime_spill_pressure_recovery_test(const bool protect_first_dirty) {
+  const CheckContext context(protect_first_dirty ? "spill pressure skips pinned working-set chunk"
+                                                 : "spill pressure retires lowest eligible key");
+  SpillPressureFixture fixture;
+  if (!fixture.setup()) {
+    return;
+  }
+  CHECK(fixture.write(0, std::byte{0xa0}) == xvram::residency::RuntimeStatus::success);
+  CHECK(fixture.write(1, std::byte{0xa1}) == xvram::residency::RuntimeStatus::success);
+  const auto before = fixture.runtime->telemetry();
+  const auto first_before = fixture.runtime->backing_info(fixture.allocation.id, 0);
+  const auto second_before = fixture.runtime->backing_info(fixture.allocation.id, 1);
+  CHECK(first_before.has_value() && second_before.has_value());
+  const auto callbacks_before = fixture.callbacks;
+  CHECK(fixture.write(2, std::byte{0xa2}, protect_first_dirty) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto after = fixture.runtime->telemetry();
+  const auto first_after = fixture.runtime->backing_info(fixture.allocation.id, 0);
+  const auto second_after = fixture.runtime->backing_info(fixture.allocation.id, 1);
+  CHECK(first_after.has_value() && second_after.has_value());
+  if (first_before && second_before && first_after && second_after) {
+    CHECK(first_after->generation == first_before->generation + (protect_first_dirty ? 0U : 1U));
+    CHECK(second_after->generation == second_before->generation + (protect_first_dirty ? 1U : 0U));
+  }
+  CHECK(after.dirty_writebacks == before.dirty_writebacks + 1U);
+  CHECK(after.d2h_bytes == before.d2h_bytes + chunk_bytes);
+  CHECK(after.unmaps == before.unmaps);
+  CHECK(fixture.callbacks == callbacks_before + 1U);
+  CHECK(after.spill_reserved_bytes == before.spill_reserved_bytes);
+  CHECK(!after.quarantined);
+  fixture.verify_and_close();
+}
+
+void runtime_spill_pressure_no_safe_victim_test(const bool protect_later_dirty) {
+  const CheckContext context(protect_later_dirty ? "spill pressure protects all declared chunks"
+                                                 : "spill pressure genuine host OOM before launch");
+  SpillPressureFixture fixture;
+  if (!fixture.setup(!protect_later_dirty)) {
+    return;
+  }
+  if (protect_later_dirty) {
+    CHECK(fixture.write(1, std::byte{0xb1}) == xvram::residency::RuntimeStatus::success);
+    CHECK(fixture.write(2, std::byte{0xb2}) == xvram::residency::RuntimeStatus::success);
+  }
+  const auto before = fixture.runtime->telemetry();
+  const auto callbacks_before = fixture.callbacks;
+  const std::array ranges{xvram::residency::AccessRange{
+      fixture.allocation.id, 0, protect_later_dirty ? 3ULL * chunk_bytes : chunk_bytes,
+      xvram::residency::AccessMode::read_write}};
+  bool invoked = false;
+  CHECK(fixture.runtime->execute(ranges, 0, [&](const auto&) {
+    invoked = true;
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::host_oom);
+  CHECK(!invoked);
+  CHECK(fixture.callbacks == callbacks_before);
+  CHECK(fixture.runtime->error().operation == "reserve_spill");
+  CHECK(fixture.runtime->telemetry().dirty_writebacks == before.dirty_writebacks);
+  CHECK(fixture.runtime->telemetry().d2h_bytes == before.d2h_bytes);
+  CHECK(fixture.runtime->telemetry().maps == before.maps);
+  CHECK(fixture.runtime->telemetry().spill_reserved_bytes == before.spill_reserved_bytes);
+  CHECK(!fixture.runtime->poisoned());
+  fixture.verify_and_close();
+}
+
+void runtime_spill_pressure_active_lease_is_protected_test() {
+  const CheckContext context("spill pressure cannot recover through an active lease");
+  SpillPressureFixture fixture;
+  if (!fixture.setup()) {
+    return;
+  }
+  CHECK(fixture.write(0, std::byte{0xc0}) == xvram::residency::RuntimeStatus::success);
+  CHECK(fixture.write(1, std::byte{0xc1}) == xvram::residency::RuntimeStatus::success);
+  const std::array read{xvram::residency::AccessRange{fixture.allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  xvram::residency::ExternalLease lease;
+  CHECK(fixture.runtime->acquire_external({read, 0}, lease) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto before = fixture.runtime->telemetry();
+  const std::array next{xvram::residency::AccessRange{fixture.allocation.id, 2ULL * chunk_bytes,
+                                                      chunk_bytes,
+                                                      xvram::residency::AccessMode::read_write}};
+  xvram::residency::ExternalLease rejected;
+  CHECK(fixture.runtime->acquire_external({next, 0}, rejected) ==
+        xvram::residency::RuntimeStatus::invalid_argument);
+  CHECK(!rejected.id);
+  CHECK(fixture.runtime->telemetry().d2h_bytes == before.d2h_bytes);
+  CHECK(fixture.runtime->telemetry().spill_reserved_bytes == before.spill_reserved_bytes);
+  CHECK(fixture.runtime->seal_external(
+            lease.id, xvram::residency::ExternalSealMode::cancelled_before_submission) ==
+        xvram::residency::RuntimeStatus::success);
+  xvram::residency::ExternalLeasePoll poll;
+  CHECK(fixture.runtime->wait_external(lease.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::callback_skipped);
+  fixture.verify_and_close();
+}
+
+void runtime_spill_pressure_event_failure_quarantines_test(const FaultSite fault) {
+  const CheckContext context(fault == FaultSite::event_record ? "spill recovery event record fault"
+                                                              : "spill recovery event query fault");
+  SpillPressureFixture fixture;
+  if (!fixture.setup(false, 4U, 4U)) {
+    return;
+  }
+  CHECK(fixture.write(0, std::byte{0xd0}) == xvram::residency::RuntimeStatus::success);
+  CHECK(fixture.write(1, std::byte{0xd1}) == xvram::residency::RuntimeStatus::success);
+  CHECK(fixture.write(2, std::byte{0xd2}) == xvram::residency::RuntimeStatus::success);
+  const auto callbacks_before = fixture.callbacks;
+  const auto unmaps_before = fixture.cuda.unmap_calls;
+  const auto releases_before = fixture.cuda.release_calls;
+  const auto d2h_before = fixture.cuda.d2h_mapping_calls;
+  fixture.cuda.injection.site = fault;
+  fixture.cuda.injection.result = CUDA_ERROR_UNKNOWN;
+  CHECK(fixture.write(3, std::byte{0xd3}) == xvram::residency::RuntimeStatus::poisoned);
+  CHECK(fixture.cuda.injection.triggered);
+  CHECK(fixture.callbacks == callbacks_before);
+  CHECK(fixture.runtime->poisoned());
+  CHECK(fixture.runtime->async_completion_unknown());
+  CHECK(fixture.runtime->telemetry().quarantined);
+  CHECK(fixture.cuda.d2h_mapping_calls == d2h_before + 1U);
+  const auto pinned_before_close = fixture.cuda.pinned.size();
+  // The first D2H slot is unknown. Continuing cleanup on either remaining dirty
+  // frame could cycle the two-slot pool and reuse its still-live generation.
+  CHECK(fixture.runtime->close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(!fixture.runtime->telemetry().cleanup_operations_drained);
+  CHECK(!fixture.runtime->telemetry().cleanup_events_drained);
+  CHECK(fixture.cuda.unmap_calls == unmaps_before);
+  CHECK(fixture.cuda.release_calls == releases_before);
+  CHECK(fixture.cuda.d2h_mapping_calls == d2h_before + 1U);
+  CHECK(fixture.cuda.pinned.size() == pinned_before_close);
+  CHECK(!fixture.cuda.mappings.empty());
+  CHECK(!fixture.cuda.reservations.empty());
+  CHECK(fixture.cuda.violations.empty());
+}
+
 void runtime_codec_budget_suspension_test() {
   const CheckContext context("runtime codec budget suspension restores after safe hysteresis");
   FakeCuda cuda;
@@ -3710,6 +3959,13 @@ int main() {
   runtime_codec_pinned_budget_fallback_preserves_device_peak_test();
   runtime_post_map_backing_budget_failure_test(false);
   runtime_post_map_backing_budget_failure_test(true);
+  runtime_spill_pressure_recovery_test(false);
+  runtime_spill_pressure_recovery_test(true);
+  runtime_spill_pressure_no_safe_victim_test(false);
+  runtime_spill_pressure_no_safe_victim_test(true);
+  runtime_spill_pressure_active_lease_is_protected_test();
+  runtime_spill_pressure_event_failure_quarantines_test(FaultSite::event_record);
+  runtime_spill_pressure_event_failure_quarantines_test(FaultSite::event_query);
   runtime_codec_budget_suspension_test();
   runtime_codec_restore_setup_failure_falls_back_then_retries_test();
   runtime_restored_codec_unknown_event_quarantines_test();

@@ -972,13 +972,6 @@ void merge_cleanup_evidence(Cleanup& aggregate, const Cleanup& current) noexcept
   if (status == residency::RuntimeStatus::success) {
     if (mixed_phase_changed) {
       expected_digest = Digest128{};
-      for (std::uint64_t chunk = 0; chunk < chunk_count; ++chunk) {
-        const std::uint64_t offset = chunk * chunk_bytes;
-        const std::uint64_t valid = std::min(chunk_bytes, logical_bytes - offset);
-        auto expected_span = std::span<std::byte>{expected.data(), static_cast<std::size_t>(valid)};
-        fill_pattern(spec.scenario, options.seed, offset, chunk_bytes, expected_span, true);
-        expected_digest.update(expected_span);
-      }
     }
     for (std::uint64_t chunk = 0; chunk < chunk_count; ++chunk) {
       const std::uint64_t offset = chunk * chunk_bytes;
@@ -994,6 +987,12 @@ void merge_cleanup_evidence(Cleanup& aggregate, const Cleanup& current) noexcept
       auto expected_span = std::span<std::byte>{expected.data(), static_cast<std::size_t>(valid)};
       fill_pattern(spec.scenario, options.seed, offset, chunk_bytes, expected_span,
                    mixed_phase_changed);
+      if (mixed_phase_changed) {
+        // Rebuild the changed-generation reference in the same bounded verification pass.
+        // A separate whole-heap digest loop can exceed the no-progress watchdog for elastic
+        // sizes even while doing useful CPU work; each verified chunk below reports progress.
+        expected_digest.update(expected_span);
+      }
       if (std::memcmp(buffer.data(), expected.data(), static_cast<std::size_t>(valid)) != 0) {
         for (std::uint64_t index = 0; index < valid; ++index) {
           if (buffer[static_cast<std::size_t>(index)] !=
@@ -1171,10 +1170,13 @@ bool mixed_chunk_is_write_capable(const std::uint64_t chunk_index,
 Cleanup derive_runtime_cleanup(const residency::RuntimeTelemetry& telemetry,
                                const bool close_complete) noexcept {
   Cleanup cleanup;
-  cleanup.operations_drained = telemetry.transactions_submitted == telemetry.transactions_completed;
+  // Successful transactions are workload outcomes, not an outstanding-work ledger. A rejected
+  // admission or a cancelled lease can be fully drained without incrementing the success count.
+  // Runtime::close snapshots actual lease/chunk/codec/CPU retirement before clearing owners.
+  cleanup.operations_drained = telemetry.cleanup_operations_drained;
   cleanup.codec_slots_drained = telemetry.codec_events_recorded == telemetry.codec_events_retired &&
                                 telemetry.codec_slot_bytes == 0U;
-  cleanup.events_drained = cleanup.operations_drained.value_or(false) &&
+  cleanup.events_drained = telemetry.cleanup_events_drained &&
                            telemetry.codec_events_recorded == telemetry.codec_events_retired;
   cleanup.mappings_removed = telemetry.maps == telemetry.unmaps && telemetry.resident_bytes == 0U;
   cleanup.physical_handles_released = telemetry.handles_created == telemetry.handles_released;
