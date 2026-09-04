@@ -5,7 +5,6 @@
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
-#include "platform/system_info.hpp"
 #include "residency/runtime.hpp"
 
 #include <algorithm>
@@ -812,6 +811,7 @@ private:
                                    : residency::CompressionCodec::automatic;
     output.host_store_cap_bytes = config.host_store_cap_bytes;
     output.host_headroom_bytes = config.host_headroom_bytes;
+    output.resolve_host_budget = output.compression_mode != residency::CompressionMode::disabled;
     output.compression_workspace_cap_bytes = config.compression_workspace_cap_bytes;
     output.codec_slots = config.codec_slots;
     output.codec_workers = config.codec_workers;
@@ -1389,25 +1389,9 @@ public:
     if (requested.compression_mode == XVRAM_COMPRESSION_DISABLED) {
       return create_session(requested.v1, output);
     }
-    xvram_session_config_v2 config = requested;
-    if (config.host_store_cap_bytes == 0U || config.host_headroom_bytes == 0U) {
-      const probe::SystemInfo system = platform::collect_system_info();
-      if (!system.physical_memory_bytes.has_value() || !system.available_memory_bytes.has_value()) {
-        return make_error(XVRAM_STATUS_UNAVAILABLE, "session", "host_budget",
-                          "automatic compressed backing admission requires host memory telemetry");
-      }
-      constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
-      if (config.host_headroom_bytes == 0U) {
-        config.host_headroom_bytes = std::max(minimum_headroom, *system.physical_memory_bytes / 4U);
-      }
-      if (config.host_store_cap_bytes == 0U) {
-        if (*system.available_memory_bytes <= config.host_headroom_bytes) {
-          return make_error(XVRAM_STATUS_HOST_OUT_OF_MEMORY, "session", "host_budget",
-                            "available host memory does not satisfy automatic headroom");
-        }
-        config.host_store_cap_bytes = *system.available_memory_bytes - config.host_headroom_bytes;
-      }
-    }
+    // Automatic host limits are resolved by production setup on the worker, once
+    // CUDA/context initialization has completed, using one live memory sample.
+    const xvram_session_config_v2& config = requested;
 
     cuda::abi::Context attached = nullptr;
     if (config.v1.context_mode == XVRAM_CONTEXT_ATTACH_CURRENT) {

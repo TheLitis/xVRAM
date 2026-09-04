@@ -1,5 +1,9 @@
 #include "residency/compression.hpp"
 
+#ifdef _WIN32
+#include "platform/pageable_memory.hpp"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -507,11 +511,97 @@ std::string_view backing_status_name(const BackingStatus status) noexcept {
 // HostBackingStore implementation follows below. Keeping it in this translation unit ensures that
 // immutable payload generations and budget reservations cannot be bypassed by runtime callers.
 
+namespace {
+
+class StoredPayload {
+public:
+  explicit StoredPayload(const std::size_t bytes) {
+#ifdef _WIN32
+    // Hundreds of thousands of separately retained 64-KiB vectors cause the Windows process
+    // heap's large-block allocation/free path to degrade as an elastic raw store grows. Give
+    // complete raw blocks their own pageable reservation instead. Ownership stays per block:
+    // replacing one block never retains an otherwise dead chunk-sized slab, and capacity remains
+    // exactly the 64 KiB already charged by the host ledger. VirtualAlloc zeroes committed pages.
+    if (bytes == compression_block_bytes) {
+      if (!pages_.allocate(bytes)) {
+        throw std::bad_alloc();
+      }
+      return;
+    }
+#endif
+    bytes_.resize(bytes);
+  }
+
+  explicit StoredPayload(const std::span<const std::byte> bytes) : StoredPayload(bytes.size()) {
+    std::copy(bytes.begin(), bytes.end(), begin());
+  }
+
+  // Codec containers already own and charge their exact-sized vectors. Adopt those allocations
+  // without an intermediate raw-page copy, so committing a candidate needs no extra spill credit.
+  explicit StoredPayload(std::vector<std::byte>&& bytes) noexcept : bytes_(std::move(bytes)) {}
+
+  [[nodiscard]] std::size_t size() const noexcept {
+#ifdef _WIN32
+    if (pages_.size() != 0U) {
+      return pages_.size();
+    }
+#endif
+    return bytes_.size();
+  }
+
+  [[nodiscard]] std::size_t capacity() const noexcept {
+#ifdef _WIN32
+    if (pages_.size() != 0U) {
+      return pages_.size();
+    }
+#endif
+    return bytes_.capacity();
+  }
+
+  [[nodiscard]] bool empty() const noexcept {
+    return size() == 0U;
+  }
+
+  [[nodiscard]] std::byte* begin() noexcept {
+#ifdef _WIN32
+    if (pages_.size() != 0U) {
+      return static_cast<std::byte*>(pages_.data());
+    }
+#endif
+    return bytes_.data();
+  }
+
+  [[nodiscard]] const std::byte* begin() const noexcept {
+#ifdef _WIN32
+    if (pages_.size() != 0U) {
+      return static_cast<const std::byte*>(pages_.data());
+    }
+#endif
+    return bytes_.data();
+  }
+
+  [[nodiscard]] const std::byte* end() const noexcept {
+    return empty() ? begin() : begin() + size();
+  }
+
+  [[nodiscard]] std::span<const std::byte> view() const noexcept {
+    return {begin(), size()};
+  }
+
+private:
+  std::vector<std::byte> bytes_;
+#ifdef _WIN32
+  platform::PageableMemory pages_;
+#endif
+};
+
+} // namespace
+
 struct HostBackingStore::Impl {
   struct StoredBlock {
     BlockStorage storage = BlockStorage::implicit_zero;
     std::uint32_t uncompressed_bytes = 0;
-    std::shared_ptr<const std::vector<std::byte>> payload;
+    std::shared_ptr<const StoredPayload> payload;
     ContentToken token;
   };
 
@@ -723,7 +813,7 @@ private:
     if (!block.payload || block.payload->empty()) {
       return CodecStatus::corrupt_input;
     }
-    return codec.decompress(*block.payload, output);
+    return codec.decompress(block.payload->view(), output);
   }
   return CodecStatus::corrupt_input;
 }
@@ -739,7 +829,7 @@ private:
   try {
     output.storage = BlockStorage::raw;
     output.uncompressed_bytes = static_cast<std::uint32_t>(input.size());
-    output.payload = std::make_shared<const std::vector<std::byte>>(input.begin(), input.end());
+    output.payload = std::make_shared<const StoredPayload>(input);
     output.token = token_for_block(input, block_index);
     return BackingStatus::success;
   } catch (const std::bad_alloc&) {
@@ -785,7 +875,7 @@ private:
     std::copy_n(encoded.begin(), written, exact.begin());
     output.storage = BlockStorage::lz4;
     output.uncompressed_bytes = static_cast<std::uint32_t>(input.size());
-    output.payload = std::make_shared<const std::vector<std::byte>>(std::move(exact));
+    output.payload = std::make_shared<const StoredPayload>(std::move(exact));
     output.token = token_for_block(input, block_index);
     return BackingStatus::success;
   } catch (const std::bad_alloc&) {
@@ -862,9 +952,8 @@ private:
       StoreBlock& block = image->blocks[static_cast<std::size_t>(index)];
       block.storage = BlockStorage::raw;
       block.uncompressed_bytes = block_valid_bytes(valid_bytes, index);
-      std::vector<std::byte> payload(static_cast<std::size_t>(block.uncompressed_bytes),
-                                     std::byte{0});
-      block.payload = std::make_shared<const std::vector<std::byte>>(std::move(payload));
+      block.payload =
+          std::make_shared<const StoredPayload>(static_cast<std::size_t>(block.uncompressed_bytes));
       block.token = token_for_zero_block(block.uncompressed_bytes, index);
     }
     image->content_token = combine_blocks(*image);
@@ -945,7 +1034,7 @@ std::optional<std::uint64_t> maximum_raw_backing_charge(const std::uint64_t vali
 struct PreparedRawBacking::Impl {
   std::uint64_t source_generation = 0;
   std::shared_ptr<StoreImage> image;
-  std::vector<std::shared_ptr<std::vector<std::byte>>> mutable_payloads;
+  std::vector<std::shared_ptr<StoredPayload>> mutable_payloads;
   bool filled = false;
 };
 
@@ -1202,8 +1291,8 @@ BackingResult HostBackingStore::prepare_raw_replacement(const ChunkKey key,
       StoreBlock& block = prepared->image->blocks[static_cast<std::size_t>(index)];
       block.storage = BlockStorage::raw;
       block.uncompressed_bytes = block_valid_bytes(previous->valid_bytes, index);
-      auto payload = std::make_shared<std::vector<std::byte>>(
-          static_cast<std::size_t>(block.uncompressed_bytes));
+      auto payload =
+          std::make_shared<StoredPayload>(static_cast<std::size_t>(block.uncompressed_bytes));
       block.payload = payload;
       prepared->mutable_payloads[static_cast<std::size_t>(index)] = std::move(payload);
     }
@@ -1228,14 +1317,13 @@ BackingStatus HostBackingStore::fill_prepared_raw(PreparedRawBacking& prepared,
   std::size_t offset = 0;
   for (std::size_t index = 0; index < prepared.impl_->image->blocks.size(); ++index) {
     StoreBlock& block = prepared.impl_->image->blocks[index];
-    const std::shared_ptr<std::vector<std::byte>>& payload =
-        prepared.impl_->mutable_payloads[index];
+    const std::shared_ptr<StoredPayload>& payload = prepared.impl_->mutable_payloads[index];
     if (!payload || payload->size() != block.uncompressed_bytes) {
       return BackingStatus::invalid_state;
     }
     std::copy_n(input.begin() + static_cast<std::ptrdiff_t>(offset), payload->size(),
                 payload->begin());
-    block.token = token_for_block(*payload, static_cast<std::uint64_t>(index));
+    block.token = token_for_block(payload->view(), static_cast<std::uint64_t>(index));
     offset += payload->size();
   }
   prepared.impl_->image->content_token = combine_blocks(*prepared.impl_->image);
@@ -1386,7 +1474,13 @@ HostBackingStore::set_implicit_zero(const ChunkKey key,
     return {generation_status, current};
   }
   ReservationGuard reservation(impl_->ledger);
-  const HostBudgetStatus reserved = reservation.reserve(backing_base_charge);
+  std::uint64_t metadata_bytes = 0;
+  if (!checked_multiply(block_count_for(previous->valid_bytes), backing_block_charge,
+                        metadata_bytes) ||
+      !checked_add(metadata_bytes, backing_base_charge, metadata_bytes)) {
+    return {BackingStatus::range_overflow, current};
+  }
+  const HostBudgetStatus reserved = reservation.reserve(metadata_bytes);
   if (reserved != HostBudgetStatus::success) {
     return {reserved == HostBudgetStatus::limit_exceeded ? BackingStatus::host_budget_exceeded
                                                          : BackingStatus::allocation_failure,
@@ -1613,8 +1707,7 @@ HostBackingStore::commit_lz4_blocks(const ChunkKey key, const std::uint64_t expe
       destination.storage = source.storage;
       destination.uncompressed_bytes = source.uncompressed_bytes;
       if (!source.payload.empty()) {
-        destination.payload =
-            std::make_shared<const std::vector<std::byte>>(std::move(source.payload));
+        destination.payload = std::make_shared<const StoredPayload>(std::move(source.payload));
       }
       const std::span<std::byte> block_output{decoded.data(), expected};
       if (decode_block(destination, *impl_->codec, block_output) != CodecStatus::success) {
@@ -1669,7 +1762,7 @@ BackingStatus HostBackingStore::export_lz4_blocks(const ChunkKey key,
       exported.storage = block.storage;
       exported.uncompressed_bytes = block.uncompressed_bytes;
       if (block.payload) {
-        exported.payload = *block.payload;
+        exported.payload.assign(block.payload->begin(), block.payload->end());
       }
       result.blocks.push_back(std::move(exported));
     }

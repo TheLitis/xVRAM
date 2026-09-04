@@ -1,6 +1,7 @@
 #define NOMINMAX
 
 #include "platform/cuda/cuda_api.hpp"
+#include "platform/nvcomp/nvcomp_api.hpp"
 #include "residency/executor.hpp"
 #include "residency/runtime.hpp"
 #include "residency/workload.hpp"
@@ -17,6 +18,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -185,6 +187,7 @@ struct FakeCuda {
   std::map<Stream, StreamState, std::less<Stream>> streams;
   std::vector<Stream> stream_creation_order;
   std::map<Event, EventState, std::less<Event>> events;
+  std::map<Function, bool, std::less<Function>> codec_verification_functions;
   std::map<std::uint64_t, DevicePointer> stable_addresses;
   std::uint64_t next_token = 1;
   GenericAllocationHandle next_handle = 1;
@@ -566,8 +569,7 @@ Result CUDAAPI fake_mem_map(const DevicePointer address, const std::size_t bytes
 Result CUDAAPI fake_mem_unmap(const DevicePointer address, const std::size_t bytes) {
   ++fake().unmap_calls;
   const auto mapping = fake().mappings.find(address);
-  if (mapping == fake().mappings.end() || mapping->second.bytes != bytes ||
-      bytes != static_cast<std::size_t>(chunk_bytes)) {
+  if (mapping == fake().mappings.end() || mapping->second.bytes != bytes) {
     fake().violation("unmap did not remove one exact full mapped chunk");
     return CUDA_ERROR_INVALID_VALUE;
   }
@@ -709,8 +711,8 @@ Result CUDAAPI fake_d2h(void* destination, const DevicePointer source, const std
 
 Result CUDAAPI fake_stream_create(Stream* stream, unsigned int) {
   const Stream created = fake().make_token<Stream>();
-  fake().streams.emplace(created, FakeCuda::StreamState{{}, fake().current_context,
-                                                        CU_STREAM_CAPTURE_STATUS_NONE});
+  fake().streams.emplace(
+      created, FakeCuda::StreamState{{}, fake().current_context, CU_STREAM_CAPTURE_STATUS_NONE});
   fake().stream_creation_order.push_back(created);
   *stream = created;
   return CUDA_SUCCESS;
@@ -839,10 +841,13 @@ Result CUDAAPI fake_module_load(Module* module, const void* image) {
 
 Result CUDAAPI fake_module_get_function(Function* function, const Module module, const char* name) {
   if (module == nullptr || name == nullptr ||
-      std::string_view(name) != "xvram_residency_workload_v1") {
+      (std::string_view(name) != "xvram_residency_workload_v1" &&
+       std::string_view(name) != "xvram_lz4_verify_v1")) {
     return CUDA_ERROR_NOT_FOUND;
   }
   *function = fake().make_token<Function>();
+  fake().codec_verification_functions.emplace(*function,
+                                              std::string_view{name} == "xvram_lz4_verify_v1");
   return CUDA_SUCCESS;
 }
 
@@ -850,12 +855,45 @@ Result CUDAAPI fake_module_unload(Module) {
   return CUDA_SUCCESS;
 }
 
-Result CUDAAPI fake_launch_kernel(Function, const unsigned int blocks_x, unsigned int, unsigned int,
-                                  const unsigned int threads_x, unsigned int, unsigned int,
-                                  unsigned int, const Stream stream, void** parameters, void**) {
+Result CUDAAPI fake_launch_kernel(Function function, const unsigned int blocks_x, unsigned int,
+                                  unsigned int, const unsigned int threads_x, unsigned int,
+                                  unsigned int, unsigned int, const Stream stream,
+                                  void** parameters, void**) {
   ++fake().kernel_calls;
   if (fake().injection.should_inject(FaultSite::kernel)) {
     return fake().injection.result;
+  }
+  const auto function_kind = fake().codec_verification_functions.find(function);
+  if (function_kind != fake().codec_verification_functions.end() && function_kind->second) {
+    if (!fake().streams.contains(stream) || parameters == nullptr || blocks_x == 0U ||
+        threads_x != 256U) {
+      fake().violation("codec verification launch geometry or stream is invalid");
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    const DevicePointer data = *static_cast<DevicePointer*>(parameters[0]);
+    const std::uint64_t bytes = *static_cast<std::uint64_t*>(parameters[1]);
+    const DevicePointer token_address = *static_cast<DevicePointer*>(parameters[2]);
+    if (bytes > std::numeric_limits<std::size_t>::max()) {
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    const auto token_view =
+        fake().linear_view(token_address, sizeof(xvram::residency::ContentToken));
+    const auto mapping = fake().mapping_view(data, static_cast<std::size_t>(bytes));
+    const auto linear = fake().linear_view(data, static_cast<std::size_t>(bytes));
+    if (!token_view.has_value() || (!mapping.has_value() && !linear.has_value())) {
+      fake().violation("codec verification referenced inaccessible memory");
+      return CUDA_ERROR_INVALID_VALUE;
+    }
+    const std::byte* source = mapping.has_value()
+                                  ? mapping->allocation->storage.data() + mapping->offset
+                                  : linear->allocation->storage.data() + linear->offset;
+    const xvram::residency::ContentToken token = xvram::residency::compute_content_token(
+        std::span<const std::byte>{source, static_cast<std::size_t>(bytes)});
+    std::memcpy(token_view->allocation->storage.data() + token_view->offset, &token, sizeof(token));
+    if (mapping.has_value()) {
+      fake().begin_mapping_work(mapping->base, stream);
+    }
+    return CUDA_SUCCESS;
   }
   if (!fake().streams.contains(stream) || parameters == nullptr || blocks_x != 8U ||
       threads_x == 0U || threads_x > 256U || threads_x % 32U != 0U) {
@@ -915,6 +953,139 @@ Result CUDAAPI fake_launch_kernel(Function, const unsigned int blocks_x, unsigne
               sizeof(accumulated_token));
   fake().begin_mapping_work(view->base, stream);
   return CUDA_SUCCESS;
+}
+
+nvcompStatus_t fake_nvcomp_properties(nvcompProperties_t* properties) {
+  properties->version = 5300;
+  properties->cudart_version = 13030;
+  return nvcompSuccess;
+}
+
+const char* fake_nvcomp_status_string(nvcompStatus_t) {
+  return "fake";
+}
+
+nvcompStatus_t fake_nvcomp_compress_alignment(nvcompBatchedLZ4CompressOpts_t,
+                                              nvcompAlignmentRequirements_t* alignment) {
+  *alignment = {1, 1, 1};
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_decompress_alignment(nvcompBatchedLZ4DecompressOpts_t,
+                                                nvcompAlignmentRequirements_t* alignment) {
+  *alignment = {1, 1, 1};
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_compress_temp(std::size_t, std::size_t, nvcompBatchedLZ4CompressOpts_t,
+                                         std::size_t* bytes, std::size_t) {
+  *bytes = 1024;
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_decompress_temp(std::size_t, std::size_t,
+                                           nvcompBatchedLZ4DecompressOpts_t, std::size_t* bytes,
+                                           std::size_t) {
+  *bytes = 1024;
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_max_output(const std::size_t bytes, nvcompBatchedLZ4CompressOpts_t,
+                                      std::size_t* output) {
+  *output = bytes;
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_compress(const void* const*, const std::size_t*, std::size_t,
+                                    std::size_t, void*, std::size_t, void* const*, std::size_t*,
+                                    nvcompBatchedLZ4CompressOpts_t, nvcompStatus_t*, cudaStream_t) {
+  return nvcompErrorInvalidValue;
+}
+
+nvcompStatus_t fake_nvcomp_compress_raw_success(const void* const* inputs,
+                                                const std::size_t* input_sizes, std::size_t,
+                                                const std::size_t count, void*, std::size_t,
+                                                void* const* outputs, std::size_t* output_sizes,
+                                                nvcompBatchedLZ4CompressOpts_t,
+                                                nvcompStatus_t* statuses, cudaStream_t) {
+  const auto input_pointers = fake().linear_view(
+      static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(inputs)), count * sizeof(void*));
+  const auto sizes =
+      fake().linear_view(static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(input_sizes)),
+                         count * sizeof(std::size_t));
+  const auto output_pointers = fake().linear_view(
+      static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(outputs)), count * sizeof(void*));
+  const auto actual_sizes =
+      fake().linear_view(static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(output_sizes)),
+                         count * sizeof(std::size_t));
+  const auto codec_statuses =
+      fake().linear_view(static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(statuses)),
+                         count * sizeof(nvcompStatus_t));
+  if (!input_pointers.has_value() || !sizes.has_value() || !output_pointers.has_value() ||
+      !actual_sizes.has_value() || !codec_statuses.has_value()) {
+    return nvcompErrorInvalidValue;
+  }
+  for (std::size_t index = 0; index < count; ++index) {
+    const std::size_t pointer_offset = index * sizeof(void*);
+    const std::size_t size_offset = index * sizeof(std::size_t);
+    const std::size_t status_offset = index * sizeof(nvcompStatus_t);
+    const void* input_pointer = nullptr;
+    void* output_pointer = nullptr;
+    std::size_t input_bytes = 0;
+    std::memcpy(&input_pointer,
+                input_pointers->allocation->storage.data() + input_pointers->offset +
+                    pointer_offset,
+                sizeof(input_pointer));
+    std::memcpy(&output_pointer,
+                output_pointers->allocation->storage.data() + output_pointers->offset +
+                    pointer_offset,
+                sizeof(output_pointer));
+    std::memcpy(&input_bytes, sizes->allocation->storage.data() + sizes->offset + size_offset,
+                sizeof(input_bytes));
+    const DevicePointer input_address =
+        static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(input_pointer));
+    const DevicePointer output_address =
+        static_cast<DevicePointer>(reinterpret_cast<std::uintptr_t>(output_pointer));
+    const auto input = fake().mapping_view(input_address, input_bytes);
+    const auto output = fake().linear_view(output_address, input_bytes);
+    if (!input.has_value() || !output.has_value()) {
+      return nvcompErrorInvalidValue;
+    }
+    std::memcpy(output->allocation->storage.data() + output->offset,
+                input->allocation->storage.data() + input->offset, input_bytes);
+    std::memcpy(actual_sizes->allocation->storage.data() + actual_sizes->offset + size_offset,
+                &input_bytes, sizeof(input_bytes));
+    const nvcompStatus_t success = nvcompSuccess;
+    std::memcpy(codec_statuses->allocation->storage.data() + codec_statuses->offset + status_offset,
+                &success, sizeof(success));
+  }
+  return nvcompSuccess;
+}
+
+nvcompStatus_t fake_nvcomp_decompress(const void* const*, const std::size_t*, const std::size_t*,
+                                      std::size_t*, std::size_t, void*, std::size_t, void* const*,
+                                      nvcompBatchedLZ4DecompressOpts_t, nvcompStatus_t*,
+                                      cudaStream_t) {
+  return nvcompErrorInvalidValue;
+}
+
+[[nodiscard]] xvram::nvcomp::NvcompDispatch make_fake_nvcomp_dispatch() {
+  return {
+      fake_nvcomp_properties,           fake_nvcomp_status_string,   fake_nvcomp_compress_alignment,
+      fake_nvcomp_compress_temp,        fake_nvcomp_max_output,      fake_nvcomp_compress,
+      fake_nvcomp_decompress_alignment, fake_nvcomp_decompress_temp, fake_nvcomp_decompress};
+}
+
+[[nodiscard]] xvram::nvcomp::NvcompDispatch make_successful_fake_nvcomp_dispatch() {
+  return {fake_nvcomp_properties,
+          fake_nvcomp_status_string,
+          fake_nvcomp_compress_alignment,
+          fake_nvcomp_compress_temp,
+          fake_nvcomp_max_output,
+          fake_nvcomp_compress_raw_success,
+          fake_nvcomp_decompress_alignment,
+          fake_nvcomp_decompress_temp,
+          fake_nvcomp_decompress};
 }
 
 void FakeCuda::install(CudaApi& api) {
@@ -1135,12 +1306,15 @@ void runtime_allocation_release_unmaps_test() {
   config.staging_slots = 2;
   config.stall_timeout = std::chrono::milliseconds(100);
   config.budget_poll_interval = std::chrono::milliseconds(1);
+  std::uint64_t lifecycle_progress = 0;
+  config.lifecycle_progress = [&]() { ++lifecycle_progress; };
   xvram::residency::Runtime runtime(api, config);
   CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
 
   xvram::residency::RuntimeAllocation allocation;
   CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
         xvram::residency::RuntimeStatus::success);
+  CHECK(lifecycle_progress == 1U);
   const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
                                                         xvram::residency::AccessMode::read}};
   CHECK(runtime.execute(access, 0, [](const xvram::residency::TransactionContext& transaction) {
@@ -1158,6 +1332,7 @@ void runtime_allocation_release_unmaps_test() {
   CHECK(runtime.telemetry().event_boundaries == runtime.telemetry().unmaps);
   CHECK(runtime.telemetry().unsafe_remaps == 0U);
   CHECK(runtime.telemetry().resident_bytes == 0U);
+  CHECK(lifecycle_progress == 2U);
   CHECK(cuda.mappings.empty());
   CHECK(cuda.reservations.empty());
 
@@ -1169,6 +1344,129 @@ void runtime_allocation_release_unmaps_test() {
   CHECK(cuda.events.empty());
   CHECK(std::all_of(cuda.physical.begin(), cuda.physical.end(),
                     [](const auto& pair) { return pair.second.released; }));
+}
+
+void runtime_disabled_compression_never_loads_nvcomp_test() {
+  const CheckContext context("disabled compression never loads nvCOMP");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi untouched_codec;
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 4ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.compression_mode = xvram::residency::CompressionMode::disabled;
+  config.nvcomp_api = &untouched_codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  CHECK(!runtime.telemetry().nvcomp_available);
+  CHECK(runtime.telemetry().gpu_codec_fallbacks == 0U);
+  CHECK(runtime.telemetry().codec_slots_created == 0U);
+  CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+
+  // A default NvcompApi only sets load_attempted_ inside load().  The deliberately invalid
+  // relative path makes this a side-effect-free probe: attempted_now proves the disabled/v1
+  // runtime never touched the injected codec object during setup or cleanup.
+  xvram::nvcomp::NvcompLoadOptions probe;
+  probe.library = "relative-nvcomp-must-not-be-opened";
+  const xvram::nvcomp::NvcompLoadResult result = untouched_codec.load(probe);
+  CHECK(result.attempted_now);
+  CHECK(result.status == xvram::nvcomp::NvcompLoadStatus::invalid_path);
+  CHECK(cuda.linear.empty());
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_raw_transfer_trace_generations_test() {
+  const CheckContext context("runtime raw transfer trace generations");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  std::vector<xvram::residency::CompressionTraceEvent> trace;
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.compression_trace = [&](const xvram::residency::CompressionTraceEvent& event) {
+    trace.push_back(event);
+    if (trace.size() == 1U) {
+      throw 1;
+    }
+  };
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array read{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  for (std::uint32_t cycle = 0; cycle < 3U; ++cycle) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.drain(true) == xvram::residency::RuntimeStatus::success);
+  }
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  CHECK(runtime.execute(write_only, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+
+  CHECK(trace.size() == 8U);
+  const std::array<std::uint64_t, 3> expected_h2d_slot_generations{1U, 2U, 3U};
+  std::uint64_t previous_operation = 0;
+  for (std::size_t cycle = 0; cycle < expected_h2d_slot_generations.size(); ++cycle) {
+    const auto& submitted = trace[cycle * 2U];
+    const auto& retired = trace[cycle * 2U + 1U];
+    CHECK(submitted.kind == xvram::residency::CompressionTraceEventKind::h2d_submit);
+    CHECK(retired.kind == xvram::residency::CompressionTraceEventKind::h2d_retire);
+    CHECK((submitted.key == xvram::residency::ChunkKey{allocation.id, 0}));
+    CHECK(submitted.key == retired.key);
+    CHECK(submitted.operation_id != 0U);
+    CHECK(submitted.operation_id > previous_operation);
+    CHECK(submitted.operation_id == retired.operation_id);
+    CHECK(submitted.source_generation == retired.source_generation);
+    CHECK(submitted.slot_generation == expected_h2d_slot_generations[cycle]);
+    CHECK(submitted.slot_generation == retired.slot_generation);
+    CHECK(submitted.path == xvram::residency::CompressionPath::raw);
+    CHECK(submitted.from_representation == xvram::residency::BackingRepresentation::raw);
+    CHECK(!submitted.target_generation.has_value());
+    CHECK(submitted.logical_bytes == chunk_bytes);
+    CHECK(submitted.physical_bytes == chunk_bytes);
+    CHECK(!submitted.speculative);
+    previous_operation = submitted.operation_id;
+  }
+  const auto& d2h_submitted = trace[6];
+  const auto& d2h_retired = trace[7];
+  CHECK(d2h_submitted.kind == xvram::residency::CompressionTraceEventKind::d2h_submit);
+  CHECK(d2h_retired.kind == xvram::residency::CompressionTraceEventKind::d2h_retire);
+  CHECK((d2h_submitted.key == xvram::residency::ChunkKey{allocation.id, 0}));
+  CHECK(d2h_submitted.key == d2h_retired.key);
+  CHECK(d2h_submitted.operation_id == d2h_retired.operation_id);
+  CHECK(d2h_submitted.source_generation == d2h_retired.source_generation);
+  CHECK(d2h_submitted.target_generation == d2h_retired.target_generation);
+  CHECK(d2h_submitted.slot_generation == 1U);
+  CHECK(d2h_submitted.slot_generation == d2h_retired.slot_generation);
+  CHECK(d2h_submitted.path == xvram::residency::CompressionPath::raw);
+  CHECK(d2h_submitted.to_representation == xvram::residency::BackingRepresentation::raw);
+  CHECK(d2h_submitted.logical_bytes == chunk_bytes);
+  CHECK(d2h_submitted.physical_bytes == chunk_bytes);
+  CHECK(d2h_submitted.target_generation == d2h_submitted.source_generation + 1U);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
 }
 
 void runtime_safe_callback_skip_keeps_session_reusable_test() {
@@ -1280,8 +1578,8 @@ void runtime_external_lease_and_discard_dead_test() {
   CHECK(runtime.acquire_external({read_write, 0}, rejected) ==
         xvram::residency::RuntimeStatus::invalid_argument);
 
-  const std::array rewrite{xvram::residency::AccessRange{
-      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  const std::array rewrite{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                         xvram::residency::AccessMode::write_only}};
   xvram::residency::ExternalLease rewritten;
   CHECK(runtime.acquire_external({rewrite, 0}, rewritten) ==
         xvram::residency::RuntimeStatus::success);
@@ -1290,13 +1588,12 @@ void runtime_external_lease_and_discard_dead_test() {
         xvram::residency::RuntimeStatus::success);
   CHECK(runtime.wait_external(rewritten.id, std::chrono::milliseconds(100), poll) ==
         xvram::residency::RuntimeStatus::success);
-  const std::array resident_read{xvram::residency::AccessRange{
-      allocation.id, 0, 1, xvram::residency::AccessMode::read}};
+  const std::array resident_read{
+      xvram::residency::AccessRange{allocation.id, 0, 1, xvram::residency::AccessMode::read}};
   xvram::residency::ExternalLease read_after_rewrite;
   CHECK(runtime.acquire_external({resident_read, 0}, read_after_rewrite) ==
         xvram::residency::RuntimeStatus::success);
-  CHECK(runtime.seal_external(read_after_rewrite.id,
-                              xvram::residency::ExternalSealMode::success) ==
+  CHECK(runtime.seal_external(read_after_rewrite.id, xvram::residency::ExternalSealMode::success) ==
         xvram::residency::RuntimeStatus::success);
   CHECK(runtime.wait_external(read_after_rewrite.id, std::chrono::milliseconds(100), poll) ==
         xvram::residency::RuntimeStatus::success);
@@ -1315,9 +1612,8 @@ void runtime_external_lease_and_discard_dead_test() {
   CHECK(runtime.acquire_external({write_only, 0}, cancelled) ==
         xvram::residency::RuntimeStatus::success);
   CHECK(cancelled.id.value > lease.id.value);
-  CHECK(runtime.seal_external(
-            cancelled.id,
-            xvram::residency::ExternalSealMode::cancelled_before_submission) ==
+  CHECK(runtime.seal_external(cancelled.id,
+                              xvram::residency::ExternalSealMode::cancelled_before_submission) ==
         xvram::residency::RuntimeStatus::success);
   CHECK(runtime.wait_external(cancelled.id, std::chrono::milliseconds(100), poll) ==
         xvram::residency::RuntimeStatus::callback_skipped);
@@ -1325,6 +1621,1174 @@ void runtime_external_lease_and_discard_dead_test() {
   CHECK(cuda.mappings.empty());
   CHECK(runtime.release(cancelled_allocation.id) == xvram::residency::RuntimeStatus::success);
 
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void compressed_discarded_full_write_reuse_test() {
+  const CheckContext context("compressed discarded full-write reuse");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi unavailable_codec(xvram::nvcomp::NvcompDispatch{},
+                                             "injected-unavailable");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 8ULL * chunk_bytes;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &unavailable_codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.discard_dead(allocation.id) == xvram::residency::RuntimeStatus::success);
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+
+  xvram::residency::ExternalLease cancelled;
+  CHECK(runtime.acquire_external({write_only, 0}, cancelled) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().spill_reserved_bytes >= chunk_bytes);
+  CHECK(runtime.seal_external(cancelled.id,
+                              xvram::residency::ExternalSealMode::cancelled_before_submission) ==
+        xvram::residency::RuntimeStatus::success);
+  xvram::residency::ExternalLeasePoll poll;
+  CHECK(runtime.wait_external(cancelled.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::callback_skipped);
+  CHECK(runtime.telemetry().spill_reserved_bytes == 0U);
+
+  xvram::residency::ExternalLease rewritten;
+  CHECK(runtime.acquire_external({write_only, 0}, rewritten) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.seal_external(rewritten.id, xvram::residency::ExternalSealMode::success) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.wait_external(rewritten.id, std::chrono::milliseconds(100), poll) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.discard_dead(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().spill_reserved_bytes == 0U);
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void adaptive_cpu_rejection_preserves_raw_generation_test() {
+  const CheckContext context("adaptive CPU rejection preserves raw generation");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi unavailable_codec(xvram::nvcomp::NvcompDispatch{},
+                                             "injected-unavailable");
+
+  std::vector<xvram::residency::CompressionTraceEvent> trace;
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 8ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &unavailable_codec;
+  config.compression_trace = [&](const xvram::residency::CompressionTraceEvent& event) {
+    trace.push_back(event);
+  };
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto before = runtime.telemetry();
+  std::vector<std::byte> incompressible(static_cast<std::size_t>(chunk_bytes));
+  std::uint64_t state = 0x585652414D503035ULL;
+  for (std::size_t offset = 0; offset < incompressible.size(); offset += sizeof(state)) {
+    state += 0x9E3779B97F4A7C15ULL;
+    state = (state ^ (state >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    state = (state ^ (state >> 27U)) * 0x94D049BB133111EBULL;
+    state ^= state >> 31U;
+    const std::size_t count = std::min(sizeof(state), incompressible.size() - offset);
+    std::memcpy(incompressible.data() + offset, &state, count);
+  }
+  CHECK(runtime.write(allocation.id, 0, incompressible.data(), chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto info = runtime.backing_info(allocation.id, 0);
+  CHECK(info.has_value());
+  if (info.has_value()) {
+    CHECK(info->representation == xvram::residency::BackingRepresentation::raw);
+    CHECK(info->generation == 2U);
+  }
+  const auto after = runtime.telemetry();
+  CHECK(after.compression_attempts - before.compression_attempts == 3U);
+  CHECK(after.compression_commits == before.compression_commits);
+  CHECK(after.expansion_rejections - before.expansion_rejections == 3U);
+  CHECK(after.never_compress_decisions - before.never_compress_decisions == 1U);
+  CHECK(after.raw_path_decisions - before.raw_path_decisions == 1U);
+  CHECK(after.generations_created - before.generations_created == 4U);
+  CHECK(after.generations_committed - before.generations_committed == 1U);
+  CHECK(after.generations_discarded - before.generations_discarded == 3U);
+  CHECK(after.generations_created == after.generations_committed + after.generations_discarded);
+  CHECK(trace.size() == 3U);
+  std::uint64_t previous_operation = 0;
+  for (const auto& event : trace) {
+    CHECK(event.kind == xvram::residency::CompressionTraceEventKind::generation_discard);
+    CHECK((event.key == xvram::residency::ChunkKey{allocation.id, 0}));
+    CHECK(event.operation_id > previous_operation);
+    CHECK(event.source_generation == 2U);
+    CHECK(event.target_generation == 3U);
+    CHECK(!event.slot_generation.has_value());
+    CHECK(event.path == xvram::residency::CompressionPath::cpu_lz4_gpu_decode);
+    CHECK(event.from_representation == xvram::residency::BackingRepresentation::raw);
+    CHECK(event.to_representation == xvram::residency::BackingRepresentation::lz4_blocks);
+    CHECK(event.logical_bytes == chunk_bytes);
+    CHECK(event.physical_bytes == chunk_bytes);
+    CHECK(event.reason == "cpu_candidate_expansion_rejected");
+    previous_operation = event.operation_id;
+  }
+
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void cpu_compression_reuses_only_adjacent_identical_blocks_test() {
+  const CheckContext context("CPU compression adjacent block reuse");
+  constexpr std::uint64_t block_count = 80U;
+  constexpr std::uint64_t test_chunk_bytes =
+      block_count * xvram::residency::compression_block_bytes;
+  FakeCuda cuda;
+  cuda.free_memory_bytes = 256ULL * mib;
+  cuda.total_memory_bytes = 256ULL * mib;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi unavailable_codec(xvram::nvcomp::NvcompDispatch{},
+                                             "injected-unavailable");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = test_chunk_bytes;
+  config.cache_target_bytes = 8ULL * test_chunk_bytes;
+  config.device_headroom_bytes = test_chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(1000);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::capacity;
+  config.host_store_cap_bytes = 128ULL * mib;
+  config.compression_workspace_cap_bytes = test_chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &unavailable_codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  std::vector<std::byte> repeated(static_cast<std::size_t>(test_chunk_bytes));
+  for (std::size_t offset = 0;
+       offset < static_cast<std::size_t>(xvram::residency::compression_block_bytes); ++offset) {
+    repeated[offset] = static_cast<std::byte>((offset % 251U) + 1U);
+  }
+  for (std::uint64_t block = 1; block < block_count; ++block) {
+    std::memcpy(repeated.data() +
+                    static_cast<std::size_t>(block * xvram::residency::compression_block_bytes),
+                repeated.data(),
+                static_cast<std::size_t>(xvram::residency::compression_block_bytes));
+  }
+
+  xvram::residency::RuntimeAllocation repeated_allocation;
+  CHECK(runtime.allocate(test_chunk_bytes, xvram::residency::ResidencyHint::normal,
+                         repeated_allocation) == xvram::residency::RuntimeStatus::success);
+  const auto before_repeated = runtime.telemetry();
+  CHECK(runtime.write(repeated_allocation.id, 0, repeated.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto after_repeated = runtime.telemetry();
+  CHECK(after_repeated.cpu_codec_blocks_submitted - before_repeated.cpu_codec_blocks_submitted ==
+        1U);
+  const auto repeated_backing = runtime.backing_info(repeated_allocation.id, 0);
+  CHECK(repeated_backing.has_value());
+  if (repeated_backing.has_value()) {
+    CHECK(repeated_backing->representation == xvram::residency::BackingRepresentation::lz4_blocks);
+  }
+  std::vector<std::byte> round_trip(repeated.size());
+  CHECK(runtime.read(repeated_allocation.id, 0, round_trip.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(round_trip == repeated);
+
+  std::vector<std::byte> distinct(static_cast<std::size_t>(test_chunk_bytes));
+  for (std::uint64_t block = 0; block < block_count; ++block) {
+    const std::byte value = static_cast<std::byte>(block + 1U);
+    const auto begin = distinct.begin() + static_cast<std::ptrdiff_t>(
+                                              block * xvram::residency::compression_block_bytes);
+    std::fill_n(begin, static_cast<std::size_t>(xvram::residency::compression_block_bytes), value);
+  }
+  xvram::residency::RuntimeAllocation distinct_allocation;
+  CHECK(runtime.allocate(test_chunk_bytes, xvram::residency::ResidencyHint::normal,
+                         distinct_allocation) == xvram::residency::RuntimeStatus::success);
+  const auto before_distinct = runtime.telemetry();
+  CHECK(runtime.write(distinct_allocation.id, 0, distinct.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto after_distinct = runtime.telemetry();
+  CHECK(after_distinct.cpu_codec_blocks_submitted - before_distinct.cpu_codec_blocks_submitted ==
+        block_count);
+  const auto distinct_backing = runtime.backing_info(distinct_allocation.id, 0);
+  CHECK(distinct_backing.has_value());
+  if (distinct_backing.has_value()) {
+    CHECK(distinct_backing->representation == xvram::residency::BackingRepresentation::lz4_blocks);
+  }
+  CHECK(runtime.read(distinct_allocation.id, 0, round_trip.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(round_trip == distinct);
+
+  CHECK(runtime.release(distinct_allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.release(repeated_allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void adaptive_cpu_compression_commits_after_reuse_history_test() {
+  const CheckContext context("adaptive CPU compression after reuse history");
+  constexpr std::uint64_t block_count = 80U;
+  constexpr std::uint64_t test_chunk_bytes =
+      block_count * xvram::residency::compression_block_bytes;
+  FakeCuda cuda;
+  cuda.free_memory_bytes = 256ULL * mib;
+  cuda.total_memory_bytes = 256ULL * mib;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi unavailable_codec(xvram::nvcomp::NvcompDispatch{},
+                                             "injected-unavailable");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = test_chunk_bytes;
+  config.cache_target_bytes = 8ULL * test_chunk_bytes;
+  config.device_headroom_bytes = test_chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(1000);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 128ULL * mib;
+  config.compression_workspace_cap_bytes = test_chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &unavailable_codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  // Prime the pool's historical high-water mark with full, distinct batches. A live-queue
+  // availability estimate must recover after these jobs retire.
+  xvram::residency::RuntimeAllocation priming_allocation;
+  CHECK(runtime.allocate(test_chunk_bytes, xvram::residency::ResidencyHint::normal,
+                         priming_allocation) == xvram::residency::RuntimeStatus::success);
+  std::vector<std::byte> incompressible(static_cast<std::size_t>(test_chunk_bytes));
+  std::uint64_t state = 0xA0761D6478BD642FULL;
+  for (std::size_t offset = 0; offset < incompressible.size(); offset += sizeof(state)) {
+    state += 0x9E3779B97F4A7C15ULL;
+    state = (state ^ (state >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    state = (state ^ (state >> 27U)) * 0x94D049BB133111EBULL;
+    state ^= state >> 31U;
+    const std::size_t count = std::min(sizeof(state), incompressible.size() - offset);
+    std::memcpy(incompressible.data() + offset, &state, count);
+  }
+  const auto before_priming = runtime.telemetry();
+  CHECK(runtime.write(priming_allocation.id, 0, incompressible.data(), test_chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto after_priming = runtime.telemetry();
+  CHECK(after_priming.cpu_codec_blocks_submitted - before_priming.cpu_codec_blocks_submitted ==
+        3U * block_count);
+  CHECK(runtime.release(priming_allocation.id) == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation reused_allocation;
+  CHECK(runtime.allocate(test_chunk_bytes, xvram::residency::ResidencyHint::hot,
+                         reused_allocation) == xvram::residency::RuntimeStatus::success);
+  const std::array read_range{xvram::residency::AccessRange{
+      reused_allocation.id, 0, test_chunk_bytes, xvram::residency::AccessMode::read}};
+  for (std::uint32_t cycle = 0; cycle < 65U; ++cycle) {
+    CHECK(runtime.execute(read_range, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+  }
+
+  std::vector<std::byte> repeated(static_cast<std::size_t>(test_chunk_bytes));
+  for (std::size_t offset = 0;
+       offset < static_cast<std::size_t>(xvram::residency::compression_block_bytes); ++offset) {
+    repeated[offset] = static_cast<std::byte>((offset % 239U) + 1U);
+  }
+  for (std::uint64_t block = 1; block < block_count; ++block) {
+    std::memcpy(repeated.data() +
+                    static_cast<std::size_t>(block * xvram::residency::compression_block_bytes),
+                repeated.data(),
+                static_cast<std::size_t>(xvram::residency::compression_block_bytes));
+  }
+  const auto before_reused_write = runtime.telemetry();
+  const xvram::residency::RuntimeStatus reused_write_status =
+      runtime.write(reused_allocation.id, 0, repeated.data(), test_chunk_bytes);
+  if (reused_write_status != xvram::residency::RuntimeStatus::success) {
+    std::cerr << "adaptive reuse write failed: "
+              << xvram::residency::runtime_status_name(reused_write_status) << " at "
+              << runtime.error().stage << '/' << runtime.error().operation << ": "
+              << runtime.error().message << '\n';
+  }
+  CHECK(reused_write_status == xvram::residency::RuntimeStatus::success);
+  const auto after_reused_write = runtime.telemetry();
+  CHECK(after_reused_write.cpu_lz4_gpu_decode_decisions >
+        before_reused_write.cpu_lz4_gpu_decode_decisions);
+  CHECK(after_reused_write.compression_commits > before_reused_write.compression_commits);
+  CHECK(after_reused_write.cpu_codec_blocks_submitted -
+            before_reused_write.cpu_codec_blocks_submitted >=
+        2U);
+  CHECK(after_reused_write.cpu_codec_blocks_submitted -
+            before_reused_write.cpu_codec_blocks_submitted <=
+        3U);
+  const auto backing = runtime.backing_info(reused_allocation.id, 0);
+  CHECK(backing.has_value());
+  if (backing.has_value()) {
+    CHECK(backing->representation == xvram::residency::BackingRepresentation::lz4_blocks);
+  }
+
+  CHECK(runtime.release(reused_allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_compressed_backing_path_provenance_test() {
+  const CheckContext context("runtime compressed backing path provenance");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  std::vector<xvram::residency::CompressionTraceEvent> trace;
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::capacity;
+  config.host_store_cap_bytes = 8ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  config.compression_trace = [&](const xvram::residency::CompressionTraceEvent& event) {
+    trace.push_back(event);
+  };
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::vector<std::byte> input(static_cast<std::size_t>(chunk_bytes), std::byte{0x5a});
+  CHECK(runtime.write(allocation.id, 0, input.data(), chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto backing = runtime.backing_info(allocation.id, 0);
+  CHECK(backing.has_value());
+  if (backing.has_value()) {
+    CHECK(backing->representation == xvram::residency::BackingRepresentation::lz4_blocks);
+  }
+  CHECK(trace.empty());
+
+  const auto before = runtime.telemetry();
+  const std::array read{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  const auto after = runtime.telemetry();
+  CHECK(trace.size() == 4U);
+  if (trace.size() == 4U) {
+    CHECK(trace[0].kind == xvram::residency::CompressionTraceEventKind::h2d_submit);
+    CHECK(trace[1].kind == xvram::residency::CompressionTraceEventKind::h2d_retire);
+    CHECK(trace[2].kind == xvram::residency::CompressionTraceEventKind::h2d_submit);
+    CHECK(trace[3].kind == xvram::residency::CompressionTraceEventKind::h2d_retire);
+    for (const auto& event : trace) {
+      CHECK((event.key == xvram::residency::ChunkKey{allocation.id, 0}));
+      CHECK(event.path == xvram::residency::CompressionPath::cpu_lz4_gpu_decode);
+    }
+    CHECK(trace[0].operation_id == trace[1].operation_id);
+    CHECK(trace[0].slot_generation == trace[1].slot_generation);
+    CHECK(trace[2].operation_id == trace[3].operation_id);
+    CHECK(trace[2].slot_generation == trace[3].slot_generation);
+    const std::uint64_t traced_physical_bytes = trace[0].physical_bytes + trace[2].physical_bytes;
+    CHECK(traced_physical_bytes == after.pcie_h2d_bytes - before.pcie_h2d_bytes);
+    CHECK(traced_physical_bytes == after.pcie_h2d_payload_bytes - before.pcie_h2d_payload_bytes +
+                                       after.pcie_h2d_metadata_bytes -
+                                       before.pcie_h2d_metadata_bytes);
+  }
+
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.violations.empty());
+}
+
+void automatic_host_budget_uses_one_post_context_sample_test() {
+  const CheckContext context("automatic host budget uses one post-context sample");
+  using Status = xvram::residency::RuntimeStatus;
+  struct Case {
+    std::optional<std::uint64_t> physical;
+    std::optional<std::uint64_t> available;
+    std::uint64_t cap;
+    std::uint64_t headroom;
+    Status status;
+    std::uint64_t expected_cap;
+    std::uint64_t expected_headroom;
+  };
+  const std::array cases{Case{64 * gib, 48 * gib, 0, 0, Status::success, 32 * gib, 16 * gib},
+                         Case{8 * gib, 6 * gib, 0, 0, Status::success, 2 * gib, 4 * gib},
+                         Case{8 * gib, 8 * gib, 0, 2 * gib, Status::success, 6 * gib, 2 * gib},
+                         Case{8 * gib, 10 * gib, 4 * gib, 0, Status::success, 4 * gib, 4 * gib},
+                         Case{8 * gib, 3 * gib, 0, 0, Status::host_oom, 0, 0},
+                         Case{8 * gib, 8 * gib, 8 * gib, 2 * gib, Status::unavailable, 0, 0},
+                         Case{8 * gib, std::nullopt, 0, 0, Status::unavailable, 0, 0},
+                         Case{std::nullopt, 8 * gib, 0, 0, Status::unavailable, 0, 0},
+                         Case{8 * gib, std::numeric_limits<std::uint64_t>::max(),
+                              std::numeric_limits<std::uint64_t>::max(), 1, Status::unavailable, 0,
+                              0}};
+  for (const Case& item : cases) {
+    FakeCuda cuda;
+    CudaApi api(CudaApi::InjectedDispatch{});
+    cuda.install(api);
+    const ActiveFake active(cuda);
+    xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+    std::uint64_t samples = 0;
+    xvram::residency::RuntimeConfig config;
+    config.chunk_bytes = chunk_bytes;
+    config.cache_target_bytes = 8ULL * chunk_bytes;
+    config.device_headroom_bytes = chunk_bytes;
+    config.staging_slots = 2;
+    config.compression_mode = xvram::residency::CompressionMode::adaptive;
+    config.compression_workspace_cap_bytes = chunk_bytes;
+    config.nvcomp_api = &codec;
+    config.resolve_host_budget = true;
+    config.host_store_cap_bytes = item.cap;
+    config.host_headroom_bytes = item.headroom;
+    config.host_memory_sample = [&] {
+      ++samples;
+      // A second snapshot would observe pressure and reject an already-resolved auto cap.
+      return xvram::residency::HostMemorySample{
+          item.physical, samples == 1U ? item.available : std::optional<std::uint64_t>{0U}};
+    };
+    xvram::residency::Runtime runtime(api, config);
+    CHECK(runtime.setup() == item.status);
+    CHECK(samples == 1U);
+    if (item.status == Status::success) {
+      CHECK(runtime.telemetry().host_store_cap_bytes == item.expected_cap);
+      CHECK(runtime.telemetry().host_headroom_bytes == item.expected_headroom);
+    }
+    CHECK(runtime.close() == Status::success);
+    CHECK(cuda.violations.empty());
+  }
+}
+
+void adaptive_gpu_encode_rejection_uses_admitted_raw_spill_test() {
+  const CheckContext context("adaptive GPU encode rejection uses admitted raw spill");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  std::vector<xvram::residency::CompressionTraceEvent> trace;
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 8ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  config.compression_trace = [&](const xvram::residency::CompressionTraceEvent& event) {
+    trace.push_back(event);
+  };
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().nvcomp_available);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto generation_before = runtime.telemetry();
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  CHECK(runtime.execute(write_only, 0, [](const auto&) {
+    // A successful external submission is allowed to leave the deterministic zero-filled fake
+    // frame unchanged. The first cost-model sample must still reject the raw-sized GPU candidate.
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().spill_reserved_bytes != 0U);
+
+  const std::uint64_t mapping_d2h_before = cuda.d2h_mapping_calls;
+  CHECK(runtime.drain(true) == xvram::residency::RuntimeStatus::success);
+  const auto backing = runtime.backing_info(allocation.id, 0);
+  CHECK(backing.has_value());
+  if (backing.has_value()) {
+    CHECK(backing->representation == xvram::residency::BackingRepresentation::raw);
+    CHECK(backing->stored_payload_bytes == chunk_bytes);
+  }
+  CHECK(runtime.telemetry().compression_attempts == 1U);
+  CHECK(runtime.telemetry().compression_commits == 0U);
+  CHECK(runtime.telemetry().gpu_encode_operations == 1U);
+  CHECK(runtime.telemetry().raw_fallbacks == 1U);
+  CHECK(runtime.telemetry().raw_path_decisions == 1U);
+  CHECK(runtime.telemetry().gpu_lz4_decisions == 0U);
+  CHECK(runtime.telemetry().spill_reserved_bytes == 0U);
+  CHECK(runtime.telemetry().d2h_bytes == chunk_bytes);
+  CHECK(runtime.telemetry().logical_d2h_bytes == 2ULL * chunk_bytes);
+  CHECK(runtime.telemetry().pcie_d2h_bytes > 2ULL * chunk_bytes);
+  // The rejected raw-sized codec candidate and the authoritative raw spill each cross PCIe from
+  // the mapped frame, proving that this is the direct-D2H fallback rather than CPU materialization.
+  CHECK(cuda.d2h_mapping_calls == mapping_d2h_before + 2U);
+  CHECK(runtime.telemetry().codec_events_recorded == runtime.telemetry().codec_events_retired);
+  const auto generation_after = runtime.telemetry();
+  CHECK(generation_after.generations_created - generation_before.generations_created == 2U);
+  CHECK(generation_after.generations_committed - generation_before.generations_committed == 1U);
+  CHECK(generation_after.generations_discarded - generation_before.generations_discarded == 1U);
+  CHECK(generation_after.generations_created ==
+        generation_after.generations_committed + generation_after.generations_discarded);
+  const auto discard = std::find_if(trace.begin(), trace.end(), [](const auto& event) {
+    return event.kind == xvram::residency::CompressionTraceEventKind::generation_discard;
+  });
+  CHECK(discard != trace.end());
+  CHECK(std::count_if(trace.begin(), trace.end(), [](const auto& event) {
+          return event.kind == xvram::residency::CompressionTraceEventKind::generation_discard;
+        }) == 1);
+  if (discard != trace.end()) {
+    CHECK((discard->key == xvram::residency::ChunkKey{allocation.id, 0}));
+    CHECK(discard->operation_id != 0U);
+    CHECK(discard->source_generation == 1U);
+    CHECK(discard->target_generation == 2U);
+    CHECK(discard->slot_generation.has_value());
+    CHECK(discard->slot_generation.value_or(0U) != 0U);
+    CHECK(discard->path == xvram::residency::CompressionPath::nvcomp_gpu_codec);
+    CHECK(discard->from_representation == xvram::residency::BackingRepresentation::implicit_zero);
+    CHECK(discard->to_representation == xvram::residency::BackingRepresentation::lz4_blocks);
+    CHECK(discard->logical_bytes == chunk_bytes);
+    CHECK(discard->physical_bytes == chunk_bytes);
+    CHECK(discard->reason == "gpu_candidate_raw_fallback_committed");
+    const auto codec_submit = std::find_if(trace.begin(), trace.end(), [](const auto& event) {
+      return event.kind == xvram::residency::CompressionTraceEventKind::encode_submit;
+    });
+    CHECK(codec_submit != trace.end());
+    if (codec_submit != trace.end()) {
+      CHECK(discard->operation_id == codec_submit->operation_id);
+      CHECK(discard->slot_generation == codec_submit->slot_generation);
+      CHECK(discard->key == codec_submit->key);
+    }
+  }
+
+  std::vector<std::byte> roundtrip(static_cast<std::size_t>(chunk_bytes));
+  CHECK(runtime.read(allocation.id, 0, roundtrip.data(), chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(std::all_of(roundtrip.begin(), roundtrip.end(),
+                    [](const std::byte value) { return value == std::byte{0}; }));
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().set_access);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().unmaps);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void adaptive_learned_raw_skips_later_gpu_encode_test() {
+  const CheckContext context("adaptive learned-raw decision skips later GPU encode");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 8ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+
+  // The fake GPU codec emits a verified raw-sized candidate. Two real samples calibrate both
+  // paths for the unchanged zero generation; the third write-back must go directly to the
+  // pre-admitted raw spill instead of paying a third encode and candidate D2H.
+  for (std::uint32_t pass = 0; pass < 3U; ++pass) {
+    CHECK(runtime.execute(write_only, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.drain(true) == xvram::residency::RuntimeStatus::success);
+    if (pass == 0U) {
+      CHECK(runtime.telemetry().gpu_encode_operations == 1U);
+      CHECK(runtime.telemetry().logical_d2h_bytes == 2ULL * chunk_bytes);
+    } else if (pass == 1U) {
+      CHECK(runtime.telemetry().gpu_encode_operations == 2U);
+      CHECK(runtime.telemetry().logical_d2h_bytes == 4ULL * chunk_bytes);
+    }
+  }
+
+  CHECK(runtime.telemetry().gpu_encode_operations == 2U);
+  CHECK(runtime.telemetry().compression_attempts == 2U);
+  CHECK(runtime.telemetry().logical_d2h_bytes == 5ULL * chunk_bytes);
+  CHECK(runtime.telemetry().d2h_bytes == 3ULL * chunk_bytes);
+  CHECK(cuda.d2h_mapping_calls == 5U);
+  CHECK(runtime.telemetry().raw_path_decisions >= 1U);
+  CHECK(runtime.telemetry().generations_created ==
+        runtime.telemetry().generations_committed + runtime.telemetry().generations_discarded);
+  CHECK(runtime.telemetry().codec_events_recorded == runtime.telemetry().codec_events_retired);
+
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().set_access);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().unmaps);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void adaptive_gpu_candidate_quarantine_remains_unresolved_test() {
+  const CheckContext context("quarantined GPU candidate remains unresolved");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 8ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto generation_before = runtime.telemetry();
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  CHECK(runtime.execute(write_only, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+
+  // The first mapped D2H completes the verified GPU candidate. Fail the following raw spill copy,
+  // after submission is already known to have occurred, so the candidate cannot be called safely
+  // discarded and its codec slot/mapping must remain quarantined with the worker.
+  cuda.injection.site = FaultSite::d2h;
+  cuda.injection.result = CUDA_ERROR_UNKNOWN;
+  cuda.injection.calls_to_skip = 1U;
+  CHECK(runtime.drain(true) != xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.injection.triggered);
+  CHECK(runtime.async_completion_unknown());
+  CHECK(runtime.telemetry().quarantined);
+  const auto generation_after = runtime.telemetry();
+  CHECK(generation_after.generations_created - generation_before.generations_created == 1U);
+  CHECK(generation_after.generations_committed == generation_before.generations_committed);
+  CHECK(generation_after.generations_discarded == generation_before.generations_discarded);
+  CHECK(generation_after.generations_created >
+        generation_after.generations_committed + generation_after.generations_discarded);
+
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(std::any_of(cuda.physical.begin(), cuda.physical.end(),
+                    [](const auto& pair) { return !pair.second.released; }));
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_codec_pinned_budget_fallback_preserves_device_peak_test() {
+  const CheckContext context("runtime codec pinned-budget fallback preserves device peak");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_fake_nvcomp_dispatch(), "injected-available");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  // The ordinary H2D/D2H staging pool consumes two chunks.  Leave only one more chunk so the
+  // fully created nvCOMP pinned slots cannot be admitted and runtime must safely retain the CPU
+  // codec fallback.
+  config.host_store_cap_bytes = 3ULL * chunk_bytes;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  const auto& telemetry = runtime.telemetry();
+  CHECK(!telemetry.nvcomp_available);
+  CHECK(telemetry.codec_workspace_bytes == 0U);
+  CHECK(telemetry.codec_slot_bytes == 0U);
+  CHECK(telemetry.codec_workspace_peak_bytes != 0U);
+  CHECK(telemetry.codec_slot_capacity_bytes != 0U);
+  CHECK(telemetry.codec_slot_peak_bytes == telemetry.codec_slot_capacity_bytes);
+  CHECK(telemetry.codec_slot_capacity_bytes <=
+        std::numeric_limits<std::uint64_t>::max() - telemetry.codec_workspace_peak_bytes);
+  CHECK(telemetry.device_reserve_bytes_peak >=
+        telemetry.codec_slot_capacity_bytes + telemetry.codec_workspace_peak_bytes);
+  CHECK(telemetry.device_budget_violation_count == 0U);
+
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.linear.empty());
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_post_map_backing_budget_failure_test(const bool nvcomp_available) {
+  const CheckContext context(nvcomp_available ? "runtime post-map codec export budget failure"
+                                              : "runtime post-map CPU decode budget failure");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(nvcomp_available ? make_fake_nvcomp_dispatch()
+                                                  : xvram::nvcomp::NvcompDispatch{},
+                                 nvcomp_available ? "injected-available" : "injected-unavailable");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 32ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::hours(1);
+  config.compression_mode = xvram::residency::CompressionMode::capacity;
+  config.host_store_cap_bytes = mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().nvcomp_available == nvcomp_available);
+
+  xvram::residency::RuntimeAllocation compressed;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, compressed) ==
+        xvram::residency::RuntimeStatus::success);
+  std::vector<std::byte> compressible(static_cast<std::size_t>(chunk_bytes), std::byte{0x5a});
+  CHECK(runtime.write(compressed.id, 0, compressible.data(), chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  const auto compressed_info = runtime.backing_info(compressed.id, 0);
+  CHECK(compressed_info.has_value());
+  if (compressed_info.has_value()) {
+    CHECK(compressed_info->representation == xvram::residency::BackingRepresentation::lz4_blocks);
+    CHECK(compressed_info->stored_payload_bytes < compressed_info->valid_bytes);
+  }
+  const auto decode_before = runtime.telemetry();
+  std::vector<std::byte> host_readback(static_cast<std::size_t>(chunk_bytes));
+  CHECK(runtime.read(compressed.id, 0, host_readback.data(), chunk_bytes) ==
+        xvram::residency::RuntimeStatus::success);
+  CHECK(host_readback == compressible);
+  const auto decode_after = runtime.telemetry();
+  CHECK(decode_after.cpu_decode_operations - decode_before.cpu_decode_operations == 1U);
+  CHECK(decode_after.cpu_decode_nanoseconds >= decode_before.cpu_decode_nanoseconds);
+  CHECK(decode_after.generations_created ==
+        decode_after.generations_committed + decode_after.generations_discarded);
+
+  std::vector<xvram::residency::RuntimeAllocation> blockers;
+  std::size_t dirty_blockers = 0;
+  bool exhausted_spill_budget = false;
+  for (std::size_t index = 0; index < 24U; ++index) {
+    xvram::residency::RuntimeAllocation blocker;
+    CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, blocker) ==
+          xvram::residency::RuntimeStatus::success);
+    blockers.push_back(blocker);
+    const std::array write_only{xvram::residency::AccessRange{
+        blocker.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+    xvram::residency::ExternalLease lease;
+    const xvram::residency::RuntimeStatus acquired =
+        runtime.acquire_external({write_only, 0}, lease);
+    if (acquired == xvram::residency::RuntimeStatus::host_oom) {
+      exhausted_spill_budget = true;
+      CHECK(runtime.error().operation == "reserve_spill");
+      break;
+    }
+    CHECK(acquired == xvram::residency::RuntimeStatus::success);
+    if (acquired != xvram::residency::RuntimeStatus::success) {
+      break;
+    }
+    CHECK(runtime.seal_external(lease.id, xvram::residency::ExternalSealMode::success) ==
+          xvram::residency::RuntimeStatus::success);
+    xvram::residency::ExternalLeasePoll poll;
+    CHECK(runtime.wait_external(lease.id, std::chrono::milliseconds(100), poll) ==
+          xvram::residency::RuntimeStatus::success);
+    ++dirty_blockers;
+  }
+  CHECK(exhausted_spill_budget);
+  CHECK(dirty_blockers != 0U);
+
+  const std::uint64_t maps_before = runtime.telemetry().maps;
+  const std::uint64_t set_access_before = runtime.telemetry().set_access;
+  const std::uint64_t unmaps_before = runtime.telemetry().unmaps;
+  const std::uint64_t event_boundaries_before = runtime.telemetry().event_boundaries;
+  const std::uint64_t queries_before = cuda.event_query_calls;
+  const std::size_t live_mappings_before = cuda.mappings.size();
+  const std::array read{xvram::residency::AccessRange{compressed.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  xvram::residency::ExternalLease failed_lease;
+  CHECK(runtime.acquire_external({read, 0}, failed_lease) ==
+        xvram::residency::RuntimeStatus::host_oom);
+  CHECK(!failed_lease.id);
+  CHECK(runtime.error().operation ==
+        (nvcomp_available ? "reserve_codec_export" : "reserve_cpu_decode_scratch"));
+  CHECK(runtime.telemetry().maps == maps_before + 1U);
+  CHECK(runtime.telemetry().set_access == set_access_before + 1U);
+  CHECK(runtime.telemetry().unmaps == unmaps_before + 1U);
+  CHECK(runtime.telemetry().event_boundaries == event_boundaries_before + 1U);
+  CHECK(cuda.event_query_calls > queries_before);
+  CHECK(cuda.mappings.size() == live_mappings_before);
+  CHECK(runtime.telemetry().unsafe_remaps == 0U);
+  CHECK(runtime.telemetry().unsafe_transitions == 0U);
+  CHECK(!runtime.poisoned());
+  CHECK(!runtime.async_completion_unknown());
+  CHECK(!runtime.telemetry().quarantined);
+  CHECK(cuda.violations.empty());
+
+  for (std::size_t index = 0; index < blockers.size(); ++index) {
+    if (index < dirty_blockers) {
+      CHECK(runtime.discard_dead(blockers[index].id) == xvram::residency::RuntimeStatus::success);
+    }
+    CHECK(runtime.release(blockers[index].id) == xvram::residency::RuntimeStatus::success);
+  }
+  CHECK(runtime.release(compressed.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().set_access);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().unmaps);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_codec_budget_suspension_test() {
+  const CheckContext context("runtime codec budget suspension restores after safe hysteresis");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 16ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::milliseconds(0);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 4ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().nvcomp_available);
+  CHECK(runtime.telemetry().codec_workspace_bytes != 0U);
+  CHECK(runtime.telemetry().codec_slot_bytes != 0U);
+  const std::uint64_t initial_codec_workspace = runtime.telemetry().codec_workspace_bytes;
+  const std::uint64_t initial_codec_slots = runtime.telemetry().codec_slot_bytes;
+  const std::uint64_t initial_slots_created = runtime.telemetry().codec_slots_created;
+  CHECK(runtime.telemetry().codec_slots_peak == initial_slots_created);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  cuda.free_memory_bytes = chunk_bytes;
+  const std::array read{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().budget_shrinks >= 1U);
+  CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  CHECK(runtime.telemetry().codec_slot_bytes == 0U);
+  CHECK(runtime.telemetry().codec_events_recorded == runtime.telemetry().codec_events_retired);
+  CHECK(runtime.telemetry().maps == 1U);
+  CHECK(runtime.telemetry().set_access == 1U);
+  CHECK(runtime.telemetry().unmaps == 0U);
+  CHECK(runtime.telemetry().unsafe_remaps == 0U);
+  CHECK(runtime.telemetry().unsafe_transitions == 0U);
+  CHECK(runtime.telemetry().device_budget_violation_count == 0U);
+  CHECK(!runtime.poisoned());
+  CHECK(!runtime.async_completion_unknown());
+
+  cuda.free_memory_bytes = 16ULL * mib;
+  for (std::uint32_t sample = 0; sample < 9U; ++sample) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+    CHECK(runtime.telemetry().codec_slot_bytes == 0U);
+  }
+  // One unsafe sample resets the codec-specific hysteresis without forcing an invalid working
+  // set; nine subsequent safe samples still must not restore the resources.
+  cuda.free_memory_bytes = 2ULL * chunk_bytes;
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  cuda.free_memory_bytes = 16ULL * mib;
+  for (std::uint32_t sample = 0; sample < 9U; ++sample) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  }
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().codec_workspace_bytes == initial_codec_workspace);
+  CHECK(runtime.telemetry().codec_slot_bytes == initial_codec_slots);
+  CHECK(runtime.telemetry().codec_slots_created == initial_slots_created * 2U);
+  CHECK(runtime.telemetry().codec_slots_peak == initial_slots_created);
+
+  // A dirty retirement after restoration must use the new codec epoch while lifetime counters
+  // remain monotonic across both pipeline instances.
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  CHECK(runtime.execute(write_only, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.drain(true) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().gpu_encode_operations == 1U);
+  CHECK(runtime.telemetry().codec_events_recorded == runtime.telemetry().codec_events_retired);
+  CHECK(runtime.telemetry().codec_slots_created == initial_slots_created * 2U);
+  CHECK(runtime.telemetry().codec_slots_peak == initial_slots_created);
+
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().set_access);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().unmaps);
+  CHECK(runtime.telemetry().unmaps == runtime.telemetry().event_boundaries);
+  CHECK(cuda.linear.empty());
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_codec_restore_setup_failure_falls_back_then_retries_test() {
+  const CheckContext context("runtime codec restore setup failure safely falls back and retries");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 16ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::milliseconds(0);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 4ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array read{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  cuda.free_memory_bytes = chunk_bytes;
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  const std::size_t suspended_pinned_allocations = cuda.pinned.size();
+  const std::size_t suspended_linear_allocations = cuda.linear.size();
+
+  cuda.free_memory_bytes = 16ULL * mib;
+  for (std::uint32_t sample = 0; sample < 9U; ++sample) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+  }
+  cuda.injection.site = FaultSite::host_allocate;
+  cuda.injection.result = CUDA_ERROR_OUT_OF_MEMORY;
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  CHECK(cuda.injection.triggered);
+  CHECK(runtime.telemetry().codec_workspace_bytes == 0U);
+  CHECK(runtime.telemetry().codec_slot_bytes == 0U);
+  CHECK(cuda.pinned.size() == suspended_pinned_allocations);
+  CHECK(cuda.linear.size() == suspended_linear_allocations);
+  CHECK(!runtime.poisoned());
+  CHECK(!runtime.async_completion_unknown());
+
+  cuda.injection = {};
+  for (std::uint32_t sample = 0; sample < 10U; ++sample) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+  }
+  CHECK(runtime.telemetry().codec_workspace_bytes != 0U);
+  CHECK(runtime.telemetry().codec_slot_bytes != 0U);
+  CHECK(runtime.telemetry().gpu_codec_fallbacks >= 1U);
+
+  CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().set_access);
+  CHECK(runtime.telemetry().maps == runtime.telemetry().unmaps);
+  CHECK(cuda.linear.empty());
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_restored_codec_unknown_event_quarantines_test() {
+  const CheckContext context("restored codec unknown event remains a quarantine boundary");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  xvram::nvcomp::NvcompApi codec(make_successful_fake_nvcomp_dispatch(), "injected-successful");
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 16ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.budget_poll_interval = std::chrono::milliseconds(0);
+  config.compression_mode = xvram::residency::CompressionMode::adaptive;
+  config.host_store_cap_bytes = 4ULL * mib;
+  config.compression_workspace_cap_bytes = chunk_bytes;
+  config.codec_slots = 2;
+  config.codec_workers = 2;
+  config.nvcomp_api = &codec;
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+  const std::array read{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                      xvram::residency::AccessMode::read}};
+  cuda.free_memory_bytes = chunk_bytes;
+  CHECK(runtime.execute(read, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  cuda.free_memory_bytes = 16ULL * mib;
+  for (std::uint32_t sample = 0; sample < 10U; ++sample) {
+    CHECK(runtime.execute(read, 0, [](const auto&) {
+      return xvram::residency::RuntimeStatus::success;
+    }) == xvram::residency::RuntimeStatus::success);
+  }
+  CHECK(runtime.telemetry().codec_workspace_bytes != 0U);
+
+  const std::array write_only{xvram::residency::AccessRange{
+      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+  CHECK(runtime.execute(write_only, 0, [](const auto&) {
+    return xvram::residency::RuntimeStatus::success;
+  }) == xvram::residency::RuntimeStatus::success);
+  cuda.injection.site = FaultSite::event_query;
+  cuda.injection.result = CUDA_ERROR_UNKNOWN;
+  CHECK(runtime.drain(true) == xvram::residency::RuntimeStatus::poisoned);
+  CHECK(cuda.injection.triggered);
+  CHECK(runtime.poisoned());
+  CHECK(runtime.async_completion_unknown());
+  CHECK(runtime.telemetry().quarantined);
+  CHECK(runtime.telemetry().codec_events_recorded > runtime.telemetry().codec_events_retired);
+
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(std::any_of(cuda.physical.begin(), cuda.physical.end(),
+                    [](const auto& pair) { return !pair.second.released; }));
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_d2h_allocation_class_accounting_test() {
+  const CheckContext context("runtime D2H allocation-class accounting");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+
+  const auto dirty_and_release = [&](const xvram::residency::ResidencyHint hint) {
+    xvram::residency::RuntimeAllocation allocation;
+    CHECK(runtime.allocate(chunk_bytes, hint, allocation) ==
+          xvram::residency::RuntimeStatus::success);
+    const std::array write_only{xvram::residency::AccessRange{
+        allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::write_only}};
+    xvram::residency::ExternalLease lease;
+    CHECK(runtime.acquire_external({write_only, 0}, lease) ==
+          xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.seal_external(lease.id, xvram::residency::ExternalSealMode::success) ==
+          xvram::residency::RuntimeStatus::success);
+    xvram::residency::ExternalLeasePoll poll;
+    CHECK(runtime.wait_external(lease.id, std::chrono::milliseconds(100), poll) ==
+          xvram::residency::RuntimeStatus::success);
+    CHECK(runtime.release(allocation.id) == xvram::residency::RuntimeStatus::success);
+  };
+
+  dirty_and_release(xvram::residency::ResidencyHint::hot);
+  dirty_and_release(xvram::residency::ResidencyHint::normal);
+  CHECK(runtime.telemetry().d2h_bytes == 2ULL * chunk_bytes);
+  CHECK(runtime.telemetry().hot_allocation_d2h_bytes == chunk_bytes);
+  CHECK(runtime.telemetry().non_hot_allocation_d2h_bytes == chunk_bytes);
+  CHECK(runtime.telemetry().d2h_bytes == runtime.telemetry().hot_allocation_d2h_bytes +
+                                             runtime.telemetry().non_hot_allocation_d2h_bytes);
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::success);
   CHECK(cuda.violations.empty());
 }
@@ -1347,11 +2811,10 @@ void runtime_external_poll_not_ready_test() {
   xvram::residency::RuntimeAllocation allocation;
   CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
         xvram::residency::RuntimeStatus::success);
-  const std::array access{xvram::residency::AccessRange{
-      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read}};
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
   xvram::residency::ExternalLease lease;
-  CHECK(runtime.acquire_external({access, 0}, lease) ==
-        xvram::residency::RuntimeStatus::success);
+  CHECK(runtime.acquire_external({access, 0}, lease) == xvram::residency::RuntimeStatus::success);
   CHECK(runtime.seal_external(lease.id, xvram::residency::ExternalSealMode::success) ==
         xvram::residency::RuntimeStatus::success);
 
@@ -1392,8 +2855,8 @@ void runtime_external_duration_guard_test() {
   xvram::residency::RuntimeAllocation allocation;
   CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
         xvram::residency::RuntimeStatus::success);
-  const std::array access{xvram::residency::AccessRange{
-      allocation.id, 0, chunk_bytes, xvram::residency::AccessMode::read}};
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
   CHECK(runtime.execute(access, 0, [](const auto&) {
     return xvram::residency::RuntimeStatus::success;
   }) == xvram::residency::RuntimeStatus::timeout);
@@ -1759,7 +3222,57 @@ void runtime_stall_timeout_quarantines_generation_test() {
   }) == xvram::residency::RuntimeStatus::invalid_argument);
   CHECK(cuda.map_calls == mappings_before_retry);
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
-  CHECK(cuda.release_calls > 0);
+  CHECK(cuda.release_calls == 0U);
+  CHECK(std::any_of(cuda.physical.begin(), cuda.physical.end(),
+                    [](const auto& pair) { return !pair.second.released; }));
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_unsealed_external_lease_retains_physical_handle_test() {
+  const CheckContext context("unsealed external lease retains its physical handle");
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  xvram::residency::Runtime runtime(api, config);
+  CHECK(runtime.setup() == xvram::residency::RuntimeStatus::success);
+  xvram::residency::RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, xvram::residency::ResidencyHint::normal, allocation) ==
+        xvram::residency::RuntimeStatus::success);
+
+  const std::array access{xvram::residency::AccessRange{allocation.id, 0, chunk_bytes,
+                                                        xvram::residency::AccessMode::read}};
+  xvram::residency::ExternalLease lease;
+  CHECK(runtime.acquire_external({access, 0}, lease) == xvram::residency::RuntimeStatus::success);
+  CHECK(lease.id);
+  CHECK(lease.stream != nullptr);
+  CHECK(cuda.mappings.size() == 1U);
+
+  // The client owns the runtime stream after acquire. Without seal there is no observable event
+  // boundary proving that the mapped allocation is idle, so close must retain every asynchronous
+  // resource until the isolated worker exits.
+  const std::size_t pinned_before_close = cuda.pinned.size();
+  const std::size_t events_before_close = cuda.events.size();
+  const std::size_t streams_before_close = cuda.streams.size();
+  CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
+  CHECK(runtime.poisoned());
+  CHECK(runtime.telemetry().quarantined);
+  CHECK(cuda.release_calls == 0U);
+  CHECK(std::any_of(cuda.physical.begin(), cuda.physical.end(),
+                    [](const auto& pair) { return !pair.second.released; }));
+  CHECK(cuda.pinned.size() == pinned_before_close);
+  CHECK(cuda.events.size() == events_before_close);
+  CHECK(cuda.streams.size() == streams_before_close);
+  CHECK(cuda.destroyed_contexts.empty());
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(cuda.mappings.size() == 1U);
   CHECK(cuda.violations.empty());
 }
 
@@ -1796,8 +3309,10 @@ void runtime_event_record_failure_preserves_async_resources_test() {
   const std::size_t streams_before_close = cuda.streams.size();
 
   CHECK(runtime.close() == xvram::residency::RuntimeStatus::cleanup_failure);
-  CHECK(cuda.release_calls > 0);
-  CHECK(cuda.quarantined_release_observed);
+  CHECK(cuda.release_calls == 0U);
+  CHECK(!cuda.quarantined_release_observed);
+  CHECK(std::any_of(cuda.physical.begin(), cuda.physical.end(),
+                    [](const auto& pair) { return !pair.second.released; }));
   CHECK(cuda.pinned.size() == pinned_before_close);
   CHECK(cuda.events.size() == events_before_close);
   CHECK(cuda.streams.size() == streams_before_close);
@@ -2179,8 +3694,26 @@ void fault_injection_matrix_test() {
 int main() {
   completed_sequential_test();
   runtime_allocation_release_unmaps_test();
+  runtime_disabled_compression_never_loads_nvcomp_test();
+  runtime_raw_transfer_trace_generations_test();
   runtime_safe_callback_skip_keeps_session_reusable_test();
   runtime_external_lease_and_discard_dead_test();
+  compressed_discarded_full_write_reuse_test();
+  adaptive_cpu_rejection_preserves_raw_generation_test();
+  cpu_compression_reuses_only_adjacent_identical_blocks_test();
+  adaptive_cpu_compression_commits_after_reuse_history_test();
+  runtime_compressed_backing_path_provenance_test();
+  automatic_host_budget_uses_one_post_context_sample_test();
+  adaptive_gpu_encode_rejection_uses_admitted_raw_spill_test();
+  adaptive_learned_raw_skips_later_gpu_encode_test();
+  adaptive_gpu_candidate_quarantine_remains_unresolved_test();
+  runtime_codec_pinned_budget_fallback_preserves_device_peak_test();
+  runtime_post_map_backing_budget_failure_test(false);
+  runtime_post_map_backing_budget_failure_test(true);
+  runtime_codec_budget_suspension_test();
+  runtime_codec_restore_setup_failure_falls_back_then_retries_test();
+  runtime_restored_codec_unknown_event_quarantines_test();
+  runtime_d2h_allocation_class_accounting_test();
   runtime_external_poll_not_ready_test();
   runtime_external_duration_guard_test();
   runtime_failed_callback_retires_before_poison_test();
@@ -2192,6 +3725,7 @@ int main() {
   runtime_retries_one_frame_oom_test();
   runtime_oom_shrink_defers_pinned_working_set_test();
   runtime_stall_timeout_quarantines_generation_test();
+  runtime_unsealed_external_lease_retains_physical_handle_test();
   runtime_event_record_failure_preserves_async_resources_test();
   runtime_budget_pressure_shrinks_before_failure_test();
   runtime_explicit_target_is_post_headroom_cap_test();

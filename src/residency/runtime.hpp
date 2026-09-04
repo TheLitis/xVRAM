@@ -44,6 +44,11 @@ enum class RuntimeContextMode { isolated, attach_current };
 enum class RuntimePolicy { clock, lru };
 enum class ResidencyHint { normal, hot, streaming };
 
+struct HostMemorySample {
+  std::optional<std::uint64_t> physical_bytes;
+  std::optional<std::uint64_t> available_bytes;
+};
+
 struct RuntimeConfig {
   std::int32_t device_ordinal = 0;
   RuntimeContextMode context_mode = RuntimeContextMode::isolated;
@@ -61,6 +66,10 @@ struct RuntimeConfig {
   CompressionCodec compression_codec = CompressionCodec::automatic;
   std::uint64_t host_store_cap_bytes = 0;
   std::uint64_t host_headroom_bytes = 0;
+  // V2 frontends leave automatic values unresolved until setup has established the CUDA
+  // context. Resolve and validate against one sample, not two racing available-RAM snapshots.
+  bool resolve_host_budget = false;
+  std::function<HostMemorySample()> host_memory_sample;
   std::uint64_t compression_workspace_cap_bytes = 256ULL * 1024ULL * 1024ULL;
   std::uint32_t codec_slots = 2;
   std::uint32_t codec_workers = 2;
@@ -211,6 +220,7 @@ struct RuntimeTelemetry {
   std::uint64_t host_raw_chunks = 0;
   std::uint64_t host_lz4_chunks = 0;
   std::uint64_t host_store_cap_bytes = 0;
+  std::uint64_t host_headroom_bytes = 0;
   std::uint64_t host_authoritative_bytes = 0;
   std::uint64_t host_authoritative_peak_bytes = 0;
   std::uint64_t host_budget_bytes = 0;

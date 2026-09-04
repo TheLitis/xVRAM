@@ -363,19 +363,47 @@ public:
                   "compression workspace, slots, or workers are out of range");
     }
     if (config_.compression_mode != CompressionMode::disabled &&
-        config_.host_store_cap_bytes != 0U && config_.host_headroom_bytes != 0U) {
-      const probe::SystemInfo system = platform::collect_system_info();
-      if (!system.available_memory_bytes.has_value()) {
+        (config_.resolve_host_budget ||
+         (config_.host_store_cap_bytes != 0U && config_.host_headroom_bytes != 0U))) {
+      HostMemorySample sample;
+      try {
+        if (config_.host_memory_sample) {
+          sample = config_.host_memory_sample();
+        } else {
+          const probe::SystemInfo system = platform::collect_system_info();
+          sample = {system.physical_memory_bytes, system.available_memory_bytes};
+        }
+      } catch (...) {
+        return fail(RuntimeStatus::internal_failure, "setup", "host_budget",
+                    "host memory sampling failed");
+      }
+      if (!sample.available_bytes.has_value() ||
+          (config_.resolve_host_budget && config_.host_headroom_bytes == 0U &&
+           !sample.physical_bytes.has_value())) {
         return fail(RuntimeStatus::unavailable, "setup", "host_budget",
-                    "explicit compressed backing admission requires host memory telemetry");
+                    "compressed backing admission requires host memory telemetry");
+      }
+      if (config_.resolve_host_budget) {
+        if (config_.host_headroom_bytes == 0U) {
+          constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+          config_.host_headroom_bytes = std::max(minimum_headroom, *sample.physical_bytes / 4U);
+        }
+        if (config_.host_store_cap_bytes == 0U) {
+          if (*sample.available_bytes <= config_.host_headroom_bytes) {
+            return fail(RuntimeStatus::host_oom, "setup", "host_budget",
+                        "available RAM does not leave the requested host headroom");
+          }
+          config_.host_store_cap_bytes = *sample.available_bytes - config_.host_headroom_bytes;
+        }
       }
       const auto requested_host =
           checked_add(config_.host_store_cap_bytes, config_.host_headroom_bytes);
-      if (!requested_host.has_value() || *requested_host > *system.available_memory_bytes) {
+      if (!requested_host.has_value() || *requested_host > *sample.available_bytes) {
         return fail(RuntimeStatus::unavailable, "setup", "host_budget",
                     "host store cap plus headroom exceeds currently available RAM");
       }
     }
+    telemetry_.host_headroom_bytes = config_.host_headroom_bytes;
     const auto pinned_staging_bytes = checked_multiply(config_.chunk_bytes, config_.staging_slots);
     if (!pinned_staging_bytes.has_value()) {
       return fail(RuntimeStatus::invalid_argument, "setup", "staging_slots",

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -166,6 +167,82 @@ void spill_to_authority_commit_test() {
   std::vector<std::byte> readback(replacement.size());
   CHECK(store.read(key, 0, readback));
   CHECK(readback == replacement);
+}
+
+void raw_block_ownership_and_tail_test() {
+  using namespace xvram::residency;
+  Lz4BlockCodec codec;
+  const std::uint64_t valid_bytes = 3U * compression_block_bytes + 17U;
+  const auto raw_charge = maximum_raw_backing_charge(valid_bytes);
+  CHECK(raw_charge.has_value());
+  if (!raw_charge.has_value()) {
+    return;
+  }
+  HostBackingStore store({valid_bytes, 4U * *raw_charge}, codec);
+  const ChunkKey key{AllocationId{13}, 0};
+  BackingResult current = store.register_chunk(key, valid_bytes, BackingRepresentation::raw);
+  CHECK(current);
+  CHECK(current.chunk.budget_charge_bytes == *raw_charge);
+  CHECK(current.chunk.stored_payload_bytes == valid_bytes);
+
+  std::vector<std::byte> expected(static_cast<std::size_t>(valid_bytes));
+  std::uint64_t random = 0x585652414d503035ULL;
+  for (std::byte& value : expected) {
+    random ^= random >> 12U;
+    random ^= random << 25U;
+    random ^= random >> 27U;
+    value = static_cast<std::byte>(random & 0xffU);
+  }
+  current = store.replace_raw(key, current.chunk.generation, expected);
+  CHECK(current);
+  CHECK(current.chunk.budget_charge_bytes == *raw_charge);
+  std::vector<std::byte> readback(expected.size());
+
+  // Replacing one block must retain every untouched block, including the short vector-backed
+  // tail. On Windows the complete raw blocks have independent pageable reservations; no old
+  // chunk-sized allocation can remain hidden behind the surviving tail or its shared generation.
+  const std::vector<std::byte> patch(31U, std::byte{0x6d});
+  const std::uint64_t patch_offset = compression_block_bytes + 7U;
+  current = store.write(key, current.chunk.generation, patch_offset, patch);
+  CHECK(current);
+  std::copy(patch.begin(), patch.end(),
+            expected.begin() + static_cast<std::ptrdiff_t>(patch_offset));
+  CHECK(store.read(key, 0, readback));
+  CHECK(readback == expected);
+  CHECK(current.chunk.content_token == compute_content_token(expected));
+  CHECK(store.budget().snapshot().authoritative_bytes == current.chunk.budget_charge_bytes);
+  CHECK(store.budget().snapshot().conversion_scratch_bytes == 0U);
+
+  const std::vector<std::byte> tail(17U, std::byte{0x2a});
+  current = store.write(key, current.chunk.generation, 3U * compression_block_bytes, tail);
+  CHECK(current);
+  std::copy(tail.begin(), tail.end(), expected.end() - static_cast<std::ptrdiff_t>(tail.size()));
+  CHECK(store.read(key, 0, readback));
+  CHECK(readback == expected);
+
+  HostBudgetReservation spill;
+  CHECK(store.budget().reserve(HostBudgetCategory::spill, *raw_charge, spill) ==
+        HostBudgetStatus::success);
+  PreparedRawBacking prepared;
+  CHECK(store.prepare_raw_replacement(key, current.chunk.generation, prepared));
+  CHECK(store.fill_prepared_raw(prepared, expected) == BackingStatus::success);
+  current = store.commit_prepared_raw(key, current.chunk.generation, prepared, &spill);
+  CHECK(current);
+  CHECK(!prepared.valid());
+  CHECK(current.chunk.budget_charge_bytes == *raw_charge);
+  CHECK(store.budget().snapshot().total_bytes == *raw_charge);
+  CHECK(store.read(key, 0, readback));
+  CHECK(readback == expected);
+
+  const BackingResult zero = store.set_implicit_zero(key, current.chunk.generation);
+  CHECK(zero);
+  CHECK(zero.chunk.budget_charge_bytes == 256U + 4U * 128U);
+  CHECK(store.budget().snapshot().total_bytes == zero.chunk.budget_charge_bytes);
+  CHECK(store.read(key, 0, readback));
+  CHECK(std::all_of(readback.begin(), readback.end(),
+                    [](const std::byte value) { return value == std::byte{0}; }));
+  CHECK(store.erase_chunk(key, zero.chunk.generation));
+  CHECK(store.budget().snapshot().total_bytes == 0U);
 }
 
 xvram::residency::CostObservation observation(const xvram::residency::CompressionPath path,
@@ -378,6 +455,27 @@ void cost_model_calibration_and_generation_tests() {
   CHECK(decision.path == CompressionPath::cpu_lz4_gpu_decode);
 }
 
+void reuse_probe_forecast_tests() {
+  using namespace xvram::residency;
+
+  const auto one_touch = forecast_clean_reuse_probe(100.0, 200.0, 10.0, 20.0, 0U);
+  CHECK(one_touch.has_value());
+  if (one_touch.has_value()) {
+    CHECK(one_touch->raw_total_us == 100.0);
+    CHECK(one_touch->candidate_total_us == 230.0);
+  }
+
+  const auto reused = forecast_clean_reuse_probe(100.0, 200.0, 10.0, 20.0, 9U);
+  CHECK(reused.has_value());
+  if (reused.has_value()) {
+    CHECK(reused->raw_total_us == 1000.0);
+    CHECK(reused->candidate_total_us == 500.0);
+  }
+
+  CHECK(!forecast_clean_reuse_probe(std::numeric_limits<double>::infinity(), 0.0, 0.0, 0.0, 0U)
+             .has_value());
+}
+
 } // namespace
 
 int main() {
@@ -385,9 +483,11 @@ int main() {
   budget_tests();
   eager_raw_registration_test();
   spill_to_authority_commit_test();
+  raw_block_ownership_and_tail_test();
   cost_model_tests();
   cost_model_context_and_phase_switch_tests();
   cost_model_calibration_and_generation_tests();
+  reuse_probe_forecast_tests();
   if (failures != 0) {
     std::cerr << failures << " compression-core test(s) failed\n";
     return 1;

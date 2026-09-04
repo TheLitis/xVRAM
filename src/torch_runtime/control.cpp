@@ -4,7 +4,6 @@
 #include "gemm/planner.hpp"
 #include "platform/cublas/cublas_api.hpp"
 #include "platform/cuda/cuda_api.hpp"
-#include "platform/system_info.hpp"
 #include "residency/runtime.hpp"
 #include "xvram/internal/torch_runtime_v2.h"
 
@@ -726,25 +725,6 @@ session_create_v2_entry(const xvram_torch_runtime_session_config_v2* config,
       return XVRAM_TORCH_RUNTIME_INVALID_ARGUMENT;
     }
 
-    std::uint64_t host_headroom = config->host_headroom_bytes;
-    std::uint64_t host_cap = config->host_store_cap_bytes;
-    if (host_headroom == 0U || host_cap == 0U) {
-      const probe::SystemInfo system = platform::collect_system_info();
-      if (!system.physical_memory_bytes.has_value() || !system.available_memory_bytes.has_value()) {
-        return XVRAM_TORCH_RUNTIME_UNAVAILABLE;
-      }
-      constexpr std::uint64_t minimum_headroom = 4ULL * 1024ULL * 1024ULL * 1024ULL;
-      if (host_headroom == 0U) {
-        host_headroom = std::max(minimum_headroom, *system.physical_memory_bytes / 4U);
-      }
-      if (host_cap == 0U) {
-        if (*system.available_memory_bytes <= host_headroom) {
-          return XVRAM_TORCH_RUNTIME_HOST_OUT_OF_MEMORY;
-        }
-        host_cap = *system.available_memory_bytes - host_headroom;
-      }
-    }
-
     residency::RuntimeConfig runtime_config{};
     runtime_config.device_ordinal = base.device_ordinal;
     runtime_config.context_mode = residency::RuntimeContextMode::attach_current;
@@ -766,18 +746,22 @@ session_create_v2_entry(const xvram_torch_runtime_session_config_v2* config,
             ? residency::CompressionMode::capacity
             : residency::CompressionMode::adaptive;
     runtime_config.compression_codec = residency::CompressionCodec::lz4;
-    runtime_config.host_store_cap_bytes = host_cap;
-    runtime_config.host_headroom_bytes = host_headroom;
+    // Resolve automatic host limits once inside production setup, after CUDA/DXGI
+    // initialization. An earlier available-RAM snapshot must not become an explicit
+    // cap that spuriously fails the later live admission check.
+    runtime_config.resolve_host_budget = true;
+    runtime_config.host_store_cap_bytes = config->host_store_cap_bytes;
+    runtime_config.host_headroom_bytes = config->host_headroom_bytes;
     runtime_config.compression_workspace_cap_bytes = config->compression_workspace_cap_bytes;
     runtime_config.codec_slots = config->codec_slots;
     runtime_config.codec_workers = config->codec_workers;
-    session->effective_host_store_cap_bytes = host_cap;
-    session->effective_host_headroom_bytes = host_headroom;
     session->runtime = std::make_unique<residency::Runtime>(session->api, runtime_config);
     const residency::RuntimeStatus setup = session->runtime->setup();
     if (setup != residency::RuntimeStatus::success) {
       return record_runtime_error(*session, setup);
     }
+    session->effective_host_store_cap_bytes = session->runtime->telemetry().host_store_cap_bytes;
+    session->effective_host_headroom_bytes = session->runtime->telemetry().host_headroom_bytes;
     {
       std::lock_guard lock(global.mutex);
       global.sessions.emplace(session->handle, session);
@@ -898,8 +882,7 @@ session_create_v2_entry(const xvram_torch_runtime_session_config_v2* config,
     value.pcie_d2h_bytes = source.pcie_d2h_bytes;
     value.pcie_d2h_payload_bytes = source.pcie_d2h_payload_bytes;
     value.pcie_d2h_metadata_bytes = source.pcie_d2h_metadata_bytes;
-    value.rejected_candidate_logical_d2h_bytes =
-        source.rejected_candidate_logical_d2h_bytes;
+    value.rejected_candidate_logical_d2h_bytes = source.rejected_candidate_logical_d2h_bytes;
     value.hot_allocation_d2h_bytes = source.hot_allocation_d2h_bytes;
     value.non_hot_allocation_d2h_bytes = source.non_hot_allocation_d2h_bytes;
     value.raw_path_decisions = source.raw_path_decisions;
