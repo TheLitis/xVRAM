@@ -114,8 +114,63 @@ typedef struct xvram_torch_runtime_telemetry_v2 {
 } xvram_torch_runtime_telemetry_v2;
 
 #define XVRAM_TORCH_RUNTIME_TELEMETRY_V2_INIT                                                      \
-  {(uint32_t)sizeof(xvram_torch_runtime_telemetry_v2), XVRAM_TORCH_RUNTIME_ABI_VERSION_2,          \
-   XVRAM_TORCH_RUNTIME_TELEMETRY_V1_INIT}
+  {                                                                                                \
+    (uint32_t)sizeof(xvram_torch_runtime_telemetry_v2), XVRAM_TORCH_RUNTIME_ABI_VERSION_2,         \
+        XVRAM_TORCH_RUNTIME_TELEMETRY_V1_INIT, UINT64_C(0), /* logical_bytes */                    \
+        UINT64_C(0),                                        /* host_stored_bytes */                \
+        UINT64_C(0),                                        /* host_stored_peak_bytes */           \
+        UINT64_C(0),                                        /* host_raw_bytes */                   \
+        UINT64_C(0),                                        /* host_compressed_bytes */            \
+        UINT64_C(0),                                        /* host_implicit_zero_bytes */         \
+        UINT64_C(0),                                        /* host_invalid_bytes */               \
+        UINT64_C(0),                                        /* effective_host_store_cap_bytes */   \
+        UINT64_C(0),                                        /* effective_host_headroom_bytes */    \
+        UINT64_C(0),                                        /* host_budget_bytes */                \
+        UINT64_C(0),                                        /* host_budget_peak_bytes */           \
+        UINT64_C(0),                                        /* conversion_scratch_peak_bytes */    \
+        UINT64_C(0),                                        /* logical_h2d_bytes */                \
+        UINT64_C(0),                                        /* pcie_h2d_bytes */                   \
+        UINT64_C(0),                                        /* pcie_h2d_payload_bytes */           \
+        UINT64_C(0),                                        /* pcie_h2d_metadata_bytes */          \
+        UINT64_C(0),                                        /* logical_d2h_bytes */                \
+        UINT64_C(0),                                        /* pcie_d2h_bytes */                   \
+        UINT64_C(0),                                        /* pcie_d2h_payload_bytes */           \
+        UINT64_C(0),                                        /* pcie_d2h_metadata_bytes */          \
+        UINT64_C(0), /* rejected_candidate_logical_d2h_bytes */                                    \
+        UINT64_C(0), /* hot_allocation_d2h_bytes */                                                \
+        UINT64_C(0), /* non_hot_allocation_d2h_bytes */                                            \
+        UINT64_C(0), /* raw_path_decisions */                                                      \
+        UINT64_C(0), /* cpu_lz4_gpu_decode_decisions */                                            \
+        UINT64_C(0), /* gpu_lz4_decisions */                                                       \
+        UINT64_C(0), /* never_compress_decisions */                                                \
+        UINT64_C(0), /* raw_fallbacks */                                                           \
+        UINT64_C(0), /* cpu_codec_fallbacks */                                                     \
+        UINT64_C(0), /* gpu_codec_fallbacks */                                                     \
+        UINT64_C(0), /* compression_attempts */                                                    \
+        UINT64_C(0), /* compression_commits */                                                     \
+        UINT64_C(0), /* decompression_attempts */                                                  \
+        UINT64_C(0), /* decompression_commits */                                                   \
+        UINT64_C(0), /* generations_created */                                                     \
+        UINT64_C(0), /* generations_committed */                                                   \
+        UINT64_C(0), /* generations_discarded */                                                   \
+        UINT64_C(0), /* codec_workspace_bytes */                                                   \
+        UINT64_C(0), /* codec_workspace_peak_bytes */                                              \
+        UINT64_C(0), /* codec_slot_bytes */                                                        \
+        UINT64_C(0), /* codec_slot_peak_bytes */                                                   \
+        UINT64_C(0), /* spill_reserved_bytes */                                                    \
+        UINT64_C(0), /* spill_reserved_peak_bytes */                                               \
+        UINT64_C(0), /* cpu_encode_nanoseconds */                                                  \
+        UINT64_C(0), /* cpu_decode_nanoseconds */                                                  \
+        UINT64_C(0), /* gpu_encode_nanoseconds */                                                  \
+        UINT64_C(0), /* gpu_decode_nanoseconds */                                                  \
+        UINT64_C(0), /* verification_nanoseconds */                                                \
+        UINT64_C(0), /* codec_events_recorded */                                                   \
+        UINT64_C(0), /* codec_events_retired */                                                    \
+    {                                                                                              \
+      UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0), UINT64_C(0),   \
+          UINT64_C(0)                                                                              \
+    }                                                                                              \
+  }
 
 typedef struct xvram_torch_runtime_api_v2 {
   xvram_torch_runtime_api_v1 v1;

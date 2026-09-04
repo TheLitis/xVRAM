@@ -25,13 +25,13 @@ struct ExecutionFailure {
   std::string stage;
   std::string operation;
   std::string message;
-  std::optional<std::int64_t> native_code;
-  std::optional<std::string> native_name;
-  std::optional<std::string> scenario;
-  std::optional<std::uint64_t> allocation_id;
-  std::optional<std::uint64_t> chunk_index;
-  std::optional<std::uint64_t> generation;
-  std::optional<std::uint64_t> logical_byte_offset;
+  std::optional<std::int64_t> native_code = std::nullopt;
+  std::optional<std::string> native_name = std::nullopt;
+  std::optional<std::string> scenario = std::nullopt;
+  std::optional<std::uint64_t> allocation_id = std::nullopt;
+  std::optional<std::uint64_t> chunk_index = std::nullopt;
+  std::optional<std::uint64_t> generation = std::nullopt;
+  std::optional<std::uint64_t> logical_byte_offset = std::nullopt;
 };
 
 struct ExecutorResult {

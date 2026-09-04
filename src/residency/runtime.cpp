@@ -3662,10 +3662,8 @@ private:
         const NvcompPipelineTelemetry codec_before = nvcomp_pipeline_->telemetry();
         NvcompPipelineTicket ticket;
         const auto started = Clock::now();
-        NvcompDecodeRequest decode_request{&container, address};
-        decode_request.key = plan.key;
-        decode_request.path = backing_path(plan.key);
-        decode_request.speculative = speculative;
+        NvcompDecodeRequest decode_request{&container, address, plan.key, backing_path(plan.key),
+                                           speculative};
         NvcompPipelineStatus codec_status = nvcomp_pipeline_->decode(decode_request, ticket);
         if (codec_status == NvcompPipelineStatus::success) {
           codec_status = nvcomp_pipeline_->wait(ticket);
@@ -3903,10 +3901,8 @@ private:
         NvcompPipelineTicket ticket;
         const auto started = Clock::now();
         NvcompEncodeRequest encode_request{frame->address, valid, before.chunk.generation,
-                                           std::nullopt};
-        encode_request.key = key;
-        encode_request.path = CompressionPath::nvcomp_gpu_codec;
-        encode_request.speculative = record->speculative;
+                                           std::nullopt, key, CompressionPath::nvcomp_gpu_codec,
+                                           record->speculative};
         NvcompPipelineStatus codec_status = nvcomp_pipeline_->encode(encode_request, ticket);
         Lz4BlocksV1 candidate;
         if (codec_status == NvcompPipelineStatus::success) {

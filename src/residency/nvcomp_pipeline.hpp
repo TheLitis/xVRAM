@@ -78,7 +78,7 @@ struct NvcompPipelineTicket {
 struct NvcompDecodeRequest {
   const Lz4BlocksV1* source = nullptr;
   cuda::abi::DevicePointer stable_output = 0;
-  ChunkKey key;
+  ChunkKey key{};
   CompressionPath path = CompressionPath::cpu_lz4_gpu_decode;
   bool speculative = false;
 };
@@ -90,7 +90,7 @@ struct NvcompEncodeRequest {
   // When supplied, the CPU-decoded candidate must match this token. If omitted, the verified
   // candidate token becomes authoritative for the new immutable generation.
   std::optional<ContentToken> expected_token;
-  ChunkKey key;
+  ChunkKey key{};
   CompressionPath path = CompressionPath::nvcomp_gpu_codec;
   bool speculative = false;
 };

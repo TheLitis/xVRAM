@@ -1,5 +1,6 @@
 #include "xvram/internal/torch_runtime_v2.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -24,9 +25,22 @@ void check(const bool condition, const char* expression, const int line) {
 
 #define CHECK(expression) check((expression), #expression, __LINE__)
 
+void telemetry_v2_initializer_test() {
+  constexpr xvram_torch_runtime_telemetry_v2 initialized = XVRAM_TORCH_RUNTIME_TELEMETRY_V2_INIT;
+  static_assert(initialized.struct_size == sizeof(xvram_torch_runtime_telemetry_v2));
+  static_assert(initialized.abi_version == XVRAM_TORCH_RUNTIME_ABI_VERSION_2);
+  static_assert(initialized.v1.struct_size == sizeof(xvram_torch_runtime_telemetry_v1));
+  static_assert(initialized.v1.abi_version == XVRAM_TORCH_RUNTIME_ABI_VERSION_1);
+  const auto* bytes = reinterpret_cast<const unsigned char*>(&initialized);
+  const auto extension = offsetof(xvram_torch_runtime_telemetry_v2, logical_bytes);
+  CHECK(std::all_of(bytes + extension, bytes + sizeof(initialized),
+                    [](const unsigned char value) { return value == 0U; }));
+}
+
 } // namespace
 
 int main() {
+  telemetry_v2_initializer_test();
   std::array<std::byte, sizeof(xvram_torch_runtime_api_v1)> storage{};
   CHECK(xvram_torch_runtime_get_api(XVRAM_TORCH_RUNTIME_ABI_VERSION_1,
                                     static_cast<std::uint32_t>(storage.size() - 1U),
