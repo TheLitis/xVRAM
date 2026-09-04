@@ -63,22 +63,30 @@ def _pe_exports(path: Path) -> set[str]:
     return exports
 
 
-def _parse_elf_exports(output: str) -> set[str]:
+def _parse_elf_exports(output: str) -> tuple[set[str], set[str], dict[str, str]]:
     exports: set[str] = set()
+    version_nodes: set[str] = set()
+    symbol_versions: dict[str, str] = {}
     for line in output.splitlines():
         fields = line.split()
         if len(fields) < 2:
             continue
-        # GNU/LLVM nm reports ELF symbol-version definitions as absolute dynamic symbols (for
-        # example ``XVRAM_0.1 A 0``). They are linker metadata, not callable/data exports.
-        symbol = fields[0].split("@", 1)[0]
-        if fields[1].upper() == "A" and symbol == ELF_VERSION_NODE:
+        raw_symbol = fields[0]
+        symbol_type = fields[1].upper()
+        # GNU/LLVM nm reports ELF symbol-version definitions as absolute dynamic symbols. Keep
+        # that node separate so an unversioned xvram_get_api cannot satisfy the export contract.
+        if symbol_type == "A" and raw_symbol == ELF_VERSION_NODE:
+            version_nodes.add(raw_symbol)
             continue
+
+        symbol, separator, version = raw_symbol.partition("@")
         exports.add(symbol)
-    return exports
+        if separator:
+            symbol_versions[symbol] = version.lstrip("@")
+    return exports, version_nodes, symbol_versions
 
 
-def _elf_exports(path: Path) -> set[str]:
+def _elf_exports(path: Path) -> tuple[set[str], set[str], dict[str, str]]:
     nm = shutil.which("nm") or shutil.which("llvm-nm")
     if nm is None:
         raise RuntimeError("nm or llvm-nm is required for the ELF export contract")
@@ -91,8 +99,37 @@ def _elf_exports(path: Path) -> set[str]:
     return _parse_elf_exports(result.stdout)
 
 
+def _validate_elf(
+    exports: set[str], version_nodes: set[str], symbol_versions: dict[str, str]
+) -> list[str]:
+    errors: list[str] = []
+    if exports != EXPECTED:
+        errors.append(f"expected exports {sorted(EXPECTED)}, got {sorted(exports)}")
+    if ELF_VERSION_NODE not in version_nodes:
+        errors.append(f"missing ELF version node {ELF_VERSION_NODE}")
+    wrong_versions = {
+        symbol: symbol_versions.get(symbol)
+        for symbol in EXPECTED
+        if symbol_versions.get(symbol) != ELF_VERSION_NODE
+    }
+    if wrong_versions:
+        errors.append(
+            f"expected every export at version {ELF_VERSION_NODE}, got {wrong_versions}"
+        )
+    return errors
+
+
 def _self_test() -> int:
-    exports = _parse_elf_exports(
+    valid = _parse_elf_exports(
+        "XVRAM_0.1 A 0\n"
+        "xvram_get_api@@XVRAM_0.1 T 100\n"
+    )
+    errors = _validate_elf(*valid)
+    if errors:
+        print("valid fixture rejected: " + "; ".join(errors))
+        return 1
+
+    exports, nodes, versions = _parse_elf_exports(
         "XVRAM_0.1 A 0\n"
         "xvram_get_api@@XVRAM_0.1 T 100\n"
         "unexpected_absolute A 200\n"
@@ -101,6 +138,17 @@ def _self_test() -> int:
     if exports != expected:
         print(f"expected parsed exports {sorted(expected)}, got {sorted(exports)}")
         return 1
+    if nodes != {ELF_VERSION_NODE} or versions != {"xvram_get_api": ELF_VERSION_NODE}:
+        print(f"unexpected version parser result: nodes={nodes}, versions={versions}")
+        return 1
+
+    for invalid in (
+        "xvram_get_api T 100\n",
+        "OTHER_1.0 A 0\nxvram_get_api@@OTHER_1.0 T 100\n",
+    ):
+        if not _validate_elf(*_parse_elf_exports(invalid)):
+            print("invalid ELF version fixture was accepted")
+            return 1
     return 0
 
 
@@ -112,12 +160,18 @@ def main() -> int:
         return 64
     path = Path(sys.argv[1])
     try:
-        exports = _pe_exports(path) if sys.platform == "win32" else _elf_exports(path)
+        if sys.platform == "win32":
+            exports = _pe_exports(path)
+            errors = [] if exports == EXPECTED else [
+                f"expected exports {sorted(EXPECTED)}, got {sorted(exports)}"
+            ]
+        else:
+            errors = _validate_elf(*_elf_exports(path))
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"could not inspect {path}: {error}")
         return 1
-    if exports != EXPECTED:
-        print(f"expected exports {sorted(EXPECTED)}, got {sorted(exports)}")
+    if errors:
+        print("; ".join(errors))
         return 1
     return 0
 

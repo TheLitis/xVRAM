@@ -24,6 +24,12 @@ def main() -> int:
     assert help_result.returncode == 0, help_result.stderr
     assert "--cache-target" in help_result.stdout
     assert "--sdpa-backend" in help_result.stdout
+    assert "--compression" in help_result.stdout
+    assert "--compression-codec" in help_result.stdout
+    assert "--host-store-cap" in help_result.stdout
+    assert "--compression-scratch-cap" in help_result.stdout
+    assert "--codec-slots" in help_result.stdout
+    assert "--codec-workers" in help_result.stdout
 
     version = invoke("--version")
     assert version.returncode == 0
@@ -37,6 +43,14 @@ def main() -> int:
 
     invalid_size = invoke("--chunk-size", "nonsense")
     assert invalid_size.returncode == 64, invalid_size
+
+    invalid_host_cap = invoke(
+        "--compression", "adaptive", "--host-store-cap", "nonsense"
+    )
+    assert invalid_host_cap.returncode == 64, invalid_host_cap
+
+    invalid_codec_slots = invoke("--codec-slots", "1")
+    assert invalid_codec_slots.returncode == 64, invalid_codec_slots
 
     conflicting_stdout = invoke("--json", "-", "--trace", "-")
     assert conflicting_stdout.returncode == 64, conflicting_stdout

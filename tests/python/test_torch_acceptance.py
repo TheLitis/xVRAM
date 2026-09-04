@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from xvram.torch_acceptance import (
     DeterministicLlamaStateProvider,
@@ -10,7 +12,9 @@ from xvram.torch_acceptance import (
     prepare_meta_llama,
     run_layer_streamed_reference,
     strict_export_meta_llama,
+    structured_values,
 )
+from xvram.torch_runtime import run_benchmark_plan
 from xvram.torch_workload import Llama2LikeConfig, build_llama2_like
 
 try:
@@ -33,6 +37,81 @@ def _tiny_config(*, layers: int = 1) -> Llama2LikeConfig:
 
 @unittest.skipUnless(torch is not None, "PyTorch is not installed")
 class TorchAcceptanceTests(unittest.TestCase):
+    def test_benchmark_forwards_structured_state_pattern_to_streaming_provider(
+        self,
+    ) -> None:
+        config = {
+            "device": 0,
+            "model": "llama2-like",
+            "model_ratio": 2.28,
+            "layers": 1,
+            "batch": 1,
+            "sequence": 4,
+            "hidden": 16,
+            "intermediate": 24,
+            "heads": 4,
+            "dtype": "float32",
+            "policy": "clock",
+            "cache_target_bytes": 1 << 20,
+            "chunk_size_bytes": 64 << 20,
+            "device_headroom_bytes": 512 << 20,
+            "scratch_cap_bytes": 512 << 20,
+            "prefetch_distance": 2,
+            "sdpa_backend": "math",
+            "seed": "0x585652414d503035",
+            "compression": "capacity",
+            "compression_codec": "lz4",
+            "state_pattern": "structured",
+            "host_store_cap_bytes": 1 << 30,
+            "host_headroom_bytes": 256 << 20,
+            "compression_scratch_cap_bytes": 256 << 20,
+            "codec_slots": 2,
+            "codec_workers": 2,
+        }
+        observed_patterns: list[str] = []
+
+        def stop_after_provider_selection(*_args, **kwargs):
+            observed_patterns.append(str(kwargs.get("state_pattern")))
+            raise RuntimeError("stop-after-state-pattern")
+
+        properties = SimpleNamespace(
+            name="fake-device", total_memory=8 << 30, major=8, minor=6
+        )
+        with (
+            mock.patch.object(torch.cuda, "is_available", return_value=True),
+            mock.patch.object(torch.cuda, "device_count", return_value=1),
+            mock.patch.object(torch.cuda, "set_device"),
+            mock.patch.object(torch.cuda, "init"),
+            mock.patch.object(
+                torch.cuda, "get_device_properties", return_value=properties
+            ),
+            mock.patch(
+                "xvram.torch_acceptance.prepare_meta_llama",
+                side_effect=stop_after_provider_selection,
+            ),
+        ):
+            report = run_benchmark_plan(config)
+
+        self.assertEqual(observed_patterns, ["structured"])
+        self.assertEqual(report["schema_version"], 2)
+        self.assertIn("stop-after-state-pattern", report["outcome"]["message"])
+
+    def test_structured_values_repeat_and_keep_chunk_reads_deterministic(self) -> None:
+        period = 4093
+        whole = structured_values(
+            0, period * 2 + 17, seed=123, dtype=torch.float16
+        )
+        self.assertTrue(torch.equal(whole[:period], whole[period : period * 2]))
+        split = torch.cat(
+            (
+                structured_values(0, period + 5, seed=123, dtype=torch.float16),
+                structured_values(
+                    period + 5, period + 12, seed=123, dtype=torch.float16
+                ),
+            )
+        )
+        self.assertTrue(torch.equal(whole, split))
+
     def test_streamed_chunks_are_order_independent_and_byte_exact(self) -> None:
         prepared = prepare_meta_llama(
             _tiny_config(), seed=1234, dtype=torch.float32, chunk_bytes=17
@@ -52,6 +131,22 @@ class TorchAcceptanceTests(unittest.TestCase):
         self.assertTrue(torch.equal(first, second))
         self.assertEqual(source.nbytes(), materialized.numel() * materialized.element_size())
         self.assertEqual(provider.parameter_bytes, prepared.config.parameter_bytes(4))
+
+    def test_structured_state_provider_is_explicit_and_reproducible(self) -> None:
+        prepared = prepare_meta_llama(
+            _tiny_config(),
+            seed=4321,
+            dtype=torch.float32,
+            chunk_bytes=19,
+            state_pattern="structured",
+        )
+        first = prepared.state_provider.read_bytes("embedding.weight", 7, 73).clone()
+        second = prepared.state_provider.read_bytes("embedding.weight", 7, 73)
+        self.assertEqual(prepared.state_provider.state_pattern, "structured")
+        self.assertTrue(torch.equal(first, second))
+
+        with self.assertRaisesRegex(ValueError, "state_pattern"):
+            prepare_meta_llama(_tiny_config(), state_pattern="lossy")
 
     def test_tied_meta_weights_keep_one_storage_identity(self) -> None:
         config = _tiny_config()

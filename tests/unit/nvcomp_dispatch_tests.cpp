@@ -34,24 +34,21 @@ nvcompStatus_t fake_compress_alignments(nvcompBatchedLZ4CompressOpts_t,
   return nvcompSuccess;
 }
 
-nvcompStatus_t fake_compress_temp(std::size_t, std::size_t,
-                                  nvcompBatchedLZ4CompressOpts_t, std::size_t* const bytes,
-                                  std::size_t) {
+nvcompStatus_t fake_compress_temp(std::size_t, std::size_t, nvcompBatchedLZ4CompressOpts_t,
+                                  std::size_t* const bytes, std::size_t) {
   *bytes = 4096U;
   return nvcompSuccess;
 }
 
-nvcompStatus_t fake_compress_max_output(std::size_t bytes,
-                                        nvcompBatchedLZ4CompressOpts_t,
+nvcompStatus_t fake_compress_max_output(std::size_t bytes, nvcompBatchedLZ4CompressOpts_t,
                                         std::size_t* const output) {
   *output = bytes + 64U;
   return nvcompSuccess;
 }
 
-nvcompStatus_t fake_compress_async(const void* const*, const std::size_t*, std::size_t,
-                                   std::size_t, void*, std::size_t, void* const*, std::size_t*,
-                                   nvcompBatchedLZ4CompressOpts_t, nvcompStatus_t*,
-                                   cudaStream_t) {
+nvcompStatus_t fake_compress_async(const void* const*, const std::size_t*, std::size_t, std::size_t,
+                                   void*, std::size_t, void* const*, std::size_t*,
+                                   nvcompBatchedLZ4CompressOpts_t, nvcompStatus_t*, cudaStream_t) {
   return nvcompSuccess;
 }
 
@@ -60,31 +57,24 @@ nvcompStatus_t fake_decompress_alignments(nvcompBatchedLZ4DecompressOpts_t,
   return nvcompSuccess;
 }
 
-nvcompStatus_t fake_decompress_temp(std::size_t, std::size_t,
-                                    nvcompBatchedLZ4DecompressOpts_t,
+nvcompStatus_t fake_decompress_temp(std::size_t, std::size_t, nvcompBatchedLZ4DecompressOpts_t,
                                     std::size_t* const bytes, std::size_t) {
   *bytes = 8192U;
   return nvcompSuccess;
 }
 
-nvcompStatus_t fake_decompress_async(const void* const*, const std::size_t*,
-                                     const std::size_t*, std::size_t*, std::size_t, void*,
-                                     std::size_t, void* const*, nvcompBatchedLZ4DecompressOpts_t,
-                                     nvcompStatus_t*, cudaStream_t) {
+nvcompStatus_t fake_decompress_async(const void* const*, const std::size_t*, const std::size_t*,
+                                     std::size_t*, std::size_t, void*, std::size_t, void* const*,
+                                     nvcompBatchedLZ4DecompressOpts_t, nvcompStatus_t*,
+                                     cudaStream_t) {
   return nvcompSuccess;
 }
 
 xvram::nvcomp::NvcompDispatch valid_dispatch() {
   return {
-      &fake_get_properties,
-      &fake_get_status_string,
-      &fake_compress_alignments,
-      &fake_compress_temp,
-      &fake_compress_max_output,
-      &fake_compress_async,
-      &fake_decompress_alignments,
-      &fake_decompress_temp,
-      &fake_decompress_async,
+      &fake_get_properties,        &fake_get_status_string,   &fake_compress_alignments,
+      &fake_compress_temp,         &fake_compress_max_output, &fake_compress_async,
+      &fake_decompress_alignments, &fake_decompress_temp,     &fake_decompress_async,
   };
 }
 
@@ -96,6 +86,9 @@ void injected_dispatch_tests() {
   CHECK(api.library_source() == xvram::nvcomp::NvcompLibrarySource::injected);
   CHECK(api.loaded_name() == "fake-nvcomp");
   CHECK(api.properties().version == 5300U);
+  CHECK(api.version_string() == "5.3.0");
+  CHECK(api.library_sha256().empty());
+  CHECK(!api.integrity_verified());
 
   auto missing = valid_dispatch();
   missing.lz4_decompress_async = nullptr;
@@ -106,12 +99,17 @@ void injected_dispatch_tests() {
   fake_version = 6100U;
   xvram::nvcomp::NvcompApi incompatible(valid_dispatch());
   CHECK(incompatible.status() == xvram::nvcomp::NvcompLoadStatus::incompatible_version);
+  fake_version = 5400U;
+  xvram::nvcomp::NvcompApi newer_minor(valid_dispatch());
+  CHECK(newer_minor.status() == xvram::nvcomp::NvcompLoadStatus::incompatible_version);
   fake_version = 5300U;
 
   CHECK(std::string_view{xvram::nvcomp::nvcomp_load_status_name(
             xvram::nvcomp::NvcompLoadStatus::loaded)} == "loaded");
   CHECK(std::string_view{xvram::nvcomp::nvcomp_library_source_name(
             xvram::nvcomp::NvcompLibrarySource::app_local)} == "app_local");
+  CHECK(std::string_view{xvram::nvcomp::nvcomp_load_status_name(
+            xvram::nvcomp::NvcompLoadStatus::integrity_failure)} == "integrity_failure");
 }
 
 } // namespace

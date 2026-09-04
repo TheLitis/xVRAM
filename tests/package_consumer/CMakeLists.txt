@@ -9,6 +9,12 @@ add_executable(xvram-package-consumer-c main.c)
 target_link_libraries(xvram-package-consumer-c PRIVATE xVRAM::xvram)
 add_test(NAME xvram.package.consumer-c COMMAND xvram-package-consumer-c)
 
+add_executable(xvram-package-consumer-sdk-v2-c sdk_v2.c)
+target_compile_features(xvram-package-consumer-sdk-v2-c PRIVATE c_std_11)
+target_link_libraries(xvram-package-consumer-sdk-v2-c PRIVATE xVRAM::xvram)
+add_test(NAME xvram.package.consumer-sdk-v2-c COMMAND xvram-package-consumer-sdk-v2-c)
+set_tests_properties(xvram.package.consumer-sdk-v2-c PROPERTIES LABELS "installed-package;sdk-v2")
+
 add_executable(xvram-package-consumer-cxx main.cpp)
 target_compile_features(xvram-package-consumer-cxx PRIVATE cxx_std_20)
 target_link_libraries(xvram-package-consumer-cxx PRIVATE xVRAM::xvram)

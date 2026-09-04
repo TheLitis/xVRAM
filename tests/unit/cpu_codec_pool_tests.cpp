@@ -70,6 +70,7 @@ void encode_decode_and_owned_input_test() {
   CHECK(encoded.ticket == encode_ticket);
   CHECK(encoded.output_bytes == encoded.output.size());
   CHECK(encoded.output_bytes < source.size());
+  CHECK(!encoded.encoded_as_raw);
   CHECK(pool.poll(encode_ticket) == CpuCodecPoolStatus::stale_ticket);
 
   CpuCodecTicket decode_ticket;
@@ -142,6 +143,22 @@ CpuCodecFunctions passthrough_functions() {
     return CodecStatus::success;
   };
   return functions;
+}
+
+void non_beneficial_encode_returns_owned_source_test() {
+  CpuCodecWorkerPool pool({1, 2}, passthrough_functions());
+  std::vector<std::byte> input(4096);
+  for (std::size_t index = 0; index < input.size(); ++index) {
+    input[index] = static_cast<std::byte>((index * 131U + 17U) & 0xffU);
+  }
+  CpuCodecTicket ticket;
+  CHECK(pool.submit_encode_copy(key, 30, input, ticket) == CpuCodecPoolStatus::success);
+  CpuCodecResult result;
+  CHECK(pool.wait(ticket, 5s, &result) == CpuCodecPoolStatus::success);
+  CHECK(result.encoded_as_raw);
+  CHECK(result.output == input);
+  CHECK(result.output_bytes == input.size());
+  CHECK(pool.close() == CpuCodecPoolStatus::success);
 }
 
 void exception_and_codec_failure_tests() {
@@ -228,6 +245,7 @@ int main() {
   configuration_and_status_tests();
   encode_decode_and_owned_input_test();
   capacity_and_generation_safety_test();
+  non_beneficial_encode_returns_owned_source_test();
   exception_and_codec_failure_tests();
   deterministic_close_drains_jobs_test();
   timeout_test();

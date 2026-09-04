@@ -43,6 +43,32 @@ def completed_report(plan: dict[str, object]) -> dict[str, object]:
     report["verification"].update(
         {"reference_digest": "a" * 64, "output_digest": "a" * 64}
     )
+    if int(report["schema_version"]) == 2:
+        report["execution"].update(events_recorded=2, events_retired=2)
+        report["compression"].update(
+            logical_bytes=1152,
+            stored_bytes=1024,
+            stored_peak_bytes=1024,
+            raw_bytes=512,
+            compressed_bytes=512,
+            host_budget_bytes=2048,
+            host_budget_peak_bytes=4096,
+            conversion_scratch_peak_bytes=512,
+            logical_h2d_bytes=128,
+            pcie_h2d_bytes=96,
+            pcie_h2d_payload_bytes=88,
+            pcie_h2d_metadata_bytes=8,
+            raw_path_decisions=1,
+            cpu_lz4_gpu_decode_decisions=1,
+            compression_attempts=1,
+            compression_commits=1,
+            decompression_attempts=1,
+            decompression_commits=1,
+            generations_created=2,
+            generations_committed=2,
+            codec_events_recorded=1,
+            codec_events_retired=1,
+        )
     for key in report["cleanup"]:
         if key not in {"worker_reaped", "complete"}:
             report["cleanup"][key] = True
@@ -51,7 +77,17 @@ def completed_report(plan: dict[str, object]) -> dict[str, object]:
 
 def main() -> int:
     mode = sys.argv[1]
-    plan = read_frame(sys.stdin.buffer).payload
+    plan_frame = read_frame(sys.stdin.buffer)
+    plan = plan_frame.payload
+    protocol_version = plan_frame.protocol_version
+
+    def emit(message_type: MessageType, payload: dict[str, object]) -> None:
+        write_frame(
+            sys.stdout.buffer,
+            message_type,
+            payload,
+            protocol_version=protocol_version,
+        )
     if mode == "crash":
         return 19
     if mode == "hang":
@@ -61,38 +97,37 @@ def main() -> int:
         sequence = 0
         while True:
             sequence += 1
-            write_frame(
-                sys.stdout.buffer,
+            emit(
                 MessageType.HEARTBEAT,
                 {"sequence": sequence, "monotonic_ns": time.monotonic_ns()},
             )
             time.sleep(0.05)
     if mode == "truncated":
-        sys.stdout.buffer.write(b"XVT1\x01\x05\x00\x00\x00\x10{}")
+        magic = b"XVT1\x01" if protocol_version == 1 else b"XVT2\x02"
+        sys.stdout.buffer.write(magic + b"\x05\x00\x00\x00\x10{}")
         sys.stdout.buffer.flush()
         return 0
     if mode == "oversized":
-        sys.stdout.buffer.write(b"XVT1\x01\x05\x00\x10\x00\x01")
+        magic = b"XVT1\x01" if protocol_version == 1 else b"XVT2\x02"
+        sys.stdout.buffer.write(magic + b"\x05\x00\x10\x00\x01")
         sys.stdout.buffer.flush()
         return 0
     report = completed_report(plan)
-    write_frame(
-        sys.stdout.buffer,
+    emit(
         MessageType.PROGRESS,
         {"sequence": 1, "operations_retired": 1},
     )
     if mode == "malformed-final":
         report["execution"]["leases_acquired"] = "not-an-integer"
     if mode == "nonmonotonic-protocol":
-        write_frame(
-            sys.stdout.buffer,
+        emit(
             MessageType.HEARTBEAT,
             {"sequence": 1, "monotonic_ns": time.monotonic_ns()},
         )
         return EXIT_RUNTIME
     if mode == "nonmonotonic-trace":
         record = {
-            "schema_version": 1,
+            "schema_version": protocol_version,
             "record_type": "xvram.pytorch_trace",
             "sequence": 2,
             "monotonic_ns": time.monotonic_ns(),
@@ -103,15 +138,23 @@ def main() -> int:
             "bytes": 0,
             "reason": "test",
         }
-        write_frame(
-            sys.stdout.buffer,
+        if protocol_version == 2:
+            record.update(
+                chunk_index=0,
+                source_generation=1,
+                target_generation=2,
+                slot_generation=3,
+                representation="lz4_blocks",
+                codec_path="cpu_lz4_gpu_decode",
+            )
+        emit(
             MessageType.TRACE,
             {"sequence": 2, "records": [record, dict(record)]},
         )
         return EXIT_RUNTIME
     if mode == "no-trace":
         report["execution"]["trace_records"] = 0
-        write_frame(sys.stdout.buffer, MessageType.FINAL, {"sequence": 2, "report": report})
+        emit(MessageType.FINAL, {"sequence": 2, "report": report})
         return 0
     if mode == "progress-mismatch":
         report["graph"]["region_count"] = 2
@@ -123,7 +166,7 @@ def main() -> int:
         report["execution"]["events_retired"] = 2
         report["execution"]["region_timings_ms"] = [0.1, 0.1]
     record = {
-        "schema_version": 1,
+        "schema_version": protocol_version,
         "record_type": "xvram.pytorch_trace",
         "sequence": 1,
         "monotonic_ns": time.monotonic_ns(),
@@ -134,12 +177,20 @@ def main() -> int:
         "bytes": 128,
         "reason": "test",
     }
-    write_frame(
-        sys.stdout.buffer,
+    if protocol_version == 2:
+        record.update(
+            chunk_index=0,
+            source_generation=1,
+            target_generation=2,
+            slot_generation=3,
+            representation="lz4_blocks",
+            codec_path="cpu_lz4_gpu_decode",
+        )
+    emit(
         MessageType.TRACE,
         {"sequence": 2, "records": [record]},
     )
-    write_frame(sys.stdout.buffer, MessageType.FINAL, {"sequence": 3, "report": report})
+    emit(MessageType.FINAL, {"sequence": 3, "report": report})
     if mode == "final-slow-exit":
         time.sleep(1.0)
     if mode == "final-hang":

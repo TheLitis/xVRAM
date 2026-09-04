@@ -1,5 +1,5 @@
 #include "sdk/backend.hpp"
-#include "xvram/xvram.h"
+#include "xvram/xvram_v2.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +16,8 @@ static_assert(sizeof(void*) == 8);
 static_assert(std::is_standard_layout_v<xvram_error_info_v1>);
 static_assert(std::is_standard_layout_v<xvram_session_config_v1>);
 static_assert(std::is_standard_layout_v<xvram_api_v1>);
+static_assert(std::is_standard_layout_v<xvram_session_config_v2>);
+static_assert(std::is_standard_layout_v<xvram_api_v2>);
 static_assert(sizeof(xvram_error_info_v1) == 440);
 static_assert(sizeof(xvram_session_config_v1) == 112);
 static_assert(sizeof(xvram_allocation_desc_v1) == 48);
@@ -31,8 +33,13 @@ static_assert(sizeof(xvram_gemm_desc_v1) == 320);
 static_assert(sizeof(xvram_gemm_plan_info_v1) == 104);
 static_assert(sizeof(xvram_session_telemetry_v1) == 320);
 static_assert(sizeof(xvram_api_v1) == 336);
+static_assert(sizeof(xvram_session_config_v2) == 224);
+static_assert(sizeof(xvram_session_telemetry_v2) == 680);
+static_assert(sizeof(xvram_api_v2) == 464);
 static_assert(offsetof(xvram_api_v1, status_name) == 8);
 static_assert(offsetof(xvram_api_v1, reserved) == 208);
+static_assert(offsetof(xvram_api_v2, v1) == 0);
+static_assert(offsetof(xvram_api_v2, reserved) == 352);
 
 namespace {
 
@@ -42,6 +49,7 @@ int fake_close_timeouts_remaining = 0;
 int fake_allocation_release_calls = 0;
 bool fake_backend_closed = false;
 bool fake_gemm_failure = false;
+std::uint64_t fake_v1_session_create_calls = 0;
 
 void check(const bool condition, const char* expression, const int line) {
   if (!condition) {
@@ -241,6 +249,7 @@ public:
   [[nodiscard]] xvram::sdk::Error
   create_session(const xvram_session_config_v1& config,
                  std::shared_ptr<xvram::sdk::BackendSession>& output) override {
+    ++fake_v1_session_create_calls;
     fake_backend_closed = false;
     output = std::make_shared<FakeSession>(config.chunk_size_bytes);
     return {};
@@ -273,6 +282,74 @@ void retrieval_tests() {
   CHECK(std::string_view{api.status_name(XVRAM_STATUS_BUDGET_PRESSURE)} == "budget_pressure");
   CHECK(api.session_create != nullptr);
   CHECK(api.operation_release != nullptr);
+
+  xvram_api_v2 api_v2{};
+  CHECK(xvram_get_api(XVRAM_ABI_VERSION_2, sizeof(api_v2) - 1U, &api_v2) ==
+        XVRAM_STATUS_INVALID_ARGUMENT);
+  CHECK(xvram_get_api(XVRAM_ABI_VERSION_2, sizeof(api_v2), &api_v2) == XVRAM_STATUS_SUCCESS);
+  CHECK(api_v2.v1.struct_size == sizeof(api_v2));
+  CHECK(api_v2.v1.abi_version == XVRAM_ABI_VERSION_2);
+  CHECK(api_v2.v1.session_create == api.session_create);
+  CHECK(api_v2.session_create_v2 != nullptr);
+  CHECK(api_v2.session_get_telemetry_v2 != nullptr);
+}
+
+void v2_adapter_tests() {
+  xvram::sdk::install_backend_factory(&provide_factory);
+  fake_v1_session_create_calls = 0;
+  xvram_api_v2 api{};
+  CHECK(xvram_get_api(XVRAM_ABI_VERSION_2, sizeof(api), &api) == XVRAM_STATUS_SUCCESS);
+
+  xvram_session_config_v2 config = XVRAM_SESSION_CONFIG_V2_INIT;
+  CHECK(config.compression_mode == XVRAM_COMPRESSION_ADAPTIVE);
+  CHECK(config.compression_codec == XVRAM_COMPRESSION_CODEC_AUTO);
+  CHECK(config.v1.struct_size == sizeof(config.v1));
+  xvram_session session = nullptr;
+  CHECK(api.session_create_v2(&config, &session) == XVRAM_STATUS_UNSUPPORTED);
+  CHECK(session == nullptr);
+  CHECK(fake_v1_session_create_calls == 0U);
+
+  xvram_session_config_v2 invalid = config;
+  invalid.struct_size = sizeof(invalid) - 1U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INCOMPATIBLE_ABI);
+  invalid = config;
+  invalid.flags = 1U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.reserved[0] = 1U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.compression_mode = UINT32_C(99);
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.compression_codec = UINT32_C(99);
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.compression_workspace_cap_bytes = 0U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.codec_slots = 1U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  invalid = config;
+  invalid.codec_workers = 9U;
+  CHECK(api.session_create_v2(&invalid, &session) == XVRAM_STATUS_INVALID_ARGUMENT);
+  CHECK(fake_v1_session_create_calls == 0U);
+
+  config.compression_mode = XVRAM_COMPRESSION_DISABLED;
+  CHECK(api.session_create_v2(&config, &session) == XVRAM_STATUS_SUCCESS);
+  CHECK(session != nullptr);
+  CHECK(fake_v1_session_create_calls == 1U);
+  xvram_session_telemetry_v2 telemetry{};
+  telemetry.struct_size = sizeof(telemetry);
+  CHECK(api.session_get_telemetry_v2(session, &telemetry) == XVRAM_STATUS_SUCCESS);
+  CHECK(telemetry.v1.cublas_lt_available == 1U);
+  CHECK((telemetry.v1.flags & XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES) != 0U);
+  CHECK(telemetry.logical_h2d_bytes == telemetry.v1.bytes_h2d);
+  CHECK(telemetry.pcie_h2d_bytes == telemetry.v1.bytes_h2d);
+  CHECK(telemetry.logical_d2h_bytes == telemetry.v1.bytes_d2h);
+  CHECK(telemetry.pcie_d2h_bytes == telemetry.v1.bytes_d2h);
+  CHECK(api.v1.session_close(session, 1000) == XVRAM_STATUS_SUCCESS);
+  api.v1.session_release(session);
 }
 
 void adapter_tests() {
@@ -501,6 +578,7 @@ void lifecycle_adapter_tests() {
 
 int main() {
   retrieval_tests();
+  v2_adapter_tests();
   adapter_tests();
   lifecycle_adapter_tests();
   if (failures != 0) {

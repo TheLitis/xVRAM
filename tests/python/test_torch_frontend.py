@@ -145,6 +145,24 @@ class TorchFrontendTests(unittest.TestCase):
             compiled.materialize_cuda(example)
         runtime.close()
 
+    def test_public_runtime_exposes_opt_in_compression_configuration(self):
+        runtime = InferenceRuntime(
+            compression="adaptive",
+            compression_codec="lz4",
+            host_store_cap="12GiB",
+            host_headroom="2GiB",
+            compression_scratch_cap="128MiB",
+            codec_slots=3,
+            codec_workers=4,
+            _torch_module=torch,
+        )
+
+        self.assertEqual(runtime.config.native_abi_version, 2)
+        self.assertEqual(runtime.config.host_store_cap_bytes, 12 << 30)
+        self.assertEqual(runtime.config.host_headroom_bytes, 2 << 30)
+        self.assertEqual(runtime.config.compression_scratch_bytes, 128 << 20)
+        runtime.close()
+
 
 if __name__ == "__main__":
     unittest.main()

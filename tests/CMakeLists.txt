@@ -130,11 +130,97 @@ target_compile_features(xvram-nvcomp-dispatch-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-nvcomp-dispatch-tests)
 add_test(NAME xvram.nvcomp.dispatch COMMAND xvram-nvcomp-dispatch-tests)
 
+add_executable(xvram-nvcomp-load-test-helper helpers/nvcomp_load_test_helper.cpp)
+target_link_libraries(xvram-nvcomp-load-test-helper PRIVATE xvram_residency_core)
+target_include_directories(xvram-nvcomp-load-test-helper PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(
+  xvram-nvcomp-load-test-helper SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
+                                                  "${XVRAM_NVCOMP_INCLUDE_DIR}")
+target_compile_definitions(
+  xvram-nvcomp-load-test-helper
+  PRIVATE "XVRAM_NVCOMP_LIBRARY_SHA256=\"${XVRAM_NVCOMP_LIBRARY_SHA256}\"")
+target_compile_features(xvram-nvcomp-load-test-helper PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-nvcomp-load-test-helper)
+xvram_stage_nvcomp(xvram-nvcomp-load-test-helper)
+add_test(NAME xvram.nvcomp.app-local-load COMMAND xvram-nvcomp-load-test-helper)
+
+add_executable(xvram-nvcomp-pipeline-tests unit/nvcomp_pipeline_tests.cpp)
+target_link_libraries(xvram-nvcomp-pipeline-tests PRIVATE xvram_residency_core)
+target_include_directories(xvram-nvcomp-pipeline-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(
+  xvram-nvcomp-pipeline-tests SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
+                                               "${XVRAM_NVCOMP_INCLUDE_DIR}")
+target_compile_features(xvram-nvcomp-pipeline-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-nvcomp-pipeline-tests)
+add_test(NAME xvram.nvcomp.pipeline COMMAND xvram-nvcomp-pipeline-tests)
+
+add_executable(xvram-compression-core-tests unit/compression_core_tests.cpp)
+target_link_libraries(xvram-compression-core-tests PRIVATE xvram_residency_core)
+target_include_directories(xvram-compression-core-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-compression-core-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-compression-core-tests)
+add_test(NAME xvram.compression.core COMMAND xvram-compression-core-tests)
+
+add_executable(xvram-cpu-codec-pool-tests unit/cpu_codec_pool_tests.cpp)
+target_link_libraries(xvram-cpu-codec-pool-tests PRIVATE xvram_residency_core)
+target_include_directories(xvram-cpu-codec-pool-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(xvram-cpu-codec-pool-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-cpu-codec-pool-tests)
+add_test(NAME xvram.compression.cpu-codec-pool COMMAND xvram-cpu-codec-pool-tests)
+
+add_executable(xvram-compression-options-tests unit/compression_options_tests.cpp)
+target_link_libraries(xvram-compression-options-tests PRIVATE xvram_compression_bench)
+target_compile_features(xvram-compression-options-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-compression-options-tests)
+add_test(NAME xvram.compression.options COMMAND xvram-compression-options-tests)
+
+add_executable(xvram-compression-executor-tests unit/compression_executor_tests.cpp)
+target_link_libraries(xvram-compression-executor-tests PRIVATE xvram_compression_bench)
+target_compile_features(xvram-compression-executor-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-compression-executor-tests)
+add_test(NAME xvram.compression.executor COMMAND xvram-compression-executor-tests)
+
+add_executable(xvram-compression-worker-test-helper helpers/compression_worker_test_helper.cpp)
+target_link_libraries(xvram-compression-worker-test-helper PRIVATE xvram_compression_contract)
+target_compile_features(xvram-compression-worker-test-helper PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-compression-worker-test-helper)
+
+add_executable(xvram-compression-worker-controller-tests
+               unit/compression_worker_controller_tests.cpp)
+target_link_libraries(xvram-compression-worker-controller-tests
+                      PRIVATE xvram_compression_bench)
+target_compile_features(xvram-compression-worker-controller-tests PRIVATE cxx_std_20)
+add_dependencies(xvram-compression-worker-controller-tests xvram-compression-worker-test-helper)
+xvram_enable_warnings(xvram-compression-worker-controller-tests)
+add_test(
+  NAME xvram.compression.worker-controller
+  COMMAND xvram-compression-worker-controller-tests
+          "$<TARGET_FILE:xvram-compression-worker-test-helper>")
+set_tests_properties(xvram.compression.worker-controller PROPERTIES TIMEOUT 20)
+
+add_test(
+  NAME xvram.compression.controller-json-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/compression_controller_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/adaptive-compression-report-v1.schema.json"
+          "$<TARGET_FILE:xvram-compression-worker-controller-tests>"
+          "$<TARGET_FILE:xvram-compression-worker-test-helper>")
+set_tests_properties(xvram.compression.controller-json-contract PROPERTIES TIMEOUT 30)
+
 add_executable(xvram-compression-report-tests unit/compression_report_tests.cpp)
 target_link_libraries(xvram-compression-report-tests PRIVATE xvram_compression_contract)
 target_compile_features(xvram-compression-report-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-compression-report-tests)
 add_test(NAME xvram.compression.report COMMAND xvram-compression-report-tests)
+
+add_test(
+  NAME xvram.compression.cpp-json-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/compression_cpp_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/adaptive-compression-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/compression-trace-record-v1.schema.json"
+          "$<TARGET_FILE:xvram-compression-report-tests>")
+set_tests_properties(xvram.compression.cpp-json-contract PROPERTIES TIMEOUT 20)
 
 add_executable(xvram-compression-worker-protocol-tests
                unit/compression_worker_protocol_tests.cpp)
@@ -187,6 +273,22 @@ xvram_enable_warnings(xvram-sdk-abi-tests)
 
 add_test(NAME xvram.sdk.abi COMMAND xvram-sdk-abi-tests)
 
+# This executable has two deliberately separate modes. --self-test only loads the public v2 table
+# and is safe in no-driver CI. The real CUDA path is not registered with CTest; the opt-in
+# run-phase5-sdk-v2-hardware-smoke.ps1 gate builds and invokes it explicitly.
+add_executable(xvram-sdk-v2-hardware-smoke helpers/sdk_v2_hardware_smoke.cpp)
+target_link_libraries(xvram-sdk-v2-hardware-smoke PRIVATE xvram_sdk ${CMAKE_DL_LIBS})
+target_compile_features(xvram-sdk-v2-hardware-smoke PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-sdk-v2-hardware-smoke)
+add_test(NAME xvram.sdk-v2.smoke-contract
+         COMMAND xvram-sdk-v2-hardware-smoke --self-test)
+set_tests_properties(
+  xvram.sdk-v2.smoke-contract
+  PROPERTIES LABELS "no-driver;sdk-v2"
+             TIMEOUT 15
+             ENVIRONMENT_MODIFICATION
+             "PATH=path_list_prepend:$<TARGET_FILE_DIR:xvram_sdk>")
+
 add_executable(xvram-sdk-deadline-tests unit/sdk_deadline_tests.cpp
                                         "${PROJECT_SOURCE_DIR}/src/sdk/status.cpp")
 target_include_directories(xvram-sdk-deadline-tests PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -226,7 +328,8 @@ target_link_libraries(xvram-residency-executor-fake-tests PRIVATE xvram_residenc
 target_include_directories(xvram-residency-executor-fake-tests
                            PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(xvram-residency-executor-fake-tests
-                           SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+                           SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
+                                          "${XVRAM_NVCOMP_INCLUDE_DIR}")
 target_compile_features(xvram-residency-executor-fake-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-residency-executor-fake-tests)
 
@@ -313,6 +416,8 @@ add_test(NAME xvram.cache-bench.help COMMAND xvram-cache-bench --help)
 add_test(NAME xvram.cache-bench.version COMMAND xvram-cache-bench --version)
 add_test(NAME xvram.gemm-bench.help COMMAND xvram-gemm-bench --help)
 add_test(NAME xvram.gemm-bench.version COMMAND xvram-gemm-bench --version)
+add_test(NAME xvram.compression-bench.help COMMAND xvram-compression-bench --help)
+add_test(NAME xvram.compression-bench.version COMMAND xvram-compression-bench --version)
 
 add_executable(xvram-report-fixture contract/fixture_report.cpp)
 target_link_libraries(xvram-report-fixture PRIVATE xvram_probe_lib)
@@ -372,6 +477,21 @@ add_test(
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/compression-trace-record-v1.schema.json")
 
 add_test(
+  NAME xvram.compression.trace-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/compression_trace_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/compression-trace-record-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../scripts")
+
+add_test(
+  NAME xvram.compression.cli-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/compression_cli_contract.py"
+          "$<TARGET_FILE:xvram-compression-bench>"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/adaptive-compression-report-v1.schema.json")
+set_tests_properties(xvram.compression.cli-contract PROPERTIES TIMEOUT 20)
+
+add_test(
   NAME xvram.gemm.cli-contract
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/contract/gemm_cli_contract.py"
@@ -403,7 +523,8 @@ add_test(
   NAME xvram.abi.hash-contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/abi_hash_contract.py"
           "${PROJECT_SOURCE_DIR}/include/xvram/xvram.h"
-          "${PROJECT_SOURCE_DIR}/include/xvram/torch_allocator.h")
+          "${PROJECT_SOURCE_DIR}/include/xvram/torch_allocator.h"
+          "${PROJECT_SOURCE_DIR}/include/xvram/internal/torch_runtime.h")
 
 add_test(
   NAME xvram.torch-inference.json-contract
@@ -411,6 +532,16 @@ add_test(
           "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_inference_contract.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-report-v1.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v1.schema.json")
+
+add_test(
+  NAME xvram.torch-inference-v2.json-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/contract/torch_inference_v2_contract.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-report-v2.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v2.schema.json")
+set_tests_properties(
+  xvram.torch-inference-v2.json-contract
+  PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)
 set_tests_properties(
   xvram.torch-inference.json-contract
   PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)

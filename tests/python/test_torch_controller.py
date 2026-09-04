@@ -16,13 +16,18 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTHON_ROOT = ROOT / "python"
 sys.path.insert(0, str(PYTHON_ROOT))
 
-from xvram.torch_bench import parse_size, run_controller
+from xvram.torch_bench import _normalize_plan, _parser, parse_size, run_controller
 from xvram.torch_report import EXIT_COMPLETED, EXIT_RUNTIME, EXIT_TIMEOUT
 
 
 HELPER = ROOT / "tests" / "helpers" / "torch_worker_test_helper.py"
 SCHEMA = json.loads(
     (ROOT / "schemas" / "pytorch-inference-report-v1.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+SCHEMA_V2 = json.loads(
+    (ROOT / "schemas" / "pytorch-inference-report-v2.schema.json").read_text(
         encoding="utf-8"
     )
 )
@@ -51,6 +56,23 @@ def plan() -> dict[str, object]:
     }
 
 
+def compressed_plan() -> dict[str, object]:
+    value = plan()
+    value.update(
+        {
+            "compression": "capacity",
+            "compression_codec": "lz4",
+            "state_pattern": "structured",
+            "host_store_cap_bytes": 4096,
+            "host_headroom_bytes": 1024,
+            "compression_scratch_cap_bytes": 1024,
+            "codec_slots": 2,
+            "codec_workers": 2,
+        }
+    )
+    return value
+
+
 class TorchControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         inherited = os.environ.get("PYTHONPATH")
@@ -64,8 +86,46 @@ class TorchControllerTests(unittest.TestCase):
     def command(self, mode: str) -> list[str]:
         return [sys.executable, str(HELPER), mode]
 
+    def test_cli_plan_keeps_off_on_v1_and_maps_compression_options_to_v2(self) -> None:
+        off = _normalize_plan(_parser().parse_args([]))
+        self.assertNotIn("compression", off)
+
+        compressed = _normalize_plan(
+            _parser().parse_args(
+                [
+                    "--compression",
+                    "capacity",
+                    "--compression-codec",
+                    "lz4",
+                    "--state-pattern",
+                    "structured",
+                    "--host-store-cap",
+                    "12GiB",
+                    "--host-headroom",
+                    "4GiB",
+                    "--compression-scratch-cap",
+                    "128MiB",
+                    "--codec-slots",
+                    "3",
+                    "--codec-workers",
+                    "4",
+                ]
+            )
+        )
+        self.assertEqual(compressed["compression"], "capacity")
+        self.assertEqual(compressed["compression_codec"], "lz4")
+        self.assertEqual(compressed["state_pattern"], "structured")
+        self.assertEqual(compressed["host_store_cap_bytes"], 12 * 1024**3)
+        self.assertEqual(compressed["host_headroom_bytes"], 4 * 1024**3)
+        self.assertEqual(
+            compressed["compression_scratch_cap_bytes"], 128 * 1024**2
+        )
+        self.assertEqual(compressed["codec_slots"], 3)
+        self.assertEqual(compressed["codec_workers"], 4)
+
     def assert_schema_valid(self, report: dict[str, object]) -> None:
-        jsonschema.Draft202012Validator(SCHEMA).validate(report)
+        schema = SCHEMA_V2 if report.get("schema_version") == 2 else SCHEMA
+        jsonschema.Draft202012Validator(schema).validate(report)
 
     def test_success_reaps_worker(self) -> None:
         result = run_controller(plan(), timeout_seconds=5, worker_command=self.command("success"))
@@ -73,6 +133,76 @@ class TorchControllerTests(unittest.TestCase):
         self.assertTrue(result.report["cleanup"]["worker_reaped"])
         self.assertTrue(result.report["execution"]["trace_complete"])
         self.assertEqual(result.trace_records[-1]["operation"], "trace_complete")
+
+    def test_compression_success_uses_xvt2_report_and_trace_contracts(self) -> None:
+        result = run_controller(
+            compressed_plan(),
+            timeout_seconds=5,
+            worker_command=self.command("success"),
+        )
+        self.assertEqual(result.exit_code, EXIT_COMPLETED)
+        self.assertEqual(result.report["schema_version"], 2)
+        self.assertEqual(result.report["compression"]["policy"], "capacity")
+        self.assertTrue(result.report["cleanup"]["worker_reaped"])
+        self.assertTrue(result.report["execution"]["trace_complete"])
+        self.assertTrue(result.trace_records)
+        self.assertTrue(
+            all(record["schema_version"] == 2 for record in result.trace_records)
+        )
+        self.assertTrue(
+            all("source_generation" in record for record in result.trace_records)
+        )
+        self.assert_schema_valid(result.report)
+
+    def test_compression_crash_still_returns_v2_and_reaps_worker(self) -> None:
+        result = run_controller(
+            compressed_plan(),
+            timeout_seconds=5,
+            worker_command=self.command("crash"),
+        )
+        self.assertEqual(result.exit_code, EXIT_RUNTIME)
+        self.assertEqual(result.report["schema_version"], 2)
+        self.assertIn("compression", result.report)
+        self.assertTrue(result.report["cleanup"]["worker_reaped"])
+        self.assertTrue(
+            all(record["schema_version"] == 2 for record in result.trace_records)
+        )
+        self.assert_schema_valid(result.report)
+
+    def test_compression_timeout_is_v2_and_reaps_worker(self) -> None:
+        result = run_controller(
+            compressed_plan(),
+            timeout_seconds=5,
+            stall_timeout_seconds=1,
+            worker_command=self.command("hang"),
+        )
+        self.assertEqual(result.exit_code, EXIT_TIMEOUT)
+        self.assertEqual(result.report["schema_version"], 2)
+        self.assertTrue(result.report["cleanup"]["worker_reaped"])
+        self.assertFalse(result.report["execution"]["trace_complete"])
+        self.assert_schema_valid(result.report)
+
+    def test_compression_truncated_protocol_is_v2_failure(self) -> None:
+        result = run_controller(
+            compressed_plan(),
+            timeout_seconds=5,
+            worker_command=self.command("truncated"),
+        )
+        self.assertEqual(result.exit_code, EXIT_RUNTIME)
+        self.assertEqual(result.report["schema_version"], 2)
+        self.assertTrue(result.report["cleanup"]["worker_reaped"])
+        self.assert_schema_valid(result.report)
+
+    def test_compression_oversized_protocol_is_v2_failure(self) -> None:
+        result = run_controller(
+            compressed_plan(),
+            timeout_seconds=5,
+            worker_command=self.command("oversized"),
+        )
+        self.assertEqual(result.exit_code, EXIT_RUNTIME)
+        self.assertEqual(result.report["schema_version"], 2)
+        self.assertTrue(result.report["cleanup"]["worker_reaped"])
+        self.assert_schema_valid(result.report)
 
     def test_crash_becomes_valid_failure_report(self) -> None:
         result = run_controller(plan(), timeout_seconds=5, worker_command=self.command("crash"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 import tempfile
@@ -26,9 +27,19 @@ from xvram.torch_native import (  # noqa: E402
     NativeLeaseInfo,
     NativeRuntimeConfig,
     NativeTorchRuntimeError,
+    NativeTorchUnavailableError,
+    TORCH_RUNTIME_ABI_VERSION_1,
+    TORCH_RUNTIME_ABI_VERSION_2,
     _ApiV1,
+    _ApiV2,
+    _CtypesControlV2,
+    _LoadedLibrary,
     _SessionConfigV1,
+    _SessionConfigV2,
+    _SessionCreateV2Fn,
+    _SessionTelemetryV2Fn,
     _TelemetryV1,
+    _TelemetryV2,
     find_runtime_library,
 )
 from xvram.torch_planner import (  # noqa: E402
@@ -448,6 +459,47 @@ class _FakeControl:
         }
 
 
+class _BackingTelemetryControl(_FakeControl):
+    def __init__(self, events, *, target=1 << 30):
+        super().__init__(events, target=target)
+        self.created = 0
+        self.released = 0
+        self.stored_peak = 0
+
+    def create_allocation(self, session, bytes_value, hint):
+        handle = super().create_allocation(session, bytes_value, hint)
+        self.created += 1
+        self.stored_peak = max(self.stored_peak, sum(self.allocations.values()))
+        return handle
+
+    def release(self, allocation):
+        super().release(allocation)
+        self.released += 1
+
+    def telemetry(self, session):
+        result = super().telemetry(session)
+        live = sum(self.allocations.values())
+        result.update(
+            allocations_created=self.created,
+            allocations_released=self.released,
+            logical_bytes=live,
+            host_stored_bytes=live,
+            host_stored_peak_bytes=self.stored_peak,
+            host_raw_bytes=live,
+            host_compressed_bytes=0,
+            host_implicit_zero_bytes=0,
+            host_invalid_bytes=0,
+            effective_host_store_cap_bytes=8 << 30,
+            effective_host_headroom_bytes=1 << 30,
+            host_budget_bytes=live + (64 << 20),
+            host_budget_peak_bytes=self.stored_peak + (64 << 20),
+            conversion_scratch_peak_bytes=32 << 20,
+            codec_events_recorded=3,
+            codec_events_retired=3,
+        )
+        return result
+
+
 class _FakeGemmControl(_FakeControl):
     def execute_gemm(self, session, problem):
         self.events.append(("gemm_execute", session, problem))
@@ -502,16 +554,241 @@ class TorchNativeTests(unittest.TestCase):
         self.assertGreaterEqual(_ApiV1.reserved.offset, 2 * 4 + 17 * 8)
         self.assertGreater(_TelemetryV1.scratch_bytes_peak.offset, 0)
 
+    def test_ctypes_v2_embeds_frozen_v1_and_adds_compression_contract(self):
+        self.assertEqual(_SessionConfigV2.struct_size.offset, 0)
+        self.assertEqual(_SessionConfigV2.abi_version.offset, 4)
+        self.assertEqual(_SessionConfigV2.v1.offset, 8)
+        self.assertEqual(_ApiV2.v1.offset, 0)
+        self.assertGreaterEqual(_ApiV2.reserved.offset, _ApiV1.reserved.offset)
+        self.assertGreater(_TelemetryV2.pcie_h2d_bytes.offset, _TelemetryV2.v1.offset)
+        self.assertGreater(
+            _TelemetryV2.generations_committed.offset,
+            _TelemetryV2.compression_commits.offset,
+        )
+        self.assertEqual(ctypes.sizeof(_TelemetryV2), 864)
+        self.assertGreater(
+            _TelemetryV2.pcie_h2d_metadata_bytes.offset,
+            _TelemetryV2.pcie_h2d_payload_bytes.offset,
+        )
+        self.assertGreater(
+            _TelemetryV2.rejected_candidate_logical_d2h_bytes.offset,
+            _TelemetryV2.pcie_d2h_metadata_bytes.offset,
+        )
+        self.assertGreater(
+            _TelemetryV2.host_budget_peak_bytes.offset,
+            _TelemetryV2.effective_host_store_cap_bytes.offset,
+        )
+        self.assertGreater(
+            _TelemetryV2.codec_events_retired.offset,
+            _TelemetryV2.verification_nanoseconds.offset,
+        )
+
     def test_config_uses_phase4b_defaults_and_validates(self):
         config = NativeRuntimeConfig().validate()
         self.assertEqual(config.chunk_bytes, 64 << 20)
         self.assertEqual(config.cache_target_bytes, 0)
         self.assertEqual(config.headroom_bytes, 512 << 20)
         self.assertEqual(config.scratch_bytes, 512 << 20)
+        self.assertEqual(config.compression, "off")
+        self.assertEqual(config.native_abi_version, 1)
+        compressed = NativeRuntimeConfig(
+            compression="capacity",
+            compression_codec="lz4",
+            host_store_cap="8GiB",
+            host_headroom="1GiB",
+            compression_scratch_cap="256MiB",
+            codec_slots=3,
+            codec_workers=4,
+        ).validate()
+        self.assertEqual(compressed.native_abi_version, 2)
+        self.assertEqual(compressed.compression_mode, 2)
+        self.assertEqual(compressed.compression_codec_id, 1)
+        self.assertEqual(compressed.host_store_cap_bytes, 8 << 30)
+        self.assertEqual(compressed.host_headroom_bytes, 1 << 30)
+        self.assertEqual(compressed.compression_scratch_bytes, 256 << 20)
         with self.assertRaisesRegex(ValueError, "policy"):
             NativeRuntimeConfig(policy="fifo").validate()
         with self.assertRaisesRegex(ValueError, "staging"):
             NativeRuntimeConfig(staging_slots=1).validate()
+        with self.assertRaisesRegex(ValueError, "compression must"):
+            NativeRuntimeConfig(compression="lossy").validate()
+        with self.assertRaisesRegex(ValueError, "compression_codec"):
+            NativeRuntimeConfig(compression_codec="zstd").validate()
+        with self.assertRaisesRegex(ValueError, "codec_slots"):
+            NativeRuntimeConfig(codec_slots=1).validate()
+        with self.assertRaisesRegex(ValueError, "codec_workers"):
+            NativeRuntimeConfig(codec_workers=9).validate()
+
+    def test_ctypes_v2_control_passes_compression_config_and_telemetry(self):
+        observed = {}
+
+        @_SessionCreateV2Fn
+        def create(config_pointer, output_pointer):
+            config = config_pointer.contents
+            observed.update(
+                abi_version=int(config.abi_version),
+                v1_abi_version=int(config.v1.abi_version),
+                compression_mode=int(config.compression_mode),
+                compression_codec=int(config.compression_codec),
+                host_store_cap_bytes=int(config.host_store_cap_bytes),
+                codec_slots=int(config.codec_slots),
+                codec_workers=int(config.codec_workers),
+            )
+            output_pointer[0] = 41
+            return 0
+
+        @_SessionTelemetryV2Fn
+        def telemetry(session, output_pointer):
+            self.assertEqual(int(session), 41)
+            output = output_pointer.contents
+            output.abi_version = 2
+            output.v1.stable_addresses = 1
+            output.logical_bytes = 9 << 30
+            output.host_compressed_bytes = 3 << 30
+            output.effective_host_store_cap_bytes = 12 << 30
+            output.effective_host_headroom_bytes = 4 << 30
+            output.host_budget_bytes = 4 << 30
+            output.host_budget_peak_bytes = 5 << 30
+            output.conversion_scratch_peak_bytes = 64 << 20
+            output.hot_allocation_d2h_bytes = 7 << 20
+            output.non_hot_allocation_d2h_bytes = 11 << 20
+            output.logical_h2d_bytes = 3 << 30
+            output.pcie_h2d_bytes = 2 << 30
+            output.pcie_h2d_payload_bytes = (2 << 30) - 4096
+            output.pcie_h2d_metadata_bytes = 4096
+            output.logical_d2h_bytes = 20 << 20
+            output.pcie_d2h_bytes = 12 << 20
+            output.pcie_d2h_payload_bytes = (12 << 20) - 8192
+            output.pcie_d2h_metadata_bytes = 8192
+            output.rejected_candidate_logical_d2h_bytes = 2 << 20
+            output.generations_committed = 7
+            output.codec_events_recorded = 6
+            output.codec_events_retired = 6
+            return 0
+
+        api = _ApiV2()
+        api.v1.struct_size = ctypes.sizeof(_ApiV2)
+        api.v1.abi_version = 2
+        api.session_create_v2 = create
+        api.session_get_telemetry_v2 = telemetry
+        control = _CtypesControlV2(api)
+        session = control.create_session(
+            NativeRuntimeConfig(
+                compression="capacity",
+                compression_codec="lz4",
+                host_store_cap="9GiB",
+                codec_slots=3,
+                codec_workers=4,
+            )
+        )
+
+        self.assertEqual(session, 41)
+        self.assertEqual(
+            observed,
+            {
+                "abi_version": 2,
+                "v1_abi_version": 1,
+                "compression_mode": 2,
+                "compression_codec": 1,
+                "host_store_cap_bytes": 9 << 30,
+                "codec_slots": 3,
+                "codec_workers": 4,
+            },
+        )
+        snapshot = control.telemetry(session)
+        self.assertTrue(snapshot["stable_addresses"])
+        self.assertEqual(snapshot["logical_bytes"], 9 << 30)
+        self.assertEqual(snapshot["host_compressed_bytes"], 3 << 30)
+        self.assertEqual(snapshot["effective_host_store_cap_bytes"], 12 << 30)
+        self.assertEqual(snapshot["effective_host_headroom_bytes"], 4 << 30)
+        self.assertEqual(snapshot["host_budget_bytes"], 4 << 30)
+        self.assertEqual(snapshot["host_budget_peak_bytes"], 5 << 30)
+        self.assertEqual(snapshot["conversion_scratch_peak_bytes"], 64 << 20)
+        self.assertEqual(snapshot["hot_allocation_d2h_bytes"], 7 << 20)
+        self.assertEqual(snapshot["non_hot_allocation_d2h_bytes"], 11 << 20)
+        self.assertEqual(snapshot["logical_h2d_bytes"], 3 << 30)
+        self.assertEqual(snapshot["pcie_h2d_bytes"], 2 << 30)
+        self.assertEqual(snapshot["pcie_h2d_payload_bytes"], (2 << 30) - 4096)
+        self.assertEqual(snapshot["pcie_h2d_metadata_bytes"], 4096)
+        self.assertEqual(snapshot["logical_d2h_bytes"], 20 << 20)
+        self.assertEqual(snapshot["pcie_d2h_bytes"], 12 << 20)
+        self.assertEqual(snapshot["pcie_d2h_payload_bytes"], (12 << 20) - 8192)
+        self.assertEqual(snapshot["pcie_d2h_metadata_bytes"], 8192)
+        self.assertEqual(snapshot["rejected_candidate_logical_d2h_bytes"], 2 << 20)
+        self.assertEqual(snapshot["generations_committed"], 7)
+        self.assertEqual(snapshot["codec_events_recorded"], 6)
+        self.assertEqual(snapshot["codec_events_retired"], 6)
+
+    def test_native_loader_never_downgrades_compression_to_v1(self):
+        class GetApi:
+            def __init__(self):
+                self.calls = []
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, requested_abi, caller_size, output):
+                del output
+                self.calls.append((int(requested_abi), int(caller_size)))
+                return 2
+
+        torch_module = SimpleNamespace(
+            ops=SimpleNamespace(load_library=lambda _path: None)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "xvram_torch_runtime.dll"
+            path.write_bytes(b"fixture")
+
+            for compression, expected_abi, message in (
+                ("off", TORCH_RUNTIME_ABI_VERSION_1, "private v1 ABI is unavailable"),
+                (
+                    "adaptive",
+                    TORCH_RUNTIME_ABI_VERSION_2,
+                    "compression requires the private v2 ABI; no v1 fallback is allowed",
+                ),
+                (
+                    "capacity",
+                    TORCH_RUNTIME_ABI_VERSION_2,
+                    "compression requires the private v2 ABI; no v1 fallback is allowed",
+                ),
+            ):
+                get_api = GetApi()
+                native = SimpleNamespace(xvram_torch_runtime_get_api=get_api)
+                with (
+                    mock.patch(
+                        "xvram.torch_native._open_windows_dll_directories",
+                        return_value=(),
+                    ),
+                    mock.patch("xvram.torch_native.ctypes.CDLL", return_value=native),
+                    self.assertRaisesRegex(NativeTorchUnavailableError, message),
+                ):
+                    _LoadedLibrary(
+                        path,
+                        torch_module,
+                        NativeRuntimeConfig(compression=compression),
+                    )
+                expected_size = ctypes.sizeof(
+                    _ApiV1 if expected_abi == TORCH_RUNTIME_ABI_VERSION_1 else _ApiV2
+                )
+                self.assertEqual(get_api.calls, [(expected_abi, expected_size)])
+
+    def test_v2_control_rejects_a_truncated_telemetry_prefix(self):
+        @_SessionTelemetryV2Fn
+        def telemetry(_session, output_pointer):
+            output = output_pointer.contents
+            output.struct_size = ctypes.sizeof(_TelemetryV2) - ctypes.sizeof(ctypes.c_uint64)
+            output.abi_version = TORCH_RUNTIME_ABI_VERSION_2
+            return 0
+
+        api = _ApiV2()
+        api.v1.struct_size = ctypes.sizeof(_ApiV2)
+        api.v1.abi_version = TORCH_RUNTIME_ABI_VERSION_2
+        api.session_get_telemetry_v2 = telemetry
+        control = _CtypesControlV2(api)
+
+        with self.assertRaisesRegex(
+            NativeTorchRuntimeError, "telemetry prefix is too small"
+        ):
+            control.telemetry(41)
 
     def test_prepare_initializes_primary_context_before_native_session(self):
         plan, provider, backend, control, events = self._fixture()
@@ -529,6 +806,145 @@ class TorchNativeTests(unittest.TestCase):
 
         backend.close()
         self.assertFalse(control.allocations)
+        self.assertEqual(sum(item[0] == "telemetry" for item in events), 1)
+
+    def test_close_preserves_workload_backing_and_merges_cleanup_counters(self):
+        exported = _embedding_linear_program()
+        provider = _Provider(exported)
+        plan = build_inference_plan(exported, state_provider=provider)
+        events = []
+        control = _BackingTelemetryControl(events)
+        backend = NativeInferenceBackend(
+            config=NativeRuntimeConfig(compression="adaptive"),
+            _torch_module=_FakeTorch(events),
+            _control=control,
+        )
+        backend.prepare(plan, provider)
+        workload_bytes = sum(control.allocations.values())
+
+        backend.close()
+
+        snapshot = backend.telemetry_snapshot()
+        self.assertFalse(control.allocations)
+        self.assertEqual(sum(item[0] == "telemetry" for item in events), 2)
+        self.assertEqual(snapshot["logical_bytes"], workload_bytes)
+        self.assertEqual(snapshot["host_stored_bytes"], workload_bytes)
+        self.assertEqual(snapshot["host_raw_bytes"], workload_bytes)
+        self.assertEqual(snapshot["host_budget_bytes"], workload_bytes + (64 << 20))
+        self.assertEqual(snapshot["allocations_created"], control.created)
+        self.assertEqual(snapshot["allocations_released"], control.released)
+        self.assertEqual(control.created, control.released)
+        self.assertEqual(snapshot["codec_events_recorded"], 3)
+        self.assertEqual(snapshot["codec_events_retired"], 3)
+
+    def test_state_provider_default_streaming_contract_is_bounded(self):
+        class Reader(_ChunkedProvider):
+            def __init__(self):
+                super().__init__()
+                self.calls = []
+
+            def read_bytes(self, target, offset_bytes, length_bytes):
+                self.calls.append((target, offset_bytes, length_bytes))
+                return _ByteTensor(60000 + offset_bytes, length_bytes)
+
+        provider = Reader()
+        chunks = list(provider.iter_chunks("a", 16))
+        self.assertEqual([offset for offset, _data in chunks], [0, 16])
+        self.assertEqual(provider.calls, [("a", 0, 16), ("a", 16, 16)])
+
+    def test_compression_progress_emits_monotonic_telemetry_deltas(self):
+        events = []
+        backend = NativeInferenceBackend(
+            config=NativeRuntimeConfig(compression="adaptive"),
+            _control=_FakeControl([]),
+            _progress_callback=events.append,
+        )
+        backend._session = 7
+        first = {
+            "raw_path_decisions": 2,
+            "cpu_lz4_gpu_decode_decisions": 1,
+            "generations_created": 3,
+            "generations_committed": 3,
+            "codec_events_recorded": 1,
+            "codec_events_retired": 1,
+            "logical_h2d_bytes": 100,
+            "pcie_h2d_bytes": 60,
+            "pcie_h2d_payload_bytes": 56,
+            "pcie_h2d_metadata_bytes": 4,
+        }
+        backend._emit_compression_telemetry_deltas(first, region_id=4)
+        first_count = len(events)
+        self.assertGreater(first_count, 0)
+        self.assertTrue(
+            any(
+                event["stage"] == "codec"
+                and event["operation"] == "decision"
+                and event.get("codec_path") == "cpu_lz4_gpu_decode"
+                for event in events
+            )
+        )
+        self.assertTrue(
+            any(
+                event["stage"] == "generation"
+                and event["operation"] == "committed"
+                and event.get("generation_count") == 3
+                for event in events
+            )
+        )
+        self.assertTrue(
+            any(
+                event["stage"] == "compression"
+                and event["operation"] == "transfer_h2d"
+                and event["bytes"] == 60
+                and event.get("logical_bytes") == 100
+                and event.get("payload_bytes") == 56
+                and event.get("metadata_bytes") == 4
+                for event in events
+            )
+        )
+        self.assertTrue(all(event.get("region_id") == 4 for event in events))
+
+        backend._emit_compression_telemetry_deltas(first, region_id=5)
+        self.assertEqual(len(events), first_count)
+        second = dict(first)
+        second.update(
+            gpu_lz4_decisions=1,
+            generations_created=4,
+            generations_committed=3,
+            generations_discarded=1,
+            codec_events_recorded=2,
+            codec_events_retired=2,
+            logical_d2h_bytes=200,
+            pcie_d2h_bytes=80,
+            pcie_d2h_payload_bytes=72,
+            pcie_d2h_metadata_bytes=8,
+            rejected_candidate_logical_d2h_bytes=100,
+        )
+        backend._emit_compression_telemetry_deltas(second, region_id=5)
+        delta_events = events[first_count:]
+        self.assertTrue(
+            any(event.get("codec_path") == "nvcomp_gpu_codec" for event in delta_events)
+        )
+        self.assertTrue(
+            any(
+                event["stage"] == "generation"
+                and event["operation"] == "discarded"
+                and event.get("generation_count") == 1
+                for event in delta_events
+            )
+        )
+        self.assertTrue(
+            any(
+                event["operation"] == "transfer_d2h"
+                and event["bytes"] == 80
+                and event.get("logical_bytes") == 200
+                and event.get("payload_bytes") == 72
+                and event.get("metadata_bytes") == 8
+                and event.get("rejected_candidate_logical_bytes") == 100
+                for event in delta_events
+            )
+        )
+        backend._session = 0
 
     def test_chunked_tied_state_streams_one_complete_storage_with_offsets(self):
         provider = _ChunkedProvider()

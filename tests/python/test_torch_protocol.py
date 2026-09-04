@@ -6,6 +6,8 @@ import unittest
 
 from xvram.torch_protocol import (
     MAGIC,
+    MAGIC_V1,
+    MAGIC_V2,
     MAX_PAYLOAD_BYTES,
     Frame,
     MessageType,
@@ -18,9 +20,31 @@ from xvram.torch_protocol import (
 class TorchProtocolTests(unittest.TestCase):
     def test_round_trip(self) -> None:
         encoded = encode_frame(MessageType.PROGRESS, {"operation": 7, "ok": True})
+        self.assertEqual(MAGIC, MAGIC_V1)
+        self.assertEqual(encoded[:4], MAGIC_V1)
         frame = read_frame(io.BytesIO(encoded))
         self.assertEqual(frame.message_type, MessageType.PROGRESS)
         self.assertEqual(frame.payload, {"operation": 7, "ok": True})
+        self.assertEqual(frame.protocol_version, 1)
+
+    def test_compression_protocol_uses_xvt2_without_changing_v1_default(self) -> None:
+        encoded = encode_frame(
+            MessageType.PROGRESS,
+            {"operation": 8, "compression": "adaptive"},
+            protocol_version=2,
+        )
+        self.assertEqual(encoded[:4], MAGIC_V2)
+        self.assertEqual(encoded[4], 2)
+        frame = read_frame(io.BytesIO(encoded), expected_protocol_version=2)
+        self.assertEqual(frame.protocol_version, 2)
+        self.assertEqual(frame.payload["compression"], "adaptive")
+
+        with self.assertRaisesRegex(ProtocolError, "unexpected XVT2 frame"):
+            read_frame(io.BytesIO(encoded), expected_protocol_version=1)
+
+        default = encode_frame(MessageType.HEARTBEAT, {})
+        self.assertEqual(default[:4], MAGIC_V1)
+        self.assertEqual(default[4], 1)
 
     def test_truncation_is_rejected(self) -> None:
         encoded = encode_frame(MessageType.FINAL, {"report": {}})

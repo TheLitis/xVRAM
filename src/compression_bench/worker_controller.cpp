@@ -3,6 +3,7 @@
 #include "platform/worker_process.hpp"
 
 #include <cstddef>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,7 +40,15 @@ public:
         continue;
       }
       if (frame.type == WorkerFrameType::trace) {
-        if (trace_sink_ && !trace_sink_(frame.payload, error)) {
+        bool accepted = true;
+        try {
+          accepted = !trace_sink_ || trace_sink_(frame.payload, error);
+        } catch (...) {
+          accepted = false;
+          error = "compression trace sink threw while delivering a batch";
+        }
+        if (!accepted) {
+          trace_error_ = true;
           if (error.empty()) {
             error = "compression trace sink rejected a batch";
           }
@@ -78,6 +87,7 @@ public:
   std::uint64_t progress_frames_ = 0;
   std::uint64_t trace_frames_ = 0;
   std::uint64_t trace_bytes_ = 0;
+  bool trace_error_ = false;
 };
 
 } // namespace
@@ -99,6 +109,7 @@ WorkerControllerResult run_isolated_worker(const WorkerControllerOptions& option
   result.started = process.started;
   result.timed_out = process.timed_out;
   result.protocol_error = process.stream_error;
+  result.trace_error = consumer.trace_error_;
   result.process_exit_code = process.process_exit_code;
   result.latest_report_json = std::move(consumer.latest_report_json_);
   result.final = std::move(consumer.final_);
@@ -111,6 +122,71 @@ WorkerControllerResult run_isolated_worker(const WorkerControllerOptions& option
     result.protocol_error = true;
     result.error = "compression worker exited without a final protocol frame";
   }
+  return result;
+}
+
+FinalWorkerPayload finalize_controller_result(Report report, const WorkerControllerResult& worker,
+                                              const bool pretty,
+                                              const std::optional<std::string>& trace_io_error) {
+  const bool trace_failed = trace_io_error.has_value() || worker.trace_error;
+  if (!trace_failed && !worker.timed_out && worker.started && !worker.protocol_error &&
+      worker.final.has_value() && worker.process_exit_code == worker.final->exit_code) {
+    return *worker.final;
+  }
+
+  report.outcome = {};
+  report.outcome.status = "failed";
+  report.outcome.exit_code = 27;
+  report.outcome.stage = "protocol";
+  report.outcome.reason = "protocol_error";
+  report.outcome.operation = "worker_protocol";
+  report.outcome.message = worker.error.empty()
+                               ? "the isolated worker failed without a valid final report"
+                               : worker.error;
+  if (trace_failed) {
+    report.outcome.exit_code = 74;
+    report.outcome.reason = "trace_io_error";
+    report.outcome.stage = "trace";
+    report.outcome.operation = "write_trace";
+    report.outcome.message =
+        trace_io_error.has_value()
+            ? *trace_io_error
+            : (worker.error.empty() ? "the controller trace sink failed" : worker.error);
+  } else if (worker.timed_out) {
+    report.outcome.exit_code = 26;
+    report.outcome.status = "timeout";
+    report.outcome.reason = "timeout";
+    report.outcome.stage = "watchdog";
+    report.outcome.operation = "worker_watchdog";
+    report.outcome.message =
+        "the isolated worker exceeded its no-progress or overall deadline and was terminated";
+  } else if (!worker.started) {
+    report.outcome.reason = "platform_error";
+    report.outcome.operation = "start_worker";
+    report.outcome.message =
+        worker.error.empty() ? "the controller could not start the isolated worker" : worker.error;
+  } else if (!worker.protocol_error && worker.final.has_value()) {
+    report.outcome.operation = "worker_exit_code";
+    report.outcome.message =
+        "the worker process exit code does not match its final protocol report";
+  }
+  report.cleanup = {};
+  report.cleanup.trace_closed = !trace_failed;
+  report.cleanup.worker_terminated = true;
+  report.proof = {};
+  report.telemetry.trace_records_emitted =
+      report.configuration.trace_enabled ? std::nullopt : std::optional<std::uint64_t>{0U};
+  report.telemetry.trace_records_dropped = trace_failed ? 1U : 0U;
+  report.telemetry.trace_complete = !report.configuration.trace_enabled && !trace_failed;
+
+  FinalWorkerPayload result;
+  result.exit_code = report.outcome.exit_code;
+  std::ostringstream json;
+  write_json(report, json, pretty);
+  result.json = json.str();
+  std::ostringstream text;
+  write_text(report, text);
+  result.text = text.str();
   return result;
 }
 

@@ -74,6 +74,8 @@ def empty_report(status: str, exit_code: int, reason: str | None) -> dict[str, A
             "host_store_cap_bytes",
             "host_bytes_current",
             "host_bytes_peak",
+            "host_budget_bytes_current",
+            "host_budget_bytes_peak",
             "raw_bytes_current",
             "raw_bytes_peak",
             "compressed_bytes_current",
@@ -113,6 +115,8 @@ def empty_report(status: str, exit_code: int, reason: str | None) -> dict[str, A
             "verification_failures",
             "codec_slots_peak",
             "workspace_bytes_peak",
+            "device_slot_bytes_peak",
+            "device_slot_capacity_bytes",
         )
     }
     optional_telemetry = {
@@ -121,8 +125,13 @@ def empty_report(status: str, exit_code: int, reason: str | None) -> dict[str, A
             "total_elapsed_ms",
             "logical_h2d_bytes",
             "pcie_h2d_bytes",
+            "pcie_h2d_payload_bytes",
+            "pcie_h2d_metadata_bytes",
             "logical_d2h_bytes",
             "pcie_d2h_bytes",
+            "pcie_d2h_payload_bytes",
+            "pcie_d2h_metadata_bytes",
+            "rejected_candidate_logical_d2h_bytes",
             "mapping_count",
             "set_access_count",
             "unmap_count",
@@ -137,6 +146,10 @@ def empty_report(status: str, exit_code: int, reason: str | None) -> dict[str, A
             "budget_sample_count",
             "cache_target_bytes_minimum",
             "cache_target_bytes_maximum",
+            "safe_device_budget_bytes_minimum",
+            "managed_device_bytes_peak",
+            "device_reserve_bytes_peak",
+            "device_budget_violation_count",
             "trace_records_emitted",
             "trace_records_dropped",
             "trace_complete",
@@ -211,6 +224,7 @@ def empty_report(status: str, exit_code: int, reason: str | None) -> dict[str, A
             "cpu_decode_timing": timing(),
             "gpu_encode_timing": timing(),
             "gpu_decode_timing": timing(),
+            "verification_timing": timing(),
         },
         "telemetry": {
             **optional_telemetry,
@@ -304,6 +318,8 @@ def completed_report() -> dict[str, Any]:
             "host_store_cap_bytes": 16 * GIB,
             "host_bytes_current": 6 * GIB,
             "host_bytes_peak": 8 * GIB,
+            "host_budget_bytes_current": 7 * GIB,
+            "host_budget_bytes_peak": 9 * GIB,
             "raw_bytes_current": 0,
             "raw_bytes_peak": 2 * GIB,
             "compressed_bytes_current": 6 * GIB,
@@ -342,9 +358,12 @@ def completed_report() -> dict[str, Any]:
             "verification_failures": 0,
             "codec_slots_peak": 2,
             "workspace_bytes_peak": 128 * 1024**2,
+            "device_slot_bytes_peak": 256 * 1024**2,
+            "device_slot_capacity_bytes": 256 * 1024**2,
             "cpu_encode_timing": timing(256, 4.0),
             "gpu_encode_timing": timing(128, 2.0),
             "gpu_decode_timing": timing(384, 1.0),
+            "verification_timing": timing(512, 3.0),
         }
     )
     report["telemetry"].update(
@@ -352,8 +371,13 @@ def completed_report() -> dict[str, Any]:
             "total_elapsed_ms": 1000.0,
             "logical_h2d_bytes": 24 * GIB,
             "pcie_h2d_bytes": 6 * GIB,
+            "pcie_h2d_payload_bytes": 6 * GIB,
+            "pcie_h2d_metadata_bytes": 0,
             "logical_d2h_bytes": 12 * GIB,
             "pcie_d2h_bytes": 3 * GIB,
+            "pcie_d2h_payload_bytes": 3 * GIB,
+            "pcie_d2h_metadata_bytes": 0,
+            "rejected_candidate_logical_d2h_bytes": 0,
             "mapping_count": 384,
             "set_access_count": 384,
             "unmap_count": 384,
@@ -368,6 +392,10 @@ def completed_report() -> dict[str, Any]:
             "budget_sample_count": 10,
             "cache_target_bytes_minimum": 6 * GIB,
             "cache_target_bytes_maximum": 7 * GIB,
+            "safe_device_budget_bytes_minimum": 6 * GIB,
+            "managed_device_bytes_peak": 6 * GIB,
+            "device_reserve_bytes_peak": 512 * 1024**2,
+            "device_budget_violation_count": 0,
             "trace_records_emitted": 1024,
             "trace_records_dropped": 0,
             "trace_complete": True,
@@ -398,15 +426,43 @@ def semantic_errors(report: dict[str, Any]) -> list[str]:
             + workload["cpu_lz4_gpu_decisions"]
             + workload["gpu_lz4_decisions"]
         )
-        if decisions != workload["operations_retired"]:
+        # A codec decision is made for each authoritative-generation conversion and
+        # transfer path, not for cache hits or final CPU verification reads.  A dirty
+        # operation can also make both an H2D and a write-back decision.  Reconcile the
+        # per-workload values with the aggregate codec section below instead of
+        # incorrectly equating them with the benchmark's retired-operation count.
+        if workload["operations_retired"] > 0 and decisions == 0:
             errors.append("workload decision accounting")
-        if workload["pcie_h2d_bytes"] > workload["logical_h2d_bytes"]:
-            errors.append("H2D byte accounting")
-        if workload["pcie_d2h_bytes"] > workload["logical_d2h_bytes"]:
-            errors.append("D2H byte accounting")
+        if workload["never_compress_decisions"] > workload["raw_path_decisions"]:
+            errors.append("never-compress accounting")
         if workload["expected_digest128"] != workload["output_digest128"]:
             errors.append("digest mismatch")
     telemetry = report["telemetry"]
+    codec = report["codec"]
+    aggregate_fields = (
+        ("raw_path_decisions", "raw_path_decisions"),
+        ("cpu_lz4_gpu_decisions", "cpu_lz4_gpu_decisions"),
+        ("gpu_lz4_decisions", "gpu_lz4_decisions"),
+        ("never_compress_decisions", "never_compress_decisions"),
+        ("fallback_count", "fallback_count"),
+    )
+    for workload_field, codec_field in aggregate_fields:
+        if sum(workload[workload_field] for workload in workloads) != codec[codec_field]:
+            errors.append(f"aggregate {workload_field} accounting")
+    telemetry_fields = (
+        ("logical_h2d_bytes", "logical_h2d_bytes"),
+        ("pcie_h2d_bytes", "pcie_h2d_bytes"),
+        ("logical_d2h_bytes", "logical_d2h_bytes"),
+        ("pcie_d2h_bytes", "pcie_d2h_bytes"),
+        ("mappings", "mapping_count"),
+        ("set_access", "set_access_count"),
+        ("unmaps", "unmap_count"),
+        ("events_recorded", "event_record_count"),
+        ("events_retired", "event_retire_count"),
+    )
+    for workload_field, telemetry_field in telemetry_fields:
+        if sum(workload[workload_field] for workload in workloads) != telemetry[telemetry_field]:
+            errors.append(f"aggregate {telemetry_field} accounting")
     if not (
         telemetry["mapping_count"]
         == telemetry["set_access_count"]
@@ -415,6 +471,17 @@ def semantic_errors(report: dict[str, Any]) -> list[str]:
         errors.append("global mapping accounting")
     if telemetry["event_record_count"] != telemetry["event_retire_count"]:
         errors.append("global event accounting")
+    for direction in ("h2d", "d2h"):
+        total = telemetry[f"pcie_{direction}_bytes"]
+        payload = telemetry[f"pcie_{direction}_payload_bytes"]
+        metadata = telemetry[f"pcie_{direction}_metadata_bytes"]
+        logical = telemetry[f"logical_{direction}_bytes"]
+        if total != payload + metadata:
+            errors.append(f"{direction} transport split accounting")
+        if payload > logical:
+            errors.append(f"{direction} payload accounting")
+    if telemetry["rejected_candidate_logical_d2h_bytes"] > telemetry["logical_d2h_bytes"]:
+        errors.append("rejected candidate D2H accounting")
     backing = report["backing"]
     if backing["generations_created"] != (
         backing["generations_committed"] + backing["generations_discarded"]
@@ -424,7 +491,7 @@ def semantic_errors(report: dict[str, Any]) -> list[str]:
         backing["raw_bytes_current"] + backing["compressed_bytes_current"]
     ):
         errors.append("host byte accounting")
-    if backing["host_bytes_peak"] > backing["host_store_cap_bytes"]:
+    if backing["host_budget_bytes_peak"] > backing["host_store_cap_bytes"]:
         errors.append("host budget")
     if report["codec"]["workspace_bytes_peak"] > report["configuration"]["compression_scratch_cap_bytes"]:
         errors.append("codec workspace budget")
@@ -456,6 +523,8 @@ def main() -> int:
         return 64
     report_schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     trace_schema = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator.check_schema(report_schema)
+    jsonschema.Draft202012Validator.check_schema(trace_schema)
     validate_report = jsonschema.Draft202012Validator(report_schema).validate
     validate_trace = jsonschema.Draft202012Validator(trace_schema).validate
 
@@ -469,12 +538,21 @@ def main() -> int:
     for code, status, reason in (
         (23, "skipped", "prerequisite"),
         (24, "corruption", "reference_mismatch"),
-        (25, "oom", "host_budget"),
+        (25, "oom", "host_out_of_memory"),
+        (25, "oom", "device_out_of_memory"),
         (26, "timeout", "worker_timeout"),
         (27, "failed", "cuda_failure"),
+        (70, "failed", "internal_failure"),
         (74, "failed", "output_io"),
     ):
         validate_report(empty_report(status, code, reason))
+
+    cleanup_failure = empty_report("failed", 27, "cleanup_failure")
+    for key in cleanup_failure["cleanup"]:
+        cleanup_failure["cleanup"][key] = True
+    cleanup_failure["cleanup"]["complete"] = False
+    cleanup_failure["cleanup"]["mappings_removed"] = False
+    validate_report(cleanup_failure)
 
     trace = {
         "schema_version": 1,
@@ -504,6 +582,45 @@ def main() -> int:
     invalid["telemetry"]["mapping_count"] += 1
     if not semantic_errors(invalid):
         raise AssertionError("semantic accounting did not reject mismatched maps")
+
+    invalid = copy.deepcopy(completed)
+    invalid["telemetry"]["logical_h2d_bytes"] += 1
+    if not semantic_errors(invalid):
+        raise AssertionError("semantic accounting did not reject workload/global byte mismatch")
+
+    metadata_overhead = copy.deepcopy(completed)
+    metadata_overhead["workloads"][0]["stored_ratio"] = 1.0
+    metadata_overhead["proof"]["compressed_h2d_reduction_verified"] = None
+    metadata_overhead["workloads"][0]["pcie_h2d_bytes"] = (
+        metadata_overhead["workloads"][0]["logical_h2d_bytes"] + 4096
+    )
+    metadata_overhead["workloads"][0]["pcie_d2h_bytes"] = (
+        metadata_overhead["workloads"][0]["logical_d2h_bytes"] + 4096
+    )
+    metadata_overhead["telemetry"]["pcie_h2d_bytes"] = metadata_overhead["workloads"][0][
+        "pcie_h2d_bytes"
+    ]
+    metadata_overhead["telemetry"]["pcie_d2h_bytes"] = metadata_overhead["workloads"][0][
+        "pcie_d2h_bytes"
+    ]
+    metadata_overhead["telemetry"]["pcie_h2d_payload_bytes"] = metadata_overhead["telemetry"][
+        "logical_h2d_bytes"
+    ]
+    metadata_overhead["telemetry"]["pcie_h2d_metadata_bytes"] = 4096
+    metadata_overhead["telemetry"]["pcie_d2h_payload_bytes"] = metadata_overhead["telemetry"][
+        "logical_d2h_bytes"
+    ]
+    metadata_overhead["telemetry"]["pcie_d2h_metadata_bytes"] = 4096
+    if semantic_errors(metadata_overhead):
+        raise AssertionError("semantic accounting rejected valid codec metadata overhead")
+
+    incomplete_trace = empty_report("timeout", 26, "worker_timeout")
+    incomplete_trace["telemetry"]["trace_records_emitted"] = None
+    incomplete_trace["telemetry"]["trace_records_dropped"] = 0
+    incomplete_trace["telemetry"]["trace_complete"] = False
+    incomplete_trace["cleanup"]["trace_closed"] = True
+    incomplete_trace["cleanup"]["worker_terminated"] = True
+    validate_report(incomplete_trace)
 
     invalid = copy.deepcopy(completed)
     invalid["cuda_va"] = "0x123456789abcdef0"

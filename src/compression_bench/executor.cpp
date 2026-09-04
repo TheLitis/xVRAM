@@ -17,7 +17,6 @@
 #include <optional>
 #include <span>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1116,6 +1115,32 @@ void merge_cleanup_evidence(Cleanup& aggregate, const Cleanup& current) noexcept
 
 namespace detail {
 
+bool deliver_trace_record(const TraceCallback& callback, const TraceRecord& record) noexcept {
+  try {
+    if (!callback) {
+      return false;
+    }
+    callback(record);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+void apply_trace_delivery_result(ExecutorResult& result, const std::uint64_t produced,
+                                 const std::uint64_t dropped) {
+  result.telemetry.trace_records_emitted = produced >= dropped ? produced - dropped : 0U;
+  result.telemetry.trace_records_dropped = dropped;
+  result.telemetry.trace_complete = dropped == 0U;
+  if (result.status == "completed" && dropped != 0U) {
+    result.exit_code = exit_failure;
+    result.status = "failed";
+    result.reason = "trace_delivery_failure";
+    result.failure = ExecutionFailure{
+        "trace", "trace_callback", "one or more compression trace records could not be delivered"};
+  }
+}
+
 bool mixed_chunk_is_compressible(const std::uint64_t chunk_index,
                                  const bool phase_changed) noexcept {
   switch (chunk_index & 3U) {
@@ -1408,18 +1433,11 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
 
   std::uint64_t trace_sequence = 0;
   std::uint64_t trace_records_dropped = 0;
-  bool trace_complete = true;
   TraceCallback safe_trace;
   if (options.trace_enabled) {
     safe_trace = [&](const TraceRecord& record) noexcept {
-      try {
-        if (!trace) {
-          throw std::runtime_error("trace output callback is unavailable");
-        }
-        trace(record);
-      } catch (...) {
+      if (!detail::deliver_trace_record(trace, record)) {
         ++trace_records_dropped;
-        trace_complete = false;
       }
     };
   }
@@ -1737,10 +1755,6 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
         "codec", "reconcile_nvcomp_identity",
         "loaded nvCOMP instances did not expose one consistent verified version and SHA-256"};
   }
-  result.telemetry.trace_records_emitted =
-      trace_sequence >= trace_records_dropped ? trace_sequence - trace_records_dropped : 0U;
-  result.telemetry.trace_records_dropped = trace_records_dropped;
-  result.telemetry.trace_complete = trace_complete;
   if (!result.configuration.initial_cache_target_bytes.has_value()) {
     result.configuration.initial_cache_target_bytes = result.telemetry.cache_target_bytes_maximum;
   }
@@ -1780,13 +1794,7 @@ ExecutorResult run_executor(cuda::CudaApi& api, const ExecutorOptions& options,
     result.reason.reset();
     result.failure.reset();
   }
-  if (result.status == "completed" && !trace_complete) {
-    result.exit_code = exit_failure;
-    result.status = "failed";
-    result.reason = "trace_delivery_failure";
-    result.failure = ExecutionFailure{
-        "trace", "trace_callback", "one or more compression trace records could not be delivered"};
-  }
+  detail::apply_trace_delivery_result(result, trace_sequence, trace_records_dropped);
   return result;
 }
 

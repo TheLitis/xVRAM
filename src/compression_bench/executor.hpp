@@ -56,6 +56,13 @@ using TraceCallback = std::function<void(const TraceRecord&)>;
 
 namespace detail {
 
+// Callback failures are observable report failures, but must not unwind through CUDA callbacks
+// or prevent the runtime from draining and cleaning up its resources.
+[[nodiscard]] bool deliver_trace_record(const TraceCallback& callback,
+                                        const TraceRecord& record) noexcept;
+void apply_trace_delivery_result(ExecutorResult& result, std::uint64_t produced,
+                                 std::uint64_t dropped);
+
 // The mixed workload deliberately assigns one representation class to an entire residency chunk.
 // Two classes remain stable to provide cost-history anchors, while two swap in opposite directions
 // in the second content generation. This avoids the old fixture where every chunk had the same
@@ -75,9 +82,8 @@ inline constexpr std::uint32_t mixed_history_cycles = 64U;
 [[nodiscard]] Cleanup derive_runtime_cleanup(const residency::RuntimeTelemetry& telemetry,
                                              bool close_complete) noexcept;
 
-[[nodiscard]] bool
-derive_write_admission_proof(const residency::RuntimeTelemetry& telemetry,
-                             RequestedPath requested_path) noexcept;
+[[nodiscard]] bool derive_write_admission_proof(const residency::RuntimeTelemetry& telemetry,
+                                                RequestedPath requested_path) noexcept;
 
 void fill_workload_pattern(ScenarioKind scenario, std::uint64_t seed, std::uint64_t absolute_offset,
                            std::uint64_t chunk_bytes, std::span<std::byte> output,

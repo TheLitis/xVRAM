@@ -108,6 +108,17 @@ void test_rejections() {
   expect(incomplete_decoder.append(incomplete_bytes.data(), incomplete_bytes.size(), frames, error),
          "plan should decode");
   expect(!incomplete_decoder.finish(error), "stream without final should fail finish");
+
+  xvram::compression::FinalWorkerPayload invalid_exit;
+  invalid_exit.exit_code = 63;
+  invalid_exit.json = "{}";
+  expect(xvram::compression::encode_final_worker_payload(invalid_exit).empty(),
+         "final payload should reject exit codes outside the public contract");
+
+  xvram::compression::FinalWorkerPayload empty_report;
+  empty_report.exit_code = 27;
+  expect(xvram::compression::encode_final_worker_payload(empty_report).empty(),
+         "final payload should reject an empty report");
 }
 
 } // namespace

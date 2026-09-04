@@ -434,54 +434,14 @@ controller_failure_report(const xvram::compression::CliOptions& options, const i
     }
   }
 
-  int exit_code = exit_failure;
-  std::string json;
-  std::string text;
-  if (trace_io_failed) {
-    exit_code = exit_io;
-    const auto failure = controller_failure_report(options, exit_io, "trace_io_error", "trace",
-                                                   "write_trace", trace_error, false, 1U);
-    json = report_json(failure, options.pretty_json);
-    text = report_text(failure);
-  } else if (worker.timed_out) {
-    exit_code = exit_timeout;
-    const auto timeout = controller_failure_report(
-        options, exit_timeout, "timeout", "watchdog", "worker_watchdog",
-        "the isolated worker exceeded its no-progress or overall deadline and was terminated",
-        true);
-    json = report_json(timeout, options.pretty_json);
-    text = report_text(timeout);
-  } else if (!worker.started) {
-    const auto failure = controller_failure_report(
-        options, exit_failure, "platform_error", "protocol", "start_worker",
-        worker.error.empty() ? "the controller could not start the isolated worker" : worker.error,
-        true);
-    json = report_json(failure, options.pretty_json);
-    text = report_text(failure);
-  } else if (worker.protocol_error || !worker.final.has_value()) {
-    const auto failure = controller_failure_report(
-        options, exit_failure, "protocol_error", "protocol", "worker_protocol",
-        worker.error.empty() ? "the isolated worker failed without a valid final report"
-                             : worker.error,
-        true);
-    json = report_json(failure, options.pretty_json);
-    text = report_text(failure);
-  } else if (worker.process_exit_code != worker.final->exit_code) {
-    const auto failure = controller_failure_report(
-        options, exit_failure, "protocol_error", "protocol", "worker_exit_code",
-        "the worker process exit code does not match its final protocol report", true);
-    json = report_json(failure, options.pretty_json);
-    text = report_text(failure);
-  } else {
-    exit_code = worker.final->exit_code;
-    json = worker.final->json;
-    text = worker.final->text;
-  }
-  if (!emit_outputs(options, json, text)) {
+  const auto output = xvram::compression::finalize_controller_result(
+      make_base_report(options), worker, options.pretty_json,
+      trace_io_failed ? std::optional<std::string>{trace_error} : std::nullopt);
+  if (!emit_outputs(options, output.json, output.text)) {
     std::cerr << "error: failed while writing report output\n";
     return exit_io;
   }
-  return exit_code;
+  return output.exit_code;
 }
 
 } // namespace

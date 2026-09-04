@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compression_bench/worker_protocol.hpp"
+#include "xvram/compression/report.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -26,6 +27,7 @@ struct WorkerControllerResult {
   bool started = false;
   bool timed_out = false;
   bool protocol_error = false;
+  bool trace_error = false;
   int process_exit_code = 27;
   std::string latest_report_json;
   std::optional<FinalWorkerPayload> final;
@@ -37,5 +39,11 @@ struct WorkerControllerResult {
 };
 
 [[nodiscard]] WorkerControllerResult run_isolated_worker(const WorkerControllerOptions& options);
+
+// Resolve an already reaped worker into controller-owned output. Failure reports deliberately
+// retain unknown runtime cleanup: the controller can prove process termination, not GPU cleanup.
+[[nodiscard]] FinalWorkerPayload
+finalize_controller_result(Report base_report, const WorkerControllerResult& worker, bool pretty,
+                           const std::optional<std::string>& trace_io_error = std::nullopt);
 
 } // namespace xvram::compression
