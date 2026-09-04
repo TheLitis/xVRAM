@@ -204,6 +204,15 @@ void write_text(const Report& report, std::ostream& output) {
   output << '/';
   write_count(output, report.codec.gpu_decode_operations);
   output << '\n';
+  output << "  GPU verification samples/ms: ";
+  output << report.codec.verification_timing.sample_count;
+  output << " / ";
+  if (report.codec.verification_timing.total_ms.has_value()) {
+    output << *report.codec.verification_timing.total_ms;
+  } else {
+    output << "n/a";
+  }
+  output << '\n';
 
   output << "\nTransport:\n";
   output << "  H2D logical / PCIe:          ";
@@ -211,10 +220,22 @@ void write_text(const Report& report, std::ostream& output) {
   output << " / ";
   write_bytes(output, report.telemetry.pcie_h2d_bytes);
   output << '\n';
+  output << "  H2D payload / metadata:      ";
+  write_bytes(output, report.telemetry.pcie_h2d_payload_bytes);
+  output << " / ";
+  write_bytes(output, report.telemetry.pcie_h2d_metadata_bytes);
+  output << '\n';
   output << "  D2H logical / PCIe:          ";
   write_bytes(output, report.telemetry.logical_d2h_bytes);
   output << " / ";
   write_bytes(output, report.telemetry.pcie_d2h_bytes);
+  output << '\n';
+  output << "  D2H payload / metadata / rejected logical: ";
+  write_bytes(output, report.telemetry.pcie_d2h_payload_bytes);
+  output << " / ";
+  write_bytes(output, report.telemetry.pcie_d2h_metadata_bytes);
+  output << " / ";
+  write_bytes(output, report.telemetry.rejected_candidate_logical_d2h_bytes);
   output << '\n';
   output << "  map/access/unmap/events:     ";
   write_count(output, report.telemetry.mapping_count);

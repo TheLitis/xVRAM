@@ -134,9 +134,9 @@
             "dirty-writeback", "mixed", "budget-pressure"
           ]
         },
-        "passes": { "type": "integer", "minimum": 1 },
-        "warmup_passes": { "type": "integer", "minimum": 0 },
-        "measurement_passes": { "type": "integer", "minimum": 1 },
+        "passes": { "type": "integer", "minimum": 2, "maximum": 8 },
+        "warmup_passes": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "measurement_passes": { "type": "integer", "minimum": 1, "maximum": 16 },
         "host_store_cap_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "host_headroom_bytes": { "type": "integer", "minimum": 0 },
         "device_headroom_bytes": { "type": "integer", "minimum": 0 },
@@ -238,6 +238,7 @@
       "additionalProperties": false,
       "required": [
         "logical_bytes", "host_store_cap_bytes", "host_bytes_current", "host_bytes_peak",
+        "host_budget_bytes_current", "host_budget_bytes_peak",
         "raw_bytes_current", "raw_bytes_peak", "compressed_bytes_current",
         "compressed_bytes_peak", "spill_reserved_bytes_peak", "conversion_scratch_bytes_peak",
         "invalid_chunks", "implicit_zero_chunks", "raw_chunks", "lz4_chunks",
@@ -249,6 +250,8 @@
         "host_store_cap_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "host_bytes_current": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "host_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "host_budget_bytes_current": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "host_budget_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "raw_bytes_current": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "raw_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "compressed_bytes_current": { "$ref": "#/$defs/nullableNonNegativeInteger" },
@@ -290,8 +293,9 @@
         "gpu_encode_operations", "gpu_decode_operations", "raw_path_decisions",
         "cpu_lz4_gpu_decisions", "gpu_lz4_decisions", "never_compress_decisions",
         "calibration_samples", "fallback_count", "verification_failures", "codec_slots_peak",
-        "workspace_bytes_peak", "cpu_encode_timing", "cpu_decode_timing",
-        "gpu_encode_timing", "gpu_decode_timing"
+        "workspace_bytes_peak", "device_slot_bytes_peak", "device_slot_capacity_bytes",
+        "cpu_encode_timing", "cpu_decode_timing",
+        "gpu_encode_timing", "gpu_decode_timing", "verification_timing"
       ],
       "properties": {
         "container_version": { "const": "xvram_lz4_blocks_v1" },
@@ -318,22 +322,29 @@
         "verification_failures": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "codec_slots_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "workspace_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "device_slot_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "device_slot_capacity_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "cpu_encode_timing": { "$ref": "#/$defs/timing" },
         "cpu_decode_timing": { "$ref": "#/$defs/timing" },
         "gpu_encode_timing": { "$ref": "#/$defs/timing" },
-        "gpu_decode_timing": { "$ref": "#/$defs/timing" }
+        "gpu_decode_timing": { "$ref": "#/$defs/timing" },
+        "verification_timing": { "$ref": "#/$defs/timing" }
       }
     },
     "telemetry": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "total_elapsed_ms", "logical_h2d_bytes", "pcie_h2d_bytes", "logical_d2h_bytes",
-        "pcie_d2h_bytes", "mapping_count", "set_access_count", "unmap_count",
+        "total_elapsed_ms", "logical_h2d_bytes", "pcie_h2d_bytes",
+        "pcie_h2d_payload_bytes", "pcie_h2d_metadata_bytes", "logical_d2h_bytes",
+        "pcie_d2h_bytes", "pcie_d2h_payload_bytes", "pcie_d2h_metadata_bytes",
+        "rejected_candidate_logical_d2h_bytes", "mapping_count", "set_access_count", "unmap_count",
         "event_record_count", "event_retire_count", "handle_reuse_count",
         "unsafe_remap_count", "unsafe_transition_count", "writeback_count",
         "target_shrink_count", "target_grow_count", "budget_sample_count",
-        "cache_target_bytes_minimum", "cache_target_bytes_maximum", "trace_records_emitted",
+        "cache_target_bytes_minimum", "cache_target_bytes_maximum",
+        "safe_device_budget_bytes_minimum", "managed_device_bytes_peak",
+        "device_reserve_bytes_peak", "device_budget_violation_count", "trace_records_emitted",
         "trace_records_dropped", "trace_complete", "raw_transfer_timing",
         "compressed_transfer_timing", "writeback_timing"
       ],
@@ -341,8 +352,13 @@
         "total_elapsed_ms": { "$ref": "#/$defs/nullableNonNegativeNumber" },
         "logical_h2d_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "pcie_h2d_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pcie_h2d_payload_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pcie_h2d_metadata_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "logical_d2h_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "pcie_d2h_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pcie_d2h_payload_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "pcie_d2h_metadata_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "rejected_candidate_logical_d2h_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "mapping_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "set_access_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "unmap_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
@@ -357,6 +373,10 @@
         "budget_sample_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "cache_target_bytes_minimum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "cache_target_bytes_maximum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "safe_device_budget_bytes_minimum": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "managed_device_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "device_reserve_bytes_peak": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "device_budget_violation_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "trace_records_emitted": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "trace_records_dropped": { "$ref": "#/$defs/nullableNonNegativeInteger" },
         "trace_complete": { "$ref": "#/$defs/nullableBoolean" },
@@ -494,13 +514,17 @@
         "proof": { "properties": {
           "logical_data_exceeds_vram": { "const": true },
           "cache_smaller_than_logical": { "const": true },
+          "no_expansion_stored": { "const": true },
           "generation_atomicity_verified": { "const": true },
+          "write_admission_verified": { "const": true },
           "stable_virtual_addresses_verified": { "const": true },
           "maps_match_set_access": { "const": true },
           "event_boundaries_verified": { "const": true },
           "host_budget_respected": { "const": true },
           "device_budget_respected": { "const": true },
           "all_workloads_match_reference": { "const": true },
+          "path_digests_match": { "const": true },
+          "policy_digests_match": { "const": true },
           "raw_virtual_addresses_omitted": { "const": true }
         } },
         "cleanup": { "properties": {
@@ -523,7 +547,10 @@
         } },
         "telemetry": { "properties": {
           "unsafe_remap_count": { "const": 0 },
-          "unsafe_transition_count": { "const": 0 }
+          "unsafe_transition_count": { "const": 0 },
+          "device_budget_violation_count": { "const": 0 },
+          "trace_records_dropped": { "const": 0 },
+          "trace_complete": { "const": true }
         } }
       }
     }

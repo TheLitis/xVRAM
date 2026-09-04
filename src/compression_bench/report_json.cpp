@@ -10,11 +10,17 @@
 namespace xvram::compression {
 namespace {
 
+[[nodiscard]] std::string_view safe_text(const std::string_view value) noexcept {
+  return contains_forbidden_runtime_identity(value)
+             ? std::string_view{"[redacted runtime identity]"}
+             : value;
+}
+
 template <typename T> void write_optional(JsonWriter& writer, const std::optional<T>& value) {
   if (!value.has_value()) {
     writer.null_value();
   } else if constexpr (std::is_same_v<T, std::string>) {
-    writer.value(*value);
+    writer.value(safe_text(*value));
   } else if constexpr (std::is_same_v<T, bool>) {
     writer.value(*value);
   } else if constexpr (std::is_floating_point_v<T>) {
@@ -212,6 +218,8 @@ void write_backing(JsonWriter& writer, const BackingStatistics& value) {
   optional_field(writer, "host_store_cap_bytes", value.host_store_cap_bytes);
   optional_field(writer, "host_bytes_current", value.host_bytes_current);
   optional_field(writer, "host_bytes_peak", value.host_bytes_peak);
+  optional_field(writer, "host_budget_bytes_current", value.host_budget_bytes_current);
+  optional_field(writer, "host_budget_bytes_peak", value.host_budget_bytes_peak);
   optional_field(writer, "raw_bytes_current", value.raw_bytes_current);
   optional_field(writer, "raw_bytes_peak", value.raw_bytes_peak);
   optional_field(writer, "compressed_bytes_current", value.compressed_bytes_current);
@@ -256,6 +264,8 @@ void write_codec(JsonWriter& writer, const CodecStatistics& value) {
   optional_field(writer, "verification_failures", value.verification_failures);
   optional_field(writer, "codec_slots_peak", value.codec_slots_peak);
   optional_field(writer, "workspace_bytes_peak", value.workspace_bytes_peak);
+  optional_field(writer, "device_slot_bytes_peak", value.device_slot_bytes_peak);
+  optional_field(writer, "device_slot_capacity_bytes", value.device_slot_capacity_bytes);
   writer.key("cpu_encode_timing");
   write_timing(writer, value.cpu_encode_timing);
   writer.key("cpu_decode_timing");
@@ -264,6 +274,8 @@ void write_codec(JsonWriter& writer, const CodecStatistics& value) {
   write_timing(writer, value.gpu_encode_timing);
   writer.key("gpu_decode_timing");
   write_timing(writer, value.gpu_decode_timing);
+  writer.key("verification_timing");
+  write_timing(writer, value.verification_timing);
   writer.end_object();
 }
 
@@ -272,8 +284,14 @@ void write_telemetry(JsonWriter& writer, const Telemetry& value) {
   optional_field(writer, "total_elapsed_ms", value.total_elapsed_ms);
   optional_field(writer, "logical_h2d_bytes", value.logical_h2d_bytes);
   optional_field(writer, "pcie_h2d_bytes", value.pcie_h2d_bytes);
+  optional_field(writer, "pcie_h2d_payload_bytes", value.pcie_h2d_payload_bytes);
+  optional_field(writer, "pcie_h2d_metadata_bytes", value.pcie_h2d_metadata_bytes);
   optional_field(writer, "logical_d2h_bytes", value.logical_d2h_bytes);
   optional_field(writer, "pcie_d2h_bytes", value.pcie_d2h_bytes);
+  optional_field(writer, "pcie_d2h_payload_bytes", value.pcie_d2h_payload_bytes);
+  optional_field(writer, "pcie_d2h_metadata_bytes", value.pcie_d2h_metadata_bytes);
+  optional_field(writer, "rejected_candidate_logical_d2h_bytes",
+                 value.rejected_candidate_logical_d2h_bytes);
   optional_field(writer, "mapping_count", value.mapping_count);
   optional_field(writer, "set_access_count", value.set_access_count);
   optional_field(writer, "unmap_count", value.unmap_count);
@@ -288,6 +306,11 @@ void write_telemetry(JsonWriter& writer, const Telemetry& value) {
   optional_field(writer, "budget_sample_count", value.budget_sample_count);
   optional_field(writer, "cache_target_bytes_minimum", value.cache_target_bytes_minimum);
   optional_field(writer, "cache_target_bytes_maximum", value.cache_target_bytes_maximum);
+  optional_field(writer, "safe_device_budget_bytes_minimum",
+                 value.safe_device_budget_bytes_minimum);
+  optional_field(writer, "managed_device_bytes_peak", value.managed_device_bytes_peak);
+  optional_field(writer, "device_reserve_bytes_peak", value.device_reserve_bytes_peak);
+  optional_field(writer, "device_budget_violation_count", value.device_budget_violation_count);
   optional_field(writer, "trace_records_emitted", value.trace_records_emitted);
   optional_field(writer, "trace_records_dropped", value.trace_records_dropped);
   optional_field(writer, "trace_complete", value.trace_complete);
@@ -373,11 +396,11 @@ void write_diagnostics(JsonWriter& writer, const std::vector<probe::Diagnostic>&
     writer.key("level");
     writer.value(diagnostic_level_name(value.level));
     writer.key("component");
-    writer.value(value.component);
+    writer.value(safe_text(value.component));
     writer.key("operation");
-    writer.value(value.operation);
+    writer.value(safe_text(value.operation));
     writer.key("message");
-    writer.value(value.message);
+    writer.value(safe_text(value.message));
     optional_field(writer, "code", value.code);
     optional_field(writer, "device_ordinal", value.device_ordinal);
     writer.end_object();
@@ -440,7 +463,7 @@ void write_trace_json(const TraceRecord& record, std::ostream& output) {
   unsigned_field(writer, "sequence", record.sequence);
   unsigned_field(writer, "monotonic_time_ns", record.monotonic_time_ns);
   writer.key("event");
-  writer.value(record.event);
+  writer.value(safe_text(record.event));
   optional_field(writer, "allocation_id", record.allocation_id);
   optional_field(writer, "chunk_index", record.chunk_index);
   optional_field(writer, "operation_id", record.operation_id);

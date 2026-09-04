@@ -59,6 +59,23 @@ void append_u64(std::string& output, const std::uint64_t value) {
   return type == WorkerFrameType::trace ? maximum_trace_batch_bytes : maximum_worker_payload_bytes;
 }
 
+[[nodiscard]] bool valid_exit_code(const std::int32_t exit_code) noexcept {
+  switch (exit_code) {
+  case 0:
+  case 23:
+  case 24:
+  case 25:
+  case 26:
+  case 27:
+  case 64:
+  case 70:
+  case 74:
+    return true;
+  default:
+    return false;
+  }
+}
+
 } // namespace
 
 bool write_worker_frame(std::ostream& output, const WorkerFrameType type,
@@ -83,7 +100,8 @@ bool write_worker_frame(std::ostream& output, const WorkerFrameType type,
 
 std::string encode_final_worker_payload(const FinalWorkerPayload& payload) {
   constexpr std::size_t final_header_bytes = 12U;
-  if (payload.json.size() > maximum_worker_payload_bytes - final_header_bytes ||
+  if (!valid_exit_code(payload.exit_code) || payload.json.empty() ||
+      payload.json.size() > maximum_worker_payload_bytes - final_header_bytes ||
       payload.text.size() >
           maximum_worker_payload_bytes - final_header_bytes - payload.json.size() ||
       payload.json.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -117,6 +135,14 @@ std::optional<FinalWorkerPayload> decode_final_worker_payload(const std::string_
   const std::uint64_t expected_size = 12ULL + json_size + text_size;
   if (expected_size != payload.size()) {
     error = "final compression worker payload lengths are invalid";
+    return std::nullopt;
+  }
+  if (!valid_exit_code(static_cast<std::int32_t>(exit_code))) {
+    error = "final compression worker payload contains an invalid exit code";
+    return std::nullopt;
+  }
+  if (json_size == 0U) {
+    error = "final compression worker payload contains an empty report";
     return std::nullopt;
   }
   FinalWorkerPayload output;

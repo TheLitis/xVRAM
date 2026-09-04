@@ -75,15 +75,42 @@
     {
       "if": {
         "properties": {
+          "event": {
+            "enum": [
+              "encode_submit", "encode_retire", "decode_submit", "decode_retire",
+              "h2d_submit", "h2d_retire", "d2h_submit", "d2h_retire"
+            ]
+          }
+        },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "operation_id": { "type": "integer", "minimum": 1 },
+        "source_generation": { "type": "integer", "minimum": 1 },
+        "slot_generation": { "type": "integer", "minimum": 1 },
+        "path": { "enum": ["raw", "cpu_lz4_gpu_decode", "nvcomp_gpu_codec"] },
+        "logical_bytes": { "type": "integer", "minimum": 1 },
+        "physical_bytes": { "type": "integer", "minimum": 0 }
+      } }
+    },
+    {
+      "if": {
+        "properties": {
           "event": { "enum": ["encode_submit", "encode_retire", "decode_submit", "decode_retire"] }
         },
         "required": ["event"]
       },
       "then": { "properties": {
-        "slot_generation": { "type": "integer", "minimum": 1 },
-        "path": { "enum": ["cpu_lz4_gpu_decode", "nvcomp_gpu_codec"] },
-        "logical_bytes": { "type": "integer", "minimum": 1 },
-        "physical_bytes": { "type": "integer", "minimum": 0 }
+        "path": { "enum": ["cpu_lz4_gpu_decode", "nvcomp_gpu_codec"] }
+      } }
+    },
+    {
+      "if": {
+        "properties": { "event": { "enum": ["encode_submit", "encode_retire", "d2h_submit", "d2h_retire"] } },
+        "required": ["event"]
+      },
+      "then": { "properties": {
+        "target_generation": { "type": "integer", "minimum": 1 }
       } }
     },
     {

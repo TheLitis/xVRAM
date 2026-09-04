@@ -6,6 +6,7 @@
 #include <iosfwd>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace xvram::compression {
@@ -114,6 +115,8 @@ struct BackingStatistics {
   std::optional<std::uint64_t> host_store_cap_bytes;
   std::optional<std::uint64_t> host_bytes_current;
   std::optional<std::uint64_t> host_bytes_peak;
+  std::optional<std::uint64_t> host_budget_bytes_current;
+  std::optional<std::uint64_t> host_budget_bytes_peak;
   std::optional<std::uint64_t> raw_bytes_current;
   std::optional<std::uint64_t> raw_bytes_peak;
   std::optional<std::uint64_t> compressed_bytes_current;
@@ -154,18 +157,26 @@ struct CodecStatistics {
   std::optional<std::uint64_t> verification_failures;
   std::optional<std::uint64_t> codec_slots_peak;
   std::optional<std::uint64_t> workspace_bytes_peak;
+  std::optional<std::uint64_t> device_slot_bytes_peak;
+  std::optional<std::uint64_t> device_slot_capacity_bytes;
   TimingSummary cpu_encode_timing;
   TimingSummary cpu_decode_timing;
   TimingSummary gpu_encode_timing;
   TimingSummary gpu_decode_timing;
+  TimingSummary verification_timing;
 };
 
 struct Telemetry {
   std::optional<double> total_elapsed_ms;
   std::optional<std::uint64_t> logical_h2d_bytes;
   std::optional<std::uint64_t> pcie_h2d_bytes;
+  std::optional<std::uint64_t> pcie_h2d_payload_bytes;
+  std::optional<std::uint64_t> pcie_h2d_metadata_bytes;
   std::optional<std::uint64_t> logical_d2h_bytes;
   std::optional<std::uint64_t> pcie_d2h_bytes;
+  std::optional<std::uint64_t> pcie_d2h_payload_bytes;
+  std::optional<std::uint64_t> pcie_d2h_metadata_bytes;
+  std::optional<std::uint64_t> rejected_candidate_logical_d2h_bytes;
   std::optional<std::uint64_t> mapping_count;
   std::optional<std::uint64_t> set_access_count;
   std::optional<std::uint64_t> unmap_count;
@@ -180,6 +191,10 @@ struct Telemetry {
   std::optional<std::uint64_t> budget_sample_count;
   std::optional<std::uint64_t> cache_target_bytes_minimum;
   std::optional<std::uint64_t> cache_target_bytes_maximum;
+  std::optional<std::uint64_t> safe_device_budget_bytes_minimum;
+  std::optional<std::uint64_t> managed_device_bytes_peak;
+  std::optional<std::uint64_t> device_reserve_bytes_peak;
+  std::optional<std::uint64_t> device_budget_violation_count;
   std::optional<std::uint64_t> trace_records_emitted;
   std::optional<std::uint64_t> trace_records_dropped;
   std::optional<bool> trace_complete;
@@ -283,6 +298,7 @@ struct TraceRecord {
 };
 
 void finalize_proof(Report& report);
+[[nodiscard]] bool contains_forbidden_runtime_identity(std::string_view text) noexcept;
 [[nodiscard]] std::vector<std::string> validate_success_semantics(const Report& report);
 void write_json(const Report& report, std::ostream& output, bool pretty);
 void write_text(const Report& report, std::ostream& output);

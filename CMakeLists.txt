@@ -532,6 +532,26 @@ target_link_libraries(xvram_compression_contract PUBLIC xvram_probe_lib)
 xvram_enable_warnings(xvram_compression_contract)
 
 add_library(
+  xvram_compression_bench STATIC
+  src/compression_bench/options.cpp
+  src/compression_bench/executor.cpp
+  src/compression_bench/worker_controller.cpp)
+target_compile_features(xvram_compression_bench PUBLIC cxx_std_20)
+target_include_directories(
+  xvram_compression_bench PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                 "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(xvram_compression_bench SYSTEM PUBLIC "${XVRAM_CUDA_INCLUDE_DIR}")
+target_link_libraries(
+  xvram_compression_bench PUBLIC xvram_compression_contract
+  PRIVATE xvram_residency_core xvram_worker_process Threads::Threads)
+xvram_enable_warnings(xvram_compression_bench)
+
+add_executable(xvram-compression-bench src/compression_bench/main.cpp)
+target_link_libraries(xvram-compression-bench PRIVATE xvram_compression_bench)
+xvram_enable_warnings(xvram-compression-bench)
+xvram_stage_nvcomp(xvram-compression-bench)
+
+add_library(
   xvram_vmm_poc STATIC
   src/vmm_poc/executor.cpp
   src/vmm_poc/outcome.cpp
@@ -874,8 +894,8 @@ if(XVRAM_FETCH_LZ4)
 endif()
 
 install(
-  TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench xvram-gemm-bench xvram_sdk
-          xvram_torch_allocator
+  TARGETS xvram-probe xvram-vmm-poc xvram-cache-bench xvram-gemm-bench
+          xvram-compression-bench xvram_sdk xvram_torch_allocator
   EXPORT xVRAMTargets
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
