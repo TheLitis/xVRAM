@@ -121,11 +121,49 @@ void test_rejections() {
          "final payload should reject an empty report");
 }
 
+void test_per_case_progress_payload_reset() {
+  using xvram::compression::WorkerFrameType;
+  std::ostringstream encoded(std::ios::binary);
+  expect(xvram::compression::write_worker_frame(encoded, WorkerFrameType::plan, 1, "{}"),
+         "multi-case plan should encode");
+  expect(xvram::compression::write_worker_frame(
+             encoded, WorkerFrameType::progress, 2,
+             R"({"workloads":[{"scenario":"reuse","operations_retired":400}]})"),
+         "completed first-case progress should encode");
+  expect(
+      xvram::compression::write_worker_frame(
+          encoded, WorkerFrameType::progress, 3,
+          R"({"workloads":[{"scenario":"reuse","operations_retired":400},{"scenario":"mixed","operations_retired":0}]})"),
+      "new case may restart its operation counter at zero");
+  expect(
+      xvram::compression::write_worker_frame(
+          encoded, WorkerFrameType::progress, 4,
+          R"({"workloads":[{"scenario":"reuse","operations_retired":400},{"scenario":"mixed","operations_retired":1}]})"),
+      "new-case progress should continue on the global frame sequence");
+  xvram::compression::FinalWorkerPayload final;
+  final.exit_code = 0;
+  final.json = R"({"outcome":{"status":"completed"}})";
+  expect(xvram::compression::write_worker_frame(
+             encoded, WorkerFrameType::final, 5,
+             xvram::compression::encode_final_worker_payload(final)),
+         "multi-case final should encode");
+
+  const std::string bytes = encoded.str();
+  xvram::compression::WorkerFrameDecoder decoder;
+  std::vector<xvram::compression::WorkerFrame> frames;
+  std::string error;
+  expect(decoder.append(bytes.data(), bytes.size(), frames, error),
+         "per-case progress reset must not be mistaken for a protocol sequence reset");
+  expect(decoder.finish(error), "multi-case stream should finish");
+  expect(frames.size() == 5U, "all multi-case frames should be accepted");
+}
+
 } // namespace
 
 int main() {
   test_round_trip();
   test_rejections();
+  test_per_case_progress_payload_reset();
   if (failures != 0) {
     std::cerr << failures << " compression worker protocol test(s) failed\n";
     return EXIT_FAILURE;

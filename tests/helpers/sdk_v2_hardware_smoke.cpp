@@ -3,14 +3,18 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -185,8 +189,9 @@ xvram_status XVRAM_CALL observe_callback(const xvram_transaction_context_v1* con
          api.v1.session_release != nullptr && api.v1.allocation_create != nullptr &&
          api.v1.allocation_write != nullptr && api.v1.allocation_read != nullptr &&
          api.v1.allocation_release != nullptr && api.v1.transaction_execute != nullptr &&
-         api.v1.session_drain != nullptr && api.session_create_v2 != nullptr &&
-         api.session_get_telemetry_v2 != nullptr;
+         api.v1.transaction_submit != nullptr && api.v1.operation_poll != nullptr &&
+         api.v1.operation_release != nullptr && api.v1.session_drain != nullptr &&
+         api.session_create_v2 != nullptr && api.session_get_telemetry_v2 != nullptr;
 }
 
 [[nodiscard]] bool verify_fill(const std::vector<std::byte>& bytes,
@@ -194,6 +199,98 @@ xvram_status XVRAM_CALL observe_callback(const xvram_transaction_context_v1* con
   return std::all_of(bytes.begin(), bytes.end(), [expected](const std::byte value) {
     return std::to_integer<unsigned char>(value) == expected;
   });
+}
+
+[[nodiscard]] bool consistent_h2d_snapshot(const xvram_session_telemetry_v2& value) noexcept {
+  // The production runtime increments these together, and publishes snapshots at
+  // retired work-item boundaries. The prefix and extension must share that epoch.
+  // D2H is intentionally excluded: rejected compressed candidates add logical
+  // D2H attempts without adding another completed v1 writeback.
+  return value.v1.bytes_h2d == value.logical_h2d_bytes;
+}
+
+struct TelemetrySamples {
+  std::uint64_t total = 0;
+  std::uint64_t while_pending = 0;
+};
+
+[[nodiscard]] constexpr bool operation_is_terminal(const xvram_operation_state state) noexcept {
+  return state == XVRAM_OPERATION_COMPLETED || state == XVRAM_OPERATION_CANCELLED ||
+         state == XVRAM_OPERATION_FAILED;
+}
+
+[[nodiscard]] constexpr int quarantine_exit_code(const xvram_status status) noexcept {
+  return status == XVRAM_STATUS_TIMEOUT ? 26 : 27;
+}
+
+[[noreturn]] void quarantine_pending_operation(const char* reason,
+                                               const xvram_status status) noexcept {
+  // operation_release only drops the public handle; it neither cancels nor drains the worker.
+  // Do not unwind Mutation, unload its CUDA driver, or invoke session cleanup while a callback
+  // may still use that state. This standalone hardware helper is the quarantine boundary.
+  const int exit_code = quarantine_exit_code(status);
+  (void)std::fprintf(stderr,
+                     "SDK v2 smoke quarantine: %s (status=%d, exit=%d); operation completion "
+                     "is unknown, terminating without callback-state cleanup\n",
+                     reason, static_cast<int>(status), exit_code);
+  (void)std::fflush(stderr);
+  std::_Exit(exit_code);
+}
+
+[[nodiscard]] xvram_status execute_with_live_telemetry(const xvram_api_v2& api,
+                                                       const xvram_session session,
+                                                       const xvram_transaction_desc_v1& transaction,
+                                                       TelemetrySamples& samples) {
+  xvram_operation operation = nullptr;
+  const xvram_status submitted = api.v1.transaction_submit(session, &transaction, &operation);
+  if (submitted != XVRAM_STATUS_SUCCESS) {
+    return submitted;
+  }
+  struct OperationGuard {
+    const xvram_api_v2& api;
+    xvram_operation operation;
+    ~OperationGuard() {
+      api.v1.operation_release(operation);
+    }
+  } guard{api, operation};
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(operation_timeout_ms);
+  xvram_status telemetry_error = XVRAM_STATUS_SUCCESS;
+  for (;;) {
+    xvram_operation_info_v1 info = XVRAM_OPERATION_INFO_V1_INIT;
+    const xvram_status polled = api.v1.operation_poll(operation, &info);
+    if (polled != XVRAM_STATUS_SUCCESS) {
+      quarantine_pending_operation("operation_poll failed", polled);
+    }
+    const bool pending =
+        info.state == XVRAM_OPERATION_QUEUED || info.state == XVRAM_OPERATION_RUNNING;
+    if (!pending && !operation_is_terminal(info.state)) {
+      quarantine_pending_operation("operation_poll returned an unknown state",
+                                   XVRAM_STATUS_INTERNAL);
+    }
+    xvram_session_telemetry_v2 snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    const xvram_status observed = api.session_get_telemetry_v2(session, &snapshot);
+    if (observed != XVRAM_STATUS_SUCCESS) {
+      telemetry_error = observed;
+    } else {
+      ++samples.total;
+      samples.while_pending += pending ? 1U : 0U;
+      if (!consistent_h2d_snapshot(snapshot)) {
+        telemetry_error = XVRAM_STATUS_INTERNAL;
+      }
+    }
+    // A failed consistency observation must not return while the callback still
+    // uses the caller's Mutation object. Retire the operation before failing.
+    if (!pending) {
+      return info.result == XVRAM_STATUS_SUCCESS ? telemetry_error : info.result;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      quarantine_pending_operation("operation exceeded its 120-second deadline",
+                                   XVRAM_STATUS_TIMEOUT);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
 }
 
 void print_session_error(const xvram_api_v2& api, const xvram_session session,
@@ -234,6 +331,14 @@ struct Handles {
 };
 
 [[nodiscard]] int self_test() {
+  static_assert(operation_is_terminal(XVRAM_OPERATION_COMPLETED));
+  static_assert(operation_is_terminal(XVRAM_OPERATION_CANCELLED));
+  static_assert(operation_is_terminal(XVRAM_OPERATION_FAILED));
+  static_assert(!operation_is_terminal(XVRAM_OPERATION_QUEUED));
+  static_assert(!operation_is_terminal(XVRAM_OPERATION_RUNNING));
+  static_assert(!operation_is_terminal(static_cast<xvram_operation_state>(99)));
+  static_assert(quarantine_exit_code(XVRAM_STATUS_TIMEOUT) == 26);
+  static_assert(quarantine_exit_code(XVRAM_STATUS_CUDA_ERROR) == 27);
   xvram_api_v2 api{};
   if (xvram_get_api(XVRAM_ABI_VERSION_2, static_cast<std::uint32_t>(sizeof(api)), &api) !=
           XVRAM_STATUS_SUCCESS ||
@@ -261,6 +366,18 @@ struct Handles {
   }
   fixture[128] = std::byte{0xA5};
   if (verify_fill(fixture, 0x5A)) {
+    return 1;
+  }
+  xvram_session_telemetry_v2 coherent{};
+  coherent.v1.bytes_h2d = chunk_bytes;
+  coherent.logical_h2d_bytes = chunk_bytes;
+  coherent.v1.bytes_d2h = chunk_bytes;
+  coherent.logical_d2h_bytes = 2U * chunk_bytes;
+  if (!consistent_h2d_snapshot(coherent)) {
+    return 1;
+  }
+  coherent.logical_h2d_bytes += chunk_bytes;
+  if (consistent_h2d_snapshot(coherent)) {
     return 1;
   }
   std::cout << "xvram SDK v2 smoke contract: ok\n";
@@ -327,6 +444,7 @@ struct Handles {
   }
 
   std::vector<std::byte> host_chunk(static_cast<std::size_t>(chunk_bytes));
+  TelemetrySamples telemetry_samples;
   for (std::uint64_t chunk = 0; chunk < chunk_count; ++chunk) {
     const unsigned char initial = static_cast<unsigned char>(0x10U + chunk);
     std::fill(host_chunk.begin(), host_chunk.end(), static_cast<std::byte>(initial));
@@ -349,7 +467,7 @@ struct Handles {
     transaction.range_count = 1U;
     transaction.callback = &mutate_callback;
     transaction.user_data = &mutation;
-    status = api.v1.transaction_execute(handles.session, &transaction, operation_timeout_ms);
+    status = execute_with_live_telemetry(api, handles.session, transaction, telemetry_samples);
     if (status != XVRAM_STATUS_SUCCESS) {
       print_session_error(api, handles.session, "transaction_execute(write)", status);
       return 1;
@@ -368,7 +486,7 @@ struct Handles {
     transaction.ranges = &range;
     transaction.range_count = 1U;
     transaction.callback = &observe_callback;
-    status = api.v1.transaction_execute(handles.session, &transaction, operation_timeout_ms);
+    status = execute_with_live_telemetry(api, handles.session, transaction, telemetry_samples);
     if (status != XVRAM_STATUS_SUCCESS) {
       print_session_error(api, handles.session, "transaction_execute(read)", status);
       return 1;
@@ -412,6 +530,7 @@ struct Handles {
       active.v1.handle_reuses > 0U && active.logical_h2d_bytes > active.pcie_h2d_bytes &&
       active.logical_d2h_bytes > 0U && active.v1.unsafe_remaps == 0U &&
       active.v1.unsafe_transitions == 0U && active.v1.poisoned == 0U &&
+      telemetry_samples.while_pending > 0U && consistent_h2d_snapshot(active) &&
       (active.v1.flags & XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES) != 0U &&
       (active.v1.flags & XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES) != 0U;
   if (!active_proof) {
@@ -459,7 +578,8 @@ struct Handles {
       final.v1.physical_handles_created == final.v1.physical_handles_released &&
       final.codec_workspace_bytes == 0U && final.codec_slot_bytes == 0U &&
       final.spill_reserved_bytes == 0U && final.v1.unsafe_remaps == 0U &&
-      final.v1.unsafe_transitions == 0U && final.v1.poisoned == 0U;
+      final.v1.unsafe_transitions == 0U && final.v1.poisoned == 0U &&
+      consistent_h2d_snapshot(final);
   if (!cleanup_proof) {
     std::cerr << "final SDK v2 telemetry did not prove complete cleanup\n";
     return 1;
@@ -472,7 +592,9 @@ struct Handles {
             << ",\"dirty_evictions\":" << final.v1.dirty_evictions
             << ",\"compression_commits\":" << final.compression_commits
             << ",\"logical_h2d_bytes\":" << final.logical_h2d_bytes
-            << ",\"pcie_h2d_bytes\":" << final.pcie_h2d_bytes << "}\n";
+            << ",\"pcie_h2d_bytes\":" << final.pcie_h2d_bytes
+            << ",\"telemetry_samples\":" << telemetry_samples.total
+            << ",\"pending_telemetry_samples\":" << telemetry_samples.while_pending << "}\n";
 
   api.v1.session_release(handles.session);
   handles.session = nullptr;

@@ -504,6 +504,14 @@ public:
 
   [[nodiscard]] Error telemetry(xvram_session_telemetry_v1& output) const override {
     const std::scoped_lock lock(telemetry_mutex_);
+    fill_telemetry_v1_locked(output);
+    return {};
+  }
+
+private:
+  // The caller holds telemetry_mutex_ for the complete public snapshot. In
+  // particular, the v1 prefix and v2 extension must describe the same epoch.
+  void fill_telemetry_v1_locked(xvram_session_telemetry_v1& output) const {
     const residency::RuntimeTelemetry& source = telemetry_snapshot_;
     output.flags = 0;
     if (source.stable_addresses) {
@@ -558,16 +566,14 @@ public:
     output.cublas_lt_version = cublas_lt_version_;
     output.cublas_library_source = cublas_library_source_;
     output.poisoned = source.quarantined ? 1U : 0U;
-    return {};
   }
 
+public:
   [[nodiscard]] Error telemetry_v2(xvram_session_telemetry_v2& output) const override {
+    const std::scoped_lock lock(telemetry_mutex_);
     output.v1 = {};
     output.v1.struct_size = sizeof(output.v1);
-    if (Error error = telemetry(output.v1); error) {
-      return error;
-    }
-    const std::scoped_lock lock(telemetry_mutex_);
+    fill_telemetry_v1_locked(output.v1);
     const residency::RuntimeTelemetry& source = telemetry_snapshot_;
     output.logical_bytes = source.logical_bytes;
     output.host_stored_bytes = source.host_stored_bytes;
