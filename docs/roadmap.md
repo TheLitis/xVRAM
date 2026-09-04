@@ -144,11 +144,54 @@ backward/optimizer scheduling, CUDA Graphs, dynamic control flow, distributed/NC
 arbitrary extensions, and transparent execution of unsupported oversized operators are
 future work.
 
-## Phase 5: adaptive compression
+## Phase 5: adaptive lossless compressed backing — implementation/gates in progress
 
-- Per-chunk compression history and cost model.
-- Raw, CPU-encode/GPU-decode, and GPU-codec paths.
-- Compression is selected only when predicted end-to-end time is lower.
+- Production `xvram_residency` owns an authoritative `HostBackingStore`; the frozen
+  Phase 2 `CacheManager` remains the raw regression implementation.
+- Each logical chunk has one immutable-generation host representation: `invalid`,
+  `implicit_zero`, `raw`, or `xvram_lz4_blocks_v1`. The container uses independent
+  64 KiB LZ4 blocks inside the default 64 MiB residency chunk, preserves the valid tail,
+  and stores an individual block raw rather than expanding it.
+- Host writes create and verify a replacement generation before atomic commit. Full
+  writes do not read the prior generation; partial writes materialize only affected
+  blocks. Proven-dead data can be discarded after its event retires, while ordinary
+  release retains write-back semantics.
+- A write-capable lease reserves a full raw spill credit for each first-dirty chunk
+  before launch. An admission failure returns host OOM before data changes; codec failure
+  can fall back only while a valid authority still exists.
+- Raw, CPU LZ4 encode/GPU decode, and nvCOMP GPU codec paths share the production
+  residency state machine. Codec slots, event generations, encode/decode streams, and
+  workspace are independently bounded and cannot be reused before successful event
+  retirement and atomic host commit.
+- The adaptive EWMA model accounts for compression ratio, CPU/GPU encode/decode,
+  transfer, staging, CPU queueing, reuse, dirty rate, and SM opportunity cost. After two
+  calibration samples it requires a predicted win of at least `max(10%, 50 us)`; three
+  unfavorable probes suppress compression for that content generation. Capacity mode
+  may choose a smaller lossless representation even when raw is faster.
+- There is no fixed logical multiplier. Automatic sizing stays at the conservative
+  raw-safe `1.5x VRAM`; explicit sizes are constrained by CUDA VA, current host-store
+  budget, working-set fit, and live CUDA/WDDM budget. Compressible workloads may exceed
+  `2x`; incompressible workloads gain no artificial capacity.
+- Public `<xvram/xvram_v2.h>` embeds the frozen v1 table and adds explicit compression
+  configuration and telemetry without adding an export. ABI v1 remains eager-raw and
+  never loads a codec. The private PyTorch table follows the same v2 rule; Python keeps
+  `compression="off"` unless the caller explicitly requests `adaptive` or `capacity`.
+- `xvram-compression-bench` uses the isolated `XVZ1` protocol, strict
+  `xvram.adaptive_compression` v1 reports, and optional `xvram.compression_trace` v1
+  JSONL. Timeout, malformed protocol, trace failure, cleanup failure, and no-driver
+  paths retain the existing exit-code family and controller-owned output.
+- LZ4 1.10.0 and nvCOMP 5.3.0.16 are hash-pinned. nvCOMP is staged and installed
+  app-locally, loaded dynamically, and tested after relocation. The Ampere gate uses the
+  CUDA codec backend; the Blackwell-only hardware Decompression Engine is out of scope.
+
+Remaining exit criteria are deliberately not marked complete: run the RTX 3070 core
+matrix in `scripts/run-phase5-compression-acceptance.ps1`, then the compression-enabled
+Phase 4b regression matrix. Required evidence includes forced-path digest parity,
+adaptive rejection of incompressible expansion, real compressed H2D/D2H reduction,
+GPU encode-before-D2H, phase-change decisions, event-safe budget shrink/grow, CLOCK/LRU
+parity, the conditional `4x` capacity stress, PyTorch v2 reference equality, complete
+cleanup, empty diagnostics, and no residual worker. Record those results and the full
+GitHub Actions run here only after they actually pass.
 
 ## Phase 6+: interception and instrumentation
 

@@ -72,6 +72,12 @@ jobs:
           --output-on-failure --no-tests=error
           -R '^xvram[.]torch'
 
+      - name: Verify Phase 5 compression, codec, and frozen contracts
+        run: >-
+          ctest --test-dir build --build-config ${{ matrix.build_type }}
+          --output-on-failure --no-tests=error
+          -R '^xvram[.](compression|nvcomp|(schema|abi)[.]hash-contract|sdk|torch-inference-v2[.]json-contract)'
+
       - name: Test complete no-GPU suite
         run: >-
           ctest --test-dir build --build-config ${{ matrix.build_type }}
@@ -81,6 +87,126 @@ jobs:
         run: >-
           cmake --install build --config ${{ matrix.build_type }}
           --prefix build/install
+
+      - name: Verify relocated app-local nvCOMP package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $source = (Resolve-Path build/install).Path
+          $relocated = Join-Path $env:RUNNER_TEMP "xvram-relocated-${{ matrix.build_type }}"
+          Copy-Item -LiteralPath $source -Destination $relocated -Recurse
+          $bin = Join-Path $relocated "bin"
+          $bench = Join-Path $bin "xvram-compression-bench.exe"
+          if (-not (Test-Path -LiteralPath $bench -PathType Leaf)) {
+            throw "relocated compression benchmark is missing"
+          }
+          & $bench --version
+          if ($LASTEXITCODE -ne 0) { throw "relocated compression benchmark failed to start" }
+          $helperSource = Get-ChildItem -Path build -Recurse `
+            -Filter "xvram-nvcomp-load-test-helper.exe" |
+            Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
+            Select-Object -First 1
+          if ($null -eq $helperSource) { throw "nvCOMP load-test helper is missing" }
+          $helper = Join-Path $bin "xvram-nvcomp-load-test-helper.exe"
+          Copy-Item -LiteralPath $helperSource.FullName -Destination $helper
+          $loadOutput = & $helper
+          if ($LASTEXITCODE -ne 0) { throw "app-local nvCOMP loader check failed" }
+          $load = $loadOutput | ConvertFrom-Json
+          if ($load.source -ne "app_local") { throw "nvCOMP source is not app-local" }
+          if ($load.version -lt 5300 -or $load.version -ge 6000) {
+            throw "unexpected nvCOMP version $($load.version)"
+          }
+          $actualHash = (Get-FileHash -Algorithm SHA256 `
+            -LiteralPath (Join-Path $bin "nvcomp64_5.dll")).Hash.ToLowerInvariant()
+          if ($actualHash -ne $load.library_sha256) {
+            throw "relocated nvCOMP library hash differs from the configured staged library"
+          }
+
+      - name: Verify relocated app-local nvCOMP package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          relocated="${RUNNER_TEMP}/xvram-relocated-${{ matrix.build_type }}"
+          cp -a build/install "$relocated"
+          test -x "$relocated/bin/xvram-compression-bench"
+          "$relocated/bin/xvram-compression-bench" --version
+          helper_source="$(find build -type f -name xvram-nvcomp-load-test-helper \
+            ! -path '*/_deps/*' -print -quit)"
+          test -n "$helper_source"
+          cp "$helper_source" "$relocated/bin/xvram-nvcomp-load-test-helper"
+          load_json="$(env -u LD_LIBRARY_PATH \
+            "$relocated/bin/xvram-nvcomp-load-test-helper")"
+          python - "$relocated/lib/libnvcomp.so.5" "$load_json" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          library = pathlib.Path(sys.argv[1]).resolve()
+          observed = json.loads(sys.argv[2])
+          assert observed["source"] == "app_local", observed
+          assert 5300 <= observed["version"] < 6000, observed
+          actual = hashlib.sha256(library.read_bytes()).hexdigest()
+          assert observed["library_sha256"] == actual, (observed, actual)
+          PY
+
+      - name: Verify compression no-driver report (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bench = "build/${{ matrix.build_type }}/xvram-compression-bench.exe"
+          if (-not (Test-Path -LiteralPath $bench -PathType Leaf)) {
+            $bench = "build/xvram-compression-bench.exe"
+          }
+          $report = "build/compression-no-driver-${{ matrix.build_type }}.json"
+          & $bench --logical-size 1GiB --scenario compressible-read `
+            --compact-json --no-text --json $report
+          if ($LASTEXITCODE -ne 23) {
+            throw "compression no-driver run exited $LASTEXITCODE instead of 23"
+          }
+          $schemaCheck = @'
+          import json
+          import pathlib
+          import sys
+          import jsonschema
+
+          schema = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          report = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          jsonschema.Draft202012Validator(schema).validate(report)
+          assert report["outcome"]["exit_code"] == 23
+          assert report["outcome"]["reason"] in {
+              "device_unavailable", "cuda_symbols_unavailable", "cuda_initialization_failed"
+          }, report["outcome"]
+          assert report["outcome"]["stage"] == "preflight", report["outcome"]
+          '@
+          $schemaCheck | python - schemas/adaptive-compression-report-v1.schema.json $report
+
+      - name: Verify compression no-driver report (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          report="build/compression-no-driver-${{ matrix.build_type }}.json"
+          set +e
+          build/xvram-compression-bench --logical-size 1GiB --scenario compressible-read \
+            --compact-json --no-text --json "$report"
+          status=$?
+          set -e
+          test "$status" -eq 23
+          python - schemas/adaptive-compression-report-v1.schema.json "$report" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import jsonschema
+
+          schema = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          report = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          jsonschema.Draft202012Validator(schema).validate(report)
+          assert report["outcome"]["exit_code"] == 23
+          assert report["outcome"]["reason"] in {
+              "device_unavailable", "cuda_symbols_unavailable", "cuda_initialization_failed"
+          }, report["outcome"]
+          assert report["outcome"]["stage"] == "preflight", report["outcome"]
+          PY
 
       - name: Configure installed C and C++ consumers (Windows)
         if: runner.os == 'Windows'
@@ -177,11 +303,11 @@ jobs:
           torch==2.13.0 &&
           python -c "import torch; assert torch.__version__.split('+', 1)[0] == '2.13.0'; assert torch.version.cuda is None"
 
-      - name: Verify 2.11-built bridge loads on PyTorch 2.13
+      - name: Verify 2.11-built bridge and v2 control table on PyTorch 2.13
         run: >-
           ctest --test-dir build --build-config Release
           --output-on-failure --no-tests=error
-          -R '^xvram[.]torch-runtime[.]stable-load$'
+          -R '^xvram[.]torch-runtime[.](stable-load|control)$'
 
   linux-sanitizers:
     runs-on: ubuntu-latest
@@ -242,6 +368,14 @@ jobs:
         run: >-
           ctest --test-dir build --output-on-failure --no-tests=error
           -R '^xvram[.]torch'
+
+      - name: Verify Phase 5 compression and codec contracts with sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: >-
+          ctest --test-dir build --output-on-failure --no-tests=error
+          -R '^xvram[.](compression|nvcomp|(schema|abi)[.]hash-contract|sdk|torch-inference-v2[.]json-contract)'
 
       - name: Test complete no-GPU suite with sanitizers
         env:

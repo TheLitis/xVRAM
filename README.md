@@ -13,7 +13,8 @@ WDDM-aware budgeting, cache policy, and library-aware tiling.
 > xVRAM now exposes an experimental, versioned C ABI, tiled GEMM integration, and a
 > resident-only PyTorch MemPool adapter. A separate lease-scoped PyTorch inference
 > runtime is implemented and has passed its local six-scenario RTX 3070 gate and the
-> complete Windows/Linux GitHub Actions matrix. The SDK remains
+> complete Windows/Linux GitHub Actions matrix. Phase 5 adds opt-in, lossless compressed
+> host backing, but its RTX 3070 acceptance matrix is not yet recorded as complete. The SDK remains
 > pre-release, does not transparently extend an arbitrary application's VRAM, and must
 > not be used for production workloads.
 
@@ -182,6 +183,37 @@ implementation and local hardware gate are complete. The full Windows/Linux buil
 sanitizer, installed-package, and Stable-ABI 2.11→2.13 matrix passed in
 [GitHub Actions run 33676882740](https://github.com/TheLitis/xVRAM/actions/runs/33676882740).
 
+## Phase 5 adaptive lossless backing
+
+Phase 5 replaces the production residency runtime's single flat host image with a
+generation-safe `HostBackingStore`. Every logical chunk has exactly one authoritative
+host representation: `invalid`, `implicit_zero`, `raw`, or the CPU-decodable
+`xvram_lz4_blocks_v1` container. The outer residency chunk remains 64 MiB by default;
+the container divides it into independent 64 KiB LZ4 blocks and stores an individual
+block raw whenever compression would expand it.
+
+The available paths are raw transfer, CPU LZ4 encode with GPU decode, and app-local
+nvCOMP GPU encode/decode. `adaptive` selects a compressed path only after calibration
+predicts an end-to-end win of at least `max(10%, 50 us)`. Explicit `capacity` mode may
+retain a smaller compressed representation even when the raw path is faster. All paths
+remain lossless, every candidate generation is verified before atomic commit, and a
+write-capable lease must reserve enough raw spill capacity before GPU mutation begins.
+
+There is no fixed `2x` logical-size ceiling. `auto` deliberately remains the raw-safe
+`1.5x VRAM` default, while an explicit size is admitted from current CUDA VA, host-store,
+working-set, VRAM, and WDDM budgets. Highly compressible data can therefore exceed `2x`;
+incompressible data receives no fictitious capacity gain and can still fail preflight or
+return host OOM without losing the last valid generation.
+
+Public ABI v1 and the Phase 1--4 report contracts stay frozen. Opt-in SDK callers include
+`<xvram/xvram_v2.h>` and request API v2 from the same sole `xvram_get_api` export. The
+PyTorch frontend keeps `compression="off"` by default; `adaptive` and `capacity` require
+the private v2 control table and never silently downgrade. `xvram-compression-bench`
+isolates the core hardware proof behind `XVZ1`, writes `xvram.adaptive_compression` v1,
+and optionally emits `xvram.compression_trace` v1 JSONL. See the
+[adaptive-compression guide](docs/adaptive-compression.md) for the backing format,
+budget model, CLI, safety rules, and pending RTX gate.
+
 ## Build
 
 Requirements:
@@ -195,6 +227,16 @@ The SDK loads the CUDA Driver API and cuBLAS/cuBLASLt at runtime. A CUDA Toolkit
 required to use an already-built SDK, but a compatible NVIDIA driver and cuBLAS runtime
 must be discoverable for GPU work. Package builds may stage the hash-pinned official
 CUDA 13.3 cuBLAS redistributable next to the SDK.
+
+Compression builds use hash-pinned LZ4 1.10.0 sources and the official nvCOMP
+5.3.0.16 CUDA 13 redistributable. The nvCOMP libraries and their license/notice are
+staged beside compression-enabled binaries and installed app-locally; the runtime loads
+them dynamically. Both configure and runtime loading verify the actual GPU library's
+SHA-256 against the platform pin; runtime loading also checks the exact 5.3.0 semantic
+version. Reports carry the verified file hash, which identifies package build 5.3.0.16.
+nvCOMP is optional at execution time when compression is off or a CPU/raw fallback
+remains valid. The RTX 3070 path uses nvCOMP's CUDA backend; it does not require the
+Blackwell-only hardware Decompression Engine.
 
 Install the test-only Python dependency:
 
@@ -268,7 +310,8 @@ cmake --install build\vs --config Release --prefix build\install
 
 An installed CMake consumer uses `find_package(xVRAM CONFIG REQUIRED)` and links
 `xVRAM::xvram` or `xVRAM::torch_allocator`; plain C consumers can include
-`<xvram/xvram.h>` or `<xvram/torch_allocator.h>`.
+`<xvram/xvram.h>`, opt into compression with `<xvram/xvram_v2.h>`, or include
+`<xvram/torch_allocator.h>`.
 
 Run the Phase 3 GEMM gate on a CUDA/cuBLAS-capable device:
 
@@ -310,14 +353,33 @@ The reproducible Windows hardware matrix is encoded by
 part of a normal build: it constructs and verifies multi-gigabyte models and requires
 the specified RTX 3070/PyTorch/CUDA environment.
 
+Run the Phase 5 core benchmark on a VMM-capable CUDA device:
+
+```powershell
+build\vs\Release\xvram-compression-bench.exe `
+  --logical-size 24GiB --scenario compressible-read `
+  --compression-policy adaptive --path all --policy clock `
+  --trace compression.jsonl --json compression.json
+```
+
+Explicit sizes use ordinary byte suffixes in the CLI; the acceptance script derives the
+exact `3x` byte count from `xvram-probe` and passes that value. The reproducible Windows
+core matrix is `scripts/run-phase5-compression-acceptance.ps1`. It checks schemas,
+transfer/event ordering, accounting, reference equality, cleanup, and worker exit.
+After that core gate, `scripts/run-phase5-sdk-v2-hardware-smoke.ps1` exercises the
+public v2 function table, and `scripts/run-phase5-pytorch-acceptance.ps1` runs the
+compression-off regression matrix followed by the PyTorch v2 cases. See the
+[reproduction commands](docs/adaptive-compression.md#reproducing-the-gates).
+These are manual hardware gates; their scripts alone are not completion evidence.
+
 The first configure may require network access for the hash-pinned NVIDIA headers.
 For an offline build, install CUDA 13.x and NVML development headers (or set
 `XVRAM_CUDA_INCLUDE_DIR` and `XVRAM_NVML_INCLUDE_DIR`) and configure with
 `-DXVRAM_FETCH_CUDA_HEADERS=OFF`.
 
 Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`,
-`xvram-gemm-bench --help`, and `xvram-torch-bench --help` for the complete CLI
-contracts.
+`xvram-gemm-bench --help`, `xvram-compression-bench --help`, and
+`xvram-torch-bench --help` for the complete CLI contracts.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -336,7 +398,9 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
 4. Stable C ABI and library-aware tiled operations, starting with GEMM.
 5. PyTorch resident allocator plus lease-scoped static inference; both Phase 4
    boundaries and the Phase 4b oversubscription gate are complete.
-6. Adaptive transport compression based on measured cost.
+6. Adaptive lossless compressed host backing with SDK/PyTorch v2 opt-in; implementation
+   and automated contracts are being delivered, while the Phase 5 hardware gates remain
+   pending.
 7. Conservative CUDA interception, followed by PTX access instrumentation.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
@@ -344,7 +408,8 @@ See [the architecture](docs/architecture.md), [memory model](docs/memory-model.m
 [residency cache](docs/residency-cache.md), and [roadmap](docs/roadmap.md) for the design
 contract. The [PyTorch MemPool](docs/pytorch-mempool.md) and
 [lease-scoped inference](docs/pytorch-inference.md) guides describe the two distinct
-Phase 4 integration boundaries.
+Phase 4 integration boundaries. The [adaptive-compression guide](docs/adaptive-compression.md)
+describes the Phase 5 backing and transport boundary.
 
 ## Performance expectations
 

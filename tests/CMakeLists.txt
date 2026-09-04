@@ -1,5 +1,16 @@
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+if(WIN32)
+  find_program(XVRAM_POWERSHELL_EXECUTABLE NAMES pwsh powershell REQUIRED)
+  add_test(
+    NAME xvram.acceptance.provenance
+    COMMAND "${XVRAM_POWERSHELL_EXECUTABLE}" -NoLogo -NoProfile -NonInteractive
+            -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/contract/acceptance_provenance_tests.ps1"
+            -Helper "${PROJECT_SOURCE_DIR}/scripts/acceptance-provenance.ps1")
+  set_tests_properties(xvram.acceptance.provenance PROPERTIES TIMEOUT 30 LABELS "no-driver")
+endif()
+
 add_executable(xvram-unit-tests unit/base_tests.cpp)
 target_link_libraries(xvram-unit-tests PRIVATE xvram_probe_lib)
 xvram_enable_warnings(xvram-unit-tests)

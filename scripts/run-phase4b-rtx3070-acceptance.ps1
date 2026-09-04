@@ -44,6 +44,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $script:RepositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+. (Join-Path $PSScriptRoot "acceptance-provenance.ps1")
 $script:ReportSchemaPath = Join-Path $script:RepositoryRoot `
     "schemas/pytorch-inference-report-v1.schema.json"
 $script:TraceSchemaPath = Join-Path $script:RepositoryRoot `
@@ -509,6 +510,15 @@ for field, value in report["cleanup"].items():
         "strict report/trace validation failed for $($Expected.name)"
 }
 
+$resolvedOutput = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
+    [System.IO.Path]::GetFullPath($OutputDirectory)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $script:RepositoryRoot $OutputDirectory))
+}
+New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
+$manifestPath = Initialize-XvramAcceptanceManifest -OutputDirectory $resolvedOutput
+$sourceProvenance = Get-XvramAcceptanceSource -RepositoryRoot $script:RepositoryRoot
+
 Assert-Condition ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) `
     "the mandatory hardware gate must run on Windows"
 Assert-Condition ([Environment]::Is64BitProcess) "the hardware gate requires a 64-bit process"
@@ -552,8 +562,10 @@ Assert-Condition ($driverModels.Count -eq 1 -and $driverModels[0] -eq "WDDM") `
 
 $previousPythonPath = $env:PYTHONPATH
 $previousRuntimeLibrary = $env:XVRAM_TORCH_RUNTIME_LIBRARY
+$previousGitCommit = $env:XVRAM_GIT_COMMIT
 try {
     $env:PYTHONPATH = Join-Path $script:RepositoryRoot "python"
+    $env:XVRAM_GIT_COMMIT = $sourceProvenance.git_commit
 
     $hardwareProbe = @'
 import json
@@ -645,6 +657,11 @@ print(json.dumps({
     )
 
     $runtimePath = Resolve-RuntimeLibrary -BuildRoot $resolvedBuild -Override $RuntimeLibrary
+    $builtRuntimePath = Resolve-RuntimeLibrary -BuildRoot $resolvedBuild
+    $builtRuntimeProvenance = Get-XvramAcceptanceBinary -Path $builtRuntimePath
+    $runtimeProvenance = Get-XvramAcceptanceBinary -Path $runtimePath
+    Assert-Condition ($runtimeProvenance.sha256 -eq $builtRuntimeProvenance.sha256) `
+        "runtime override differs from the runtime just built from the gate source"
     $env:XVRAM_TORCH_RUNTIME_LIBRARY = $runtimePath
     $torchLibraryProbe = @'
 import pathlib
@@ -685,12 +702,6 @@ print(path)
         "built xvram_torch_runtime failed its Python load/entry-point preflight"
     Write-Host "Native runtime: $runtimePath"
 
-    $resolvedOutput = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
-        [System.IO.Path]::GetFullPath($OutputDirectory)
-    } else {
-        [System.IO.Path]::GetFullPath((Join-Path $script:RepositoryRoot $OutputDirectory))
-    }
-    New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
     Assert-NoResidualWorker
 
     $runs = @(
@@ -787,6 +798,8 @@ print(path)
         Assert-RunArtifacts -ReportPath $reportPath -TracePath $tracePath `
             -Expected $expected -Hardware $hardware
         $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        Assert-XvramAcceptanceReportRevision -Observed $report.build.git_commit `
+            -Source $sourceProvenance
         $validated[$run.Name] = $report
         $manifestReports += [ordered]@{
             name = $run.Name
@@ -817,22 +830,36 @@ print(path)
     Assert-Condition ($validated["clock-31-p2"].cache.prefetch_submitted -gt 0) `
         "distance-two comparison observed no prefetch"
     Assert-NoResidualWorker
+    $sourceAtCompletion = Assert-XvramAcceptanceSourceUnchanged `
+        -RepositoryRoot $script:RepositoryRoot -Expected $sourceProvenance
+    Assert-XvramAcceptanceBinaryUnchanged -Expected $runtimeProvenance
 
     $manifest = [ordered]@{
         acceptance = "xvram.phase4b.rtx3070"
         generated_at_utc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         build_configuration = $Configuration
         runtime_library = $runtimePath
+        runtime_binary = $runtimeProvenance
+        source = $sourceProvenance
+        source_at_completion = $sourceAtCompletion
+        validation = [ordered]@{
+            status = "passed"
+            report_revision_matched = $true
+            source_snapshot_unchanged = $true
+            runtime_hash_unchanged = $true
+            runtime_matches_current_build = $true
+            dirty_working_tree_allowed_and_recorded = $true
+        }
         device = $hardware
         driver_model = "WDDM"
         reports = $manifestReports
         result = "completed"
     }
-    $manifestPath = Join-Path $resolvedOutput "acceptance-manifest.json"
     $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath `
         -Encoding utf8
     Write-Host "Phase 4b RTX 3070 acceptance completed: $manifestPath"
 } finally {
     $env:PYTHONPATH = $previousPythonPath
     $env:XVRAM_TORCH_RUNTIME_LIBRARY = $previousRuntimeLibrary
+    $env:XVRAM_GIT_COMMIT = $previousGitCommit
 }
