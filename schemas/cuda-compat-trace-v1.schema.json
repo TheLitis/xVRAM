@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-trace-v1.schema.json",
+  "title": "xVRAM CUDA compatibility trace v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "sequence",
+    "monotonic_timestamp_ns",
+    "operation_id",
+    "allocation_id",
+    "transition",
+    "bytes",
+    "tiles_retired",
+    "reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_compat_trace"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "monotonic_timestamp_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "operation_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "allocation_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "transition": {
+      "enum": [
+        "call",
+        "return",
+        "retired_tile",
+        "final"
+      ]
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tiles_retired": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

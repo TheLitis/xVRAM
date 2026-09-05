@@ -69,3 +69,28 @@ install(TARGETS xvram_cuda_compat EXPORT xVRAMTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(FILES include/xvram/cuda_compat.h include/xvram/cuda_compat.hpp
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/xvram")
+
+add_library(xvram_compat_bench STATIC
+            src/compat_bench/options.cpp src/compat_bench/pattern.cpp
+            src/compat_bench/final_validation.cpp
+            src/compat_bench/report.cpp src/compat_bench/executor.cpp
+            src/compat_bench/native_baseline.cpp src/compat_bench/worker_protocol.cpp
+            src/compat_bench/worker_controller.cpp)
+target_compile_features(xvram_compat_bench PUBLIC cxx_std_20)
+target_include_directories(xvram_compat_bench PUBLIC "${PROJECT_SOURCE_DIR}/src"
+                                                  "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(xvram_compat_bench SYSTEM PUBLIC "${XVRAM_CUDA_INCLUDE_DIR}"
+                                                        "${XVRAM_CUDA_CRT_HEADERS_DIR}"
+                                                        "${XVRAM_CUBLAS_INCLUDE_DIR}")
+target_link_libraries(xvram_compat_bench PUBLIC xvram_cuda_compat xvram_probe_lib
+                                      PRIVATE xvram_gemm_core xvram_worker_process Threads::Threads)
+xvram_enable_warnings(xvram_compat_bench)
+add_executable(xvram-compat-bench src/compat_bench/main.cpp)
+target_link_libraries(xvram-compat-bench PRIVATE xvram_compat_bench)
+if(UNIX AND NOT APPLE)
+  set_target_properties(xvram-compat-bench PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
+xvram_enable_warnings(xvram-compat-bench)
+install(TARGETS xvram-compat-bench RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(FILES schemas/cuda-compat-v1.schema.json schemas/cuda-compat-trace-v1.schema.json
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")

@@ -35,3 +35,26 @@ add_executable(xvram-cuda-compat-load-helper helpers/cuda_compat_load_helper.cpp
 target_link_libraries(xvram-cuda-compat-load-helper PRIVATE xvram_gemm_core)
 target_compile_features(xvram-cuda-compat-load-helper PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-cuda-compat-load-helper)
+
+add_executable(xvram-compat-core-tests helpers/compat_core_tests.cpp)
+target_link_libraries(xvram-compat-core-tests PRIVATE xvram_compat_bench)
+xvram_enable_warnings(xvram-compat-core-tests)
+add_test(NAME xvram.cuda-compat.core COMMAND xvram-compat-core-tests)
+
+add_executable(xvram-compat-worker-helper helpers/compat_worker_test_helper.cpp)
+target_link_libraries(xvram-compat-worker-helper PRIVATE xvram_compat_bench)
+xvram_enable_warnings(xvram-compat-worker-helper)
+add_executable(xvram-compat-controller-tests helpers/compat_controller_tests.cpp)
+target_link_libraries(xvram-compat-controller-tests PRIVATE xvram_compat_bench)
+xvram_enable_warnings(xvram-compat-controller-tests)
+add_test(NAME xvram.cuda-compat.controller
+         COMMAND xvram-compat-controller-tests "$<TARGET_FILE:xvram-compat-worker-helper>")
+set_tests_properties(xvram.cuda-compat.controller PROPERTIES TIMEOUT 30 LABELS "no-driver")
+
+add_test(NAME xvram.cuda-compat.json-contract
+         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/compat_contract.py"
+                 --schema "${PROJECT_SOURCE_DIR}/schemas/cuda-compat-v1.schema.json"
+                 --trace-schema "${PROJECT_SOURCE_DIR}/schemas/cuda-compat-trace-v1.schema.json"
+                 --fixture-helper "$<TARGET_FILE:xvram-compat-core-tests>"
+                 --bench "$<TARGET_FILE:xvram-compat-bench>")
+set_tests_properties(xvram.cuda-compat.json-contract PROPERTIES TIMEOUT 120 LABELS "no-driver")
