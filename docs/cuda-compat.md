@@ -176,5 +176,38 @@ FP32 reduction orders. Oversized cases require real eviction and frame reuse, ba
 maps/SetAccess/unmaps, zero unsafe activity, complete cleanup, and no residual worker.
 There is no speedup threshold.
 
-Implementation validation is in progress. Hardware acceptance and final CI evidence
-will be recorded here only after those gates actually complete.
+### Recorded local results
+
+The full RTX 3070 gate completed on 2026-09-05 at signed source revision
+`d6e5ded`, against 8,589,410,304 bytes of physical VRAM. All eight reports and their
+traces passed the strict contracts, numerical reference, accounting, cleanup, and
+worker-reaping checks. The small suite contains five padded cases, including NN/NT/TN/TT
+with full CPU FP64 and ordinary cuBLAS verification. Constrained split K retired 128
+tiles across two passes and preserved every checked padding byte.
+
+The following counts were identical for CLOCK and LRU at each size:
+
+| Ratio | Actual operand bytes | Retired tiles | Maps = SetAccess = unmaps | Evictions / handle reuse |
+| --- | ---: | ---: | ---: | ---: |
+| 1.1x | 9,448,338,752 | 1,122 | 284 | 187 |
+| 1.5x | 12,884,112,128 | 1,530 | 386 | 289 |
+| 2.0x | 17,178,816,512 | 2,040 | 512 | 415 |
+
+Policy output digests also agreed at each ratio. Maximum absolute FP32 errors were
+0.0625, 0.0625, and 0.125 respectively; every output satisfied the stated combined
+absolute/relative criterion. Mismatch and unsafe-activity counts were zero, every
+proof/cleanup flag was true, diagnostics were empty, and no worker remained. These
+ratios are acceptance points, not fixed product capacity limits.
+
+The selected app-local redistributable pair was explicitly passed to both adapter and
+ordinary-cuBLAS baseline: version `13.5.1.27` (reported cuBLAS API version `130501`).
+SHA-256: core `f1d500d0cd892f5b8c6b6cdbffd82d0c55d5f5427215668e7ceb55aeeccc1b63`,
+Lt `b592cd016d7673e9cb97716a22b27c4010ee635377a3ba28f37070a9bdb76a68`.
+Full source/binary/library provenance and per-run timings are recorded in
+`artifacts/phase6a-rtx3070-release-d6e5ded-20260905/acceptance-manifest.json`.
+
+Local no-driver validation passed Release 79/79, Debug 76/76, and installed consumers
+6/6, plus relocated app-local library hashes/dispatch. The Release build includes the
+PyTorch Stable-ABI bridge regression. Additional post-gate counter regressions validate
+many cache-hit transactions against fewer unmap boundaries. The complete remote Actions
+matrix is the remaining delivery gate; its result will be recorded after completion.

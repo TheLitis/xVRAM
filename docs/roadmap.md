@@ -209,7 +209,7 @@ at commit `97dde36184ebd25dc70553606aba5a468dedb0d6` in
 [GitHub Actions run 33928261245](https://github.com/TheLitis/xVRAM/actions/runs/33928261245).
 This completes Phase 5 within its stated scope; version remains `0.1.0-dev`.
 
-## Phase 6a: explicit synchronous CUDA/cuBLAS adapter — in progress
+## Phase 6a: explicit synchronous CUDA/cuBLAS adapter — local gates complete
 
 - Optional host-only C++ facade and size-tagged C control table, with one isolated worker.
 - Stable pointer registry and VA tombstones; production raw residency and shared tiled SGEMM.
@@ -217,10 +217,18 @@ This completes Phase 5 within its stated scope; version remains `0.1.0-dev`.
 - Isolated benchmark, bounded XVI1 protocol, strict report/trace contracts, and no-driver tests.
 - Default-OFF regression, ON builds, negative/installed consumers, and app-local cuBLAS checks.
 
-Implementation and validation are in progress. Completion requires the recorded RTX 3070
-NN/NT/TN/TT, split-K, and 1.1x/1.5x/2.0x CLOCK/LRU gate plus the complete Actions matrix.
-See the [compatibility guide](cuda-compat.md). This phase requires an application rebuild;
-it does not intercept unchanged executables or support arbitrary kernels/streams.
+The RTX 3070 gate completed on 2026-09-05 at `d6e5ded`: all eight reports passed,
+including padded NN/NT/TN/TT with ordinary cuBLAS and full CPU FP64 reference,
+constrained split K, and two-pass 1.1x/1.5x/2.0x CLOCK/LRU cases. The largest operands
+occupied 17,178,816,512 bytes, with 2,040 retired tiles and 415 evictions/handle reuses
+per policy. Policy digests agreed; numerical mismatches and unsafe activity were zero;
+all proof/cleanup flags were true; diagnostics were empty; no worker remained.
+
+Local Release 79/79, Debug 76/76, installed consumers 6/6, and relocated app-local cuBLAS
+checks passed. The full remote Actions matrix remains the final delivery gate. See the
+[compatibility guide](cuda-compat.md#recorded-local-results) for provenance and counters.
+This phase requires an application rebuild; it does not intercept unchanged executables
+or support arbitrary kernels/streams. Version remains `0.1.0-dev`.
 
 ## Phase 6b+: interception and instrumentation
 
