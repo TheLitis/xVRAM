@@ -209,7 +209,7 @@ at commit `97dde36184ebd25dc70553606aba5a468dedb0d6` in
 [GitHub Actions run 33928261245](https://github.com/TheLitis/xVRAM/actions/runs/33928261245).
 This completes Phase 5 within its stated scope; version remains `0.1.0-dev`.
 
-## Phase 6a: explicit synchronous CUDA/cuBLAS adapter — local gates complete
+## Phase 6a: explicit synchronous CUDA/cuBLAS adapter — complete
 
 - Optional host-only C++ facade and size-tagged C control table, with one isolated worker.
 - Stable pointer registry and VA tombstones; production raw residency and shared tiled SGEMM.
@@ -225,8 +225,11 @@ per policy. Policy digests agreed; numerical mismatches and unsafe activity were
 all proof/cleanup flags were true; diagnostics were empty; no worker remained.
 
 Local Release 79/79, Debug 76/76, installed consumers 6/6, and relocated app-local cuBLAS
-checks passed. The full remote Actions matrix remains the final delivery gate. See the
-[compatibility guide](cuda-compat.md#recorded-local-results) for provenance and counters.
+checks passed. The full Windows/Linux Debug/Release, compat OFF/ON, Clang ASan/UBSan,
+installed-consumer/relocation, and PyTorch Stable-ABI 2.11→2.13 matrix passed at signed
+commit `55def7b01d5748bfd77adb9a18f674f6e583ec4f` in
+[GitHub Actions run 33960302667](https://github.com/TheLitis/xVRAM/actions/runs/33960302667).
+See the [compatibility guide](cuda-compat.md#recorded-local-results) for provenance and counters.
 This phase requires an application rebuild; it does not intercept unchanged executables
 or support arbitrary kernels/streams. Version remains `0.1.0-dev`.
 

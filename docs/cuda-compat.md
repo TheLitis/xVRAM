@@ -215,6 +215,13 @@ Full source/binary/library provenance and per-run timings are recorded in
 
 Local no-driver validation passed Release 79/79, Debug 76/76, and installed consumers
 6/6, plus relocated app-local library hashes/dispatch. The Release build includes the
-PyTorch Stable-ABI bridge regression. Additional post-gate counter regressions validate
-many cache-hit transactions against fewer unmap boundaries. The complete remote Actions
-matrix is the remaining delivery gate; its result will be recorded after completion.
+PyTorch Stable-ABI bridge regression. Focused counter regressions validate many cache-hit
+transactions against fewer unmap boundaries. Standalone Runtime/CRT/CCCL header builds
+and platform-specific missing-executable/reap behavior were also verified during CI
+integration, without changing the GPU execution path.
+
+The complete remote Windows/Linux Debug/Release, compatibility OFF/ON, Clang ASan/UBSan,
+installed-consumer/relocation, and PyTorch Stable-ABI matrix passed at signed revision
+`55def7b01d5748bfd77adb9a18f674f6e583ec4f` in
+[GitHub Actions run 33960302667](https://github.com/TheLitis/xVRAM/actions/runs/33960302667).
+This completes Phase 6a within its explicitly synchronous, rebuilt-application scope.
