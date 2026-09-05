@@ -1,0 +1,6 @@
+XVRAM_CUDA_COMPAT_1.0 {
+  global:
+    xvram_cuda_compat_get_api;
+  local:
+    *;
+};

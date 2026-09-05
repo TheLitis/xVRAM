@@ -1439,7 +1439,10 @@ void runtime_retained_va_prevents_reuse_test(const bool retain) {
   CudaApi api(CudaApi::InjectedDispatch{});
   cuda.install(api);
   const ActiveFake active(cuda);
-  Runtime runtime(api, runtime_va_config(retain));
+  auto config = runtime_va_config(retain);
+  std::uint64_t lifecycle_progress = 0;
+  config.lifecycle_progress = [&]() { ++lifecycle_progress; };
+  Runtime runtime(api, std::move(config));
   CHECK(runtime.setup() == RuntimeStatus::success);
   RuntimeAllocation first;
   CHECK(runtime.allocate(chunk_bytes + 17U, ResidencyHint::normal, first) ==
@@ -1467,7 +1470,9 @@ void runtime_retained_va_prevents_reuse_test(const bool retain) {
   CHECK(runtime.allocate(3ULL * chunk_bytes, ResidencyHint::normal, live) ==
         RuntimeStatus::success);
   const auto before_close = cuda.reservations;
+  const auto progress_before_close = lifecycle_progress;
   CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(lifecycle_progress - progress_before_close == (retain ? 5U : 3U));
   CHECK(cuda.reservations.empty());
   CHECK(cuda.address_free_calls == 3U);
   CHECK(cuda.freed_reservations.size() == 3U);

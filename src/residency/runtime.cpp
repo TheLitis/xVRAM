@@ -1720,6 +1720,7 @@ public:
         telemetry_.retired_va_bytes_freed += reservation.bytes;
         reservation.address = 0;
       }
+      notify_lifecycle_progress();
     }
     std::erase_if(retired_reservations_,
                   [](const RetiredReservation& reservation) { return reservation.address == 0; });

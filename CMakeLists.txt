@@ -955,11 +955,23 @@ if(XVRAM_CUBLAS_REDIST_ROOT)
     # The ELF loader resolves app-local cuBLAS beside libxvram.so.
     set(XVRAM_CUBLAS_INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   endif()
-  install(FILES "${XVRAM_CUBLAS_CORE_LIBRARY}" "${XVRAM_CUBLAS_LT_LIBRARY}"
-          DESTINATION "${XVRAM_CUBLAS_INSTALL_DESTINATION}")
+  # NVIDIA ELF archives may represent the SONAME with a symlink. Materialize its target
+  # under that name so relocation does not depend on an uninstalled versioned filename.
+  foreach(XVRAM_CUBLAS_INSTALL_LIBRARY IN ITEMS
+          "${XVRAM_CUBLAS_CORE_LIBRARY}" "${XVRAM_CUBLAS_LT_LIBRARY}")
+    file(REAL_PATH "${XVRAM_CUBLAS_INSTALL_LIBRARY}" XVRAM_CUBLAS_INSTALL_REAL_FILE)
+    get_filename_component(XVRAM_CUBLAS_INSTALL_NAME "${XVRAM_CUBLAS_INSTALL_LIBRARY}" NAME)
+    install(FILES "${XVRAM_CUBLAS_INSTALL_REAL_FILE}"
+            DESTINATION "${XVRAM_CUBLAS_INSTALL_DESTINATION}"
+            RENAME "${XVRAM_CUBLAS_INSTALL_NAME}")
+  endforeach()
   install(FILES "${XVRAM_CUBLAS_REDIST_ROOT}/LICENSE"
           DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/xvram"
           RENAME LICENSE.cublas.txt)
+endif()
+
+if(XVRAM_BUILD_CUDA_COMPAT)
+  include(cmake/CudaCompat.cmake)
 endif()
 
 install(FILES ${XVRAM_NVCOMP_RUNTIME_LIBRARIES}

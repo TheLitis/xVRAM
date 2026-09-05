@@ -1,5 +1,9 @@
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+if(XVRAM_BUILD_CUDA_COMPAT)
+  include(CudaCompatTests.cmake)
+endif()
+
 if(WIN32)
   find_program(XVRAM_POWERSHELL_EXECUTABLE NAMES pwsh powershell REQUIRED)
   add_test(
