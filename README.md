@@ -227,6 +227,24 @@ native calls do not silently fall back. This is not unchanged-executable interce
 arbitrary kernel support, or a replacement for CUDA Runtime. See the
 [compatibility guide](docs/cuda-compat.md) for integration, limits, benchmark, and gate status.
 
+## Phase 6b.0 transparent-compatibility audit
+
+`xvram-compat-audit` inventories binaries, captures diagnostic observations, and analyzes
+whether a pinned, unchanged llama.cpp CUDA profile has a sufficiently proven memory and
+execution contract for a future interceptor. The initial profile targets real Qwen2.5
+14B and 32B Q4_K_M CLI inference, including prefill, decode, and KV-cache lifetimes.
+
+This is a diagnostic tool, not transparent execution support. It does not change the
+production residency runtime, remap application memory, replace kernels, or make a CPU
+offload baseline into an xVRAM oversubscription proof. Unknown tensor ranges, missing
+kernel contracts, dropped observations, or incomplete teardown require `NO-GO`.
+
+The Python inventory/analyzer and no-driver tests do not require CUDA or PyTorch.
+An optional observation-only CUPTI collector is enabled separately with
+`XVRAM_BUILD_COMPAT_AUDIT_COLLECTOR=ON`; it is off in normal SDK builds. See the
+[compatibility audit guide](docs/cuda-compat-audit.md) for the pinned profile, evidence
+boundary, capture requirements, privacy, and reproduction workflow.
+
 ## Build
 
 Requirements:
@@ -395,7 +413,8 @@ fetches both `cuda_cudart 13.3.29` and `cuda_crt 13.3.33` with pinned hashes.
 
 Use `xvram-probe --help`, `xvram-vmm-poc --help`, `xvram-cache-bench --help`,
 `xvram-gemm-bench --help`, `xvram-compression-bench --help`, and
-`xvram-torch-bench --help` for the complete CLI contracts.
+`xvram-torch-bench --help` for the complete CLI contracts. After installing the Python
+package, `xvram-compat-audit --help` describes the separate diagnostic workflow.
 
 `--overlap` is explicit and bounded. It calibrates a short compute-only workload, balances
 independent H2D and D2H batches to a similar duration, then reports their concurrent
@@ -418,7 +437,10 @@ anonymous; review [`PRIVACY.md`](PRIVACY.md) before sharing one.
    69 local tests, 12 core hardware runs, SDK v2 smoke, and 11 PyTorch hardware runs passed.
    The [full Phase 5 CI matrix](https://github.com/TheLitis/xVRAM/actions/runs/33928261245)
    also passed; Phase 5 is complete within its stated scope.
-7. Conservative CUDA interception, followed by PTX access instrumentation.
+7. Explicit synchronous CUDA/cuBLAS integration (Phase 6a), followed by an evidence-led
+   unchanged-application compatibility audit (Phase 6b.0).
+8. Conservative CUDA interception of a proven profile, followed by broader kernel
+   coverage and PTX access instrumentation. The audit itself is not this execution path.
 
 See [the architecture](docs/architecture.md), [memory model](docs/memory-model.md),
 [correctness rules](docs/correctness.md), [VMM proof](docs/vmm-poc.md),

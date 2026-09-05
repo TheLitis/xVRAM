@@ -1,5 +1,19 @@
 # Roadmap
 
+## Product goal and current boundary
+
+xVRAM aims to run supported **unchanged CUDA applications and their original CUDA
+backends** with RAM as authoritative backing and VRAM as a dynamic cache. There is no
+fixed `2x`/`4x` logical-capacity ceiling: host storage, CUDA VA, operation working sets,
+and live device/WDDM budgets remain the constraints. Optional compression is lossless.
+
+The first application target is official llama.cpp with real Qwen2.5-Instruct Q4_K_M
+14B, then mandatory 32B, including prefill, decode, and KV cache. Universal arbitrary
+executable support is a research goal, not a current feature. The explicit SDK,
+static PyTorch inference frontend, and rebuilt synchronous SGEMM facade are delivered;
+unchanged llama.cpp does **not** yet run through xVRAM. Capacity/correctness and a later
+measured speed advantage are separate requirements.
+
 ## Phase 0: capability and transport probe — complete
 
 - Runtime-load the CUDA Driver API.
@@ -233,11 +247,42 @@ See the [compatibility guide](cuda-compat.md#recorded-local-results) for provena
 This phase requires an application rebuild; it does not intercept unchanged executables
 or support arbitrary kernels/streams. Version remains `0.1.0-dev`.
 
-## Phase 6b+: interception and instrumentation
+## Phase 6b.0: transparent-compatibility audit — concluded NO-GO
 
-- Conservative CUDA Runtime and Driver API interception.
-- Known cuBLAS/cuDNN launch semantics.
-- Access-range profiling, PTX indirection, and automatic tiling research.
+The observation-only audit is implemented: pinned imports/GGUF inventory, bounded
+CUPTI collector, read-only Nsight normalization, strict report/trace contracts,
+controller-owned Windows Job Object/Linux process-group cleanup, and no-driver tests.
+Production residency and Phase 1–6a ABI/schema/export contracts remain unchanged.
 
-Transparent support for an arbitrary unchanged CUDA executable is a long-term research
-goal, not a Phase 1, Phase 2, Phase 3, or Phase 4b promise.
+The 2026-09-06 RTX 3070/WDDM observations cover both pinned Qwen models at microbatch
+1 and 128: eight direct native baseline/CUPTI runs exited zero and drained their
+owned process trees; two additional Nsight profiler commands completed. These use
+explicit eight-layer GPU offload and are **ordinary CPU-offload research baselines**,
+not xVRAM oversubscription. Each model's four direct visible-output digests agree;
+this does not prove tensor-level or numerical equivalence. The [audit evidence](
+cuda-compat-audit.md#recorded-local-results) links the immutable original and derived
+artifact hashes.
+
+**NO-GO for beginning implementation of the claimed interception profile.** Actual
+dynamic Driver/Runtime resolution, kernel ABI/indirect ranges, VMM aliases, stream/event
+ordering, and live working-set admission are not fully established. CUPTI cannot prove
+complete stock-application finalization; Nsight additionally warns that this driver
+version is outside its supported tracing range. Missing evidence remains unknown,
+not an interoperability-impossibility claim. No interception mechanism or replacement
+backend was introduced to bridge these gaps.
+
+Local validation passed: 84/84 Release and 80/80 Debug CTest targets, 79 focused Python
+tests (two POSIX-only skips on Windows), standalone warning-clean collector/core tests,
+and installed Python CLI smoke. Windows/Linux CI adds the audit's CPU-only collector
+registry and Python contracts while retaining all earlier regression jobs.
+
+## Phase 6b.1 and later — require separate approval
+
+1. Resolve the audit's concrete evidence gaps and approve a bounded unchanged-backend
+   interception design. Only then implement real 14B → 32B generation without CPU
+   offload of the main computation. A GO audit alone is not that execution proof.
+2. Establish and optimize performance against a tuned ordinary llama.cpp baseline,
+   including resident overhead, prefetch, and transfers. No speed advantage is claimed
+   by Phase 6b.0's diagnostic measurements.
+3. Expand verified models, kernels, applications, then server operation, graphs, and
+   more complex execution profiles. Arbitrary-executable transparency remains research.

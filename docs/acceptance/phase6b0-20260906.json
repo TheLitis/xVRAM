@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "report_type": "xvram.cuda_compat_audit_acceptance",
+  "date": "2026-09-06",
+  "profile_id": "llama-b10819-qwen25-q4km-win-cuda133-v1",
+  "decision": "NO-GO",
+  "interoperability_impossible_proven": false,
+  "oversubscription_proof": false,
+  "native_cpu_offload": true,
+  "full_trace": false,
+  "original_matrix_sha256": "a5f48c25b9820ba8dc215d6af2b2c60d7f8c34da3e65bfd658fc6ceb462b93d7",
+  "review_sha256": "8daab2a738206af7a3ac57e5e9787c2b3352bf229e73c7b2045072fff34c30c1",
+  "local_artifact_root": "artifacts/phase6b0-rtx3070-20260906",
+  "review_source_revision": "6d2dc783eae3ea24d77c1863d6f7cb9f6fff97f5",
+  "review_source_hashes": {
+    "scripts/review-phase6b-audit-evidence.py": "8a9a7705f4833d9ebc0a07d675389ee2a37b4801032a5e30f40c331ce31757bd",
+    "python/xvram/compat_audit_profile.json": "97798495ed2267818ff89f2be0363b2b78900a63a854d7fb10c3e8ce12fd5000",
+    "python/xvram/compat_audit_analysis.py": "dd4d262efa06c11a1393c4eca90ba8c33a4f392b4959d48ec22ab5c6a012af19",
+    "python/xvram/compat_audit_nsys.py": "29a49a71068478099a46acc780a169a154a1f6bb20da8ce6f7b8c84b96fa025f",
+    "schemas/cuda-compat-audit-v1.schema.json": "07b7d9284f3a091745b1bfc0126eac00cdcfd75bb0ee11496b5c17a94b351b5e"
+  },
+  "derived_artifact_hashes": {
+    "14b-ub1-cupti-report.json": "777ae356f3d0d203a1e9670d9545884e5369336f42fc802bc3b15b29111a186c",
+    "14b-ub128-cupti-report.json": "60826332f3af35f3d86f845c3362cd612fd3325e1ac604a9f0d8f91d8f43b392",
+    "14b-ub128-nsys-summary.json": "3bc85cf46302787d44d3468dcf600bcd34f2955908fe726be2e069b7dd63376d",
+    "32b-ub1-cupti-report.json": "aa408f034c8d48ea3320e0cae7b063836353b1aa0f8f309073480f11f459253b",
+    "32b-ub128-cupti-report.json": "0630961002c48e22b4048772bc95c9d1ec839f6990f41ee87646d018a27fadcc",
+    "32b-ub128-nsys-summary.json": "05a23988d3c51c5bad0b17a1e5f7e03cf30c03daefa6b851e0e4a3681e725420"
+  },
+  "visible_output_digest_agreement": {
+    "14b": {
+      "direct_cases": 4,
+      "equal": true,
+      "sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+      "scope": "sanitized_visible_output_not_tensor_or_numerical_equivalence"
+    },
+    "32b": {
+      "direct_cases": 4,
+      "equal": true,
+      "sha256": "dc51ab2b5b9b3e5b9c0739e53871f35e423ec4d81842db081459ad75e743fd0e",
+      "scope": "sanitized_visible_output_not_tensor_or_numerical_equivalence"
+    }
+  },
+  "cases": [
+    {
+      "case": "14b-ub1-baseline",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "3448cda9e098c0748995cece6b613d6ac20f4e4c6c02a1e7b7a88e7506d913f2",
+      "original_capture_sha256": "819006f1786acac422c13f88e2bcd638272a2b0dad6bce07fa0cddf830196477",
+      "baseline_measurements": {
+        "elapsed_ms": 44433.86500002816,
+        "ttft_ms": 35752.61230004253,
+        "ttft_status": "process_start_to_first_visible_generated_output",
+        "timings": {
+          "load_ms": 3131.39,
+          "prefill_ms": 32229.04,
+          "prefill_tokens": 161,
+          "prefill_tokens_per_second": 5,
+          "decode_ms": 7306.47,
+          "decode_tokens": 31,
+          "decode_tokens_per_second": 4.24
+        },
+        "memory": {
+          "peak_rss_bytes": 9310126080,
+          "peak_private_bytes": 3126743040,
+          "scope": "direct_command_process"
+        },
+        "gpu": {
+          "scope": "whole_device_not_process",
+          "samples": 42,
+          "peak_used_bytes": 3941597184,
+          "min_free_bytes": 4466933760
+        }
+      },
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "14b-ub1-cupti",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "6526910aee144d50405b712d0d1433af97b191b49eaac45de45bc26c4a7e15cf",
+      "original_capture_sha256": "94ff76817cfe226a140079a45d7919199cf3dfd5e87f34327c3ead559b7eb76c",
+      "baseline_measurements": null,
+      "records": 744784,
+      "gpu_kernel_activities": 26860,
+      "gpu_kernel_types": 15,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "14b-ub128-baseline",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "ced59459507aaf6744bc37acdb4129df63dd5fbf9a1635e18caeec3f221209bd",
+      "original_capture_sha256": "e63dda196390be7ba33039807e1b187759d5bdd0a3ea700a46fa30fc14cd6e1a",
+      "baseline_measurements": {
+        "elapsed_ms": 12620.570400031283,
+        "ttft_ms": 5028.856799995992,
+        "ttft_status": "process_start_to_first_visible_generated_output",
+        "timings": {
+          "load_ms": 3048.23,
+          "prefill_ms": 1642.65,
+          "prefill_tokens": 161,
+          "prefill_tokens_per_second": 98.01,
+          "decode_ms": 6263.86,
+          "decode_tokens": 31,
+          "decode_tokens_per_second": 4.95
+        },
+        "memory": {
+          "peak_rss_bytes": 9525526528,
+          "peak_private_bytes": 3452059648,
+          "scope": "direct_command_process"
+        },
+        "gpu": {
+          "scope": "whole_device_not_process",
+          "samples": 12,
+          "peak_used_bytes": 3906994176,
+          "min_free_bytes": 4501536768
+        }
+      },
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "14b-ub128-cupti",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "9094fbbdd3e78a844c2678eda428cf85171a78e156d3110683790f449b6ef669",
+      "original_capture_sha256": "1ece3eb4a9c0fab63de6a5dfbdcbe449856b8506ccfd534b459b6eb8726f0394",
+      "baseline_measurements": null,
+      "records": 268636,
+      "gpu_kernel_activities": 8776,
+      "gpu_kernel_types": 39,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "14b-ub128-nsys",
+      "native_exit_confirmed": false,
+      "profiler_command_completed": true,
+      "process_tree_drained": true,
+      "original_report_sha256": "53546e1f2e02b672d95e381c1f1d42ee4481e08dc844ef9dc738618a9c2b73b5",
+      "original_capture_sha256": "32ffab233a2683e23a93e1d71dca6b9cd4e9013746ab2bbfc3c7a226911f9679",
+      "baseline_measurements": null,
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": {
+        "status": "observed",
+        "count": 15,
+        "severity_counts": {
+          "info": 14,
+          "warning": 1,
+          "error": 0,
+          "verbose": 0,
+          "unknown": 0
+        },
+        "codes": [
+          "driver_version_outside_profiler_support",
+          "legacy_software_instrumentation",
+          "profiling_start_observed",
+          "profiling_stop_observed"
+        ]
+      }
+    },
+    {
+      "case": "32b-ub1-baseline",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "5703641c92a96de82af2b50da2a5817b09749fd31b85bb7b2b656d194817f783",
+      "original_capture_sha256": "e00642f11a9bcb3d7cd9019ec06a1d3f4f9515d7efe2da5421ec227e1a6d5553",
+      "baseline_measurements": {
+        "elapsed_ms": 103808.47039999207,
+        "ttft_ms": 84591.40999999363,
+        "ttft_status": "process_start_to_first_visible_generated_output",
+        "timings": {
+          "load_ms": 5781.05,
+          "prefill_ms": 78443.74,
+          "prefill_tokens": 161,
+          "prefill_tokens_per_second": 2.05,
+          "decode_ms": 16358.29,
+          "decode_tokens": 31,
+          "decode_tokens_per_second": 1.9
+        },
+        "memory": {
+          "peak_rss_bytes": 20306436096,
+          "peak_private_bytes": 4279996416,
+          "scope": "direct_command_process"
+        },
+        "gpu": {
+          "scope": "whole_device_not_process",
+          "samples": 97,
+          "peak_used_bytes": 4980736000,
+          "min_free_bytes": 3427794944
+        }
+      },
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "32b-ub1-cupti",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "51e1ffc7ca4cd22e4f77071618c680a2da71fbea8eecd50c0d3f57d025912e9d",
+      "original_capture_sha256": "32ac58fad441bb8c7d75be9afbb785a4a86dee1338de9ee06db818c882c9374b",
+      "baseline_measurements": null,
+      "records": 743505,
+      "gpu_kernel_activities": 26758,
+      "gpu_kernel_types": 14,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "32b-ub128-baseline",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "159879defbb4857c39108c30274b3ac0983d5912e2ad79c89a9c5d7c30f6974e",
+      "original_capture_sha256": "8ffe49e256eab2b15eceedcf0cc2dc233331047785fbd050ba41a1ac5c86248e",
+      "baseline_measurements": {
+        "elapsed_ms": 28718.16999994917,
+        "ttft_ms": 10392.610299983062,
+        "ttft_status": "process_start_to_first_visible_generated_output",
+        "timings": {
+          "load_ms": 6164.02,
+          "prefill_ms": 3874.37,
+          "prefill_tokens": 161,
+          "prefill_tokens_per_second": 41.56,
+          "decode_ms": 15594.58,
+          "decode_tokens": 31,
+          "decode_tokens_per_second": 1.99
+        },
+        "memory": {
+          "peak_rss_bytes": 20524797952,
+          "peak_private_bytes": 4630851584,
+          "scope": "direct_command_process"
+        },
+        "gpu": {
+          "scope": "whole_device_not_process",
+          "samples": 27,
+          "peak_used_bytes": 5233442816,
+          "min_free_bytes": 3175088128
+        }
+      },
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "32b-ub128-cupti",
+      "native_exit_confirmed": true,
+      "profiler_command_completed": null,
+      "process_tree_drained": true,
+      "original_report_sha256": "3d942904aee3fad2a968cfec3f9b4cfae7399c22a6e57ad62dd60112d48b2952",
+      "original_capture_sha256": "4a88573766628337f403362e6c03c6b0fb0271108fb8efa8662c14c7d36e984a",
+      "baseline_measurements": null,
+      "records": 310678,
+      "gpu_kernel_activities": 9868,
+      "gpu_kernel_types": 39,
+      "profiler_diagnostics": null
+    },
+    {
+      "case": "32b-ub128-nsys",
+      "native_exit_confirmed": false,
+      "profiler_command_completed": true,
+      "process_tree_drained": true,
+      "original_report_sha256": "1ad25dfd9adf20d36a0f28ca4e2e207af8b24b7b65a6b1015bcd29b445bf0927",
+      "original_capture_sha256": "1696917941a23f855f538f76d826fcc0fd9587249e1b1f259184a8a019a06e4c",
+      "baseline_measurements": null,
+      "records": null,
+      "gpu_kernel_activities": null,
+      "gpu_kernel_types": 0,
+      "profiler_diagnostics": {
+        "status": "observed",
+        "count": 15,
+        "severity_counts": {
+          "info": 14,
+          "warning": 1,
+          "error": 0,
+          "verbose": 0,
+          "unknown": 0
+        },
+        "codes": [
+          "driver_version_outside_profiler_support",
+          "legacy_software_instrumentation",
+          "profiling_start_observed",
+          "profiling_stop_observed"
+        ]
+      }
+    }
+  ],
+  "limitations": [
+    "CPU-offload research baseline, not xVRAM execution or oversubscription",
+    "Visible output digests are not tensor or numerical equivalence",
+    "Unknown tensor footprints, ordering, module ABI, scratch and budgets prevent GO",
+    "Incomplete CUPTI finalization and Nsight driver-version warning prevent full coverage",
+    "Raw native profiler artifacts remain local, not privacy-safe normalized reports",
+    "GPU memory samples describe the whole device, not process usage or WDDM admission budget",
+    "Eight direct native exits and two profiler exits are different evidence"
+  ]
+}
