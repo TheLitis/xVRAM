@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "profile_type": "xvram.cuda_compat_source_profile",
+  "upstream_commit": "6a1a922d269908a29cbd4b49c27e6a8e7fd10fae",
+  "source_base_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/",
+  "files": [
+    {
+      "path": "ggml/src/ggml-cuda/ggml-cuda.cu",
+      "size_bytes": 236438,
+      "sha256": "dca99ae02645500ffe153f0705d8cff37764d906638998bf5a2418c0514a19bc"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/common.cuh",
+      "size_bytes": 63206,
+      "sha256": "e67178a8dc94896cf658933b527dbf4b22e9c9701ea27f399b8a3e239180ced1"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/mmq.cuh",
+      "size_bytes": 71525,
+      "sha256": "fc14ca595c847b529486755ec88291570c77d03cfb6650e5fa15d16993b11380"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/mmvq.cu",
+      "size_bytes": 71004,
+      "sha256": "fe044e64af4e7e8f0d05504bb433f28cf72604a5847477eb9778b451d0a1631b"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/mmvf.cu",
+      "size_bytes": 40708,
+      "sha256": "0aca92c9d54cf4a17cf79ee082f243b99c9bf62915e523050ab57c55e30555a1"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/mmf.cuh",
+      "size_bytes": 45141,
+      "sha256": "1238822ece0bfde54e0b921eb6d5e5595975aa3fddd7769d3b4c30ddd1d65c1a"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/quantize.cu",
+      "size_bytes": 29931,
+      "sha256": "71cd7baab62ee1f457d23ae648c381d18b9b1327ec34832f31463b14b81895b3"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/norm.cu",
+      "size_bytes": 30588,
+      "sha256": "8cb872a9633a7c68c5e9fa8c1f7d39afe9e66636c1299b9fc610b1b4217e7307"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/rope.cu",
+      "size_bytes": 44541,
+      "sha256": "21b424e872267180570dfbc86e6ea67d1a3ced0efd5273d0f23d36da3c621905"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/softmax.cu",
+      "size_bytes": 17724,
+      "sha256": "ac288d3d091ceab46e56b05e298b893f37f6129a7e3b36703c3244675d384976"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/set-rows.cu",
+      "size_bytes": 15356,
+      "sha256": "24654fe55234c12b0d4d1e9c78871509fc5348f7e3ff123e146838c861a8c8a9"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/getrows.cu",
+      "size_bytes": 23115,
+      "sha256": "b857a798c69a6a6ed71e1f99064673dd7a406a301b54d7d92f93787c12c1e3cd"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/convert.cu",
+      "size_bytes": 25968,
+      "sha256": "8ebad5e72905e1218c93e3c636c8317896ba385b07d0c41a35a432ca88654c1c"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/cpy.cu",
+      "size_bytes": 31513,
+      "sha256": "db0520aac5613b26956422e7b10253c564f34cec81cbbe90cdf8b28143ba0984"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/binbcast.cu",
+      "size_bytes": 24790,
+      "sha256": "08c4e21cc2144ee317c52b23c940105f04ffa47a3ed71cbf1f5e06ecaa8cb810"
+    },
+    {
+      "path": "ggml/src/ggml-cuda/unary.cu",
+      "size_bytes": 25294,
+      "sha256": "e8340525baecc6d34b6250fb4e588c774ddf22accc49b6526fa15691ae7def9a"
+    },
+    {
+      "path": "ggml/src/ggml-common.h",
+      "size_bytes": 135161,
+      "sha256": "0061131b615c5721fc88a78feeb22c1f8c450f1c2646a317d80796a653bf595c"
+    },
+    {
+      "path": "ggml/include/ggml.h",
+      "size_bytes": 113310,
+      "sha256": "34192eac913444df9dc1d23025a618448cdee1ee7d78597af4979d8edc77b695"
+    }
+  ]
+}
