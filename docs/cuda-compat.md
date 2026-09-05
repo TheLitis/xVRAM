@@ -24,6 +24,13 @@ An installed Toolkit may supply the headers instead. Applications supply those o
 header include directories as their own build dependencies; xVRAM does not re-export
 build-machine Toolkit paths in its installed CMake targets.
 
+Without an installed Toolkit, header fetching supplies the matching Runtime, CRT,
+and CCCL packages. The latter provides `nv/target`, included transitively by cuBLAS
+even for FP32-only host code. CCCL `13.3.3.3.1` is SHA-256-pinned to NVIDIA's
+[CUDA 13.3 manifest](https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.3.0.json).
+Custom header layouts can set `XVRAM_CUDA_CRT_INCLUDE_DIR` and
+`XVRAM_CUDA_CCCL_INCLUDE_DIR`; configure verifies that the complete facade compiles.
+
 ```cmake
 project(my_inference LANGUAGES CXX)
 find_package(xVRAM CONFIG REQUIRED)

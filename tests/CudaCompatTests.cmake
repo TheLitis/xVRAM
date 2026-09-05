@@ -11,7 +11,7 @@ target_compile_features(xvram-cuda-compat-facade-tests PRIVATE cxx_std_20)
 target_include_directories(xvram-cuda-compat-facade-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_include_directories(xvram-cuda-compat-facade-tests SYSTEM PRIVATE
                           "${XVRAM_CUDA_INCLUDE_DIR}" "${XVRAM_CUBLAS_INCLUDE_DIR}"
-                          "${XVRAM_CUDA_CRT_HEADERS_DIR}")
+                          "${XVRAM_CUDA_CRT_HEADERS_DIR}" "${XVRAM_CUDA_CCCL_HEADERS_DIR}")
 target_link_libraries(xvram-cuda-compat-facade-tests PRIVATE Threads::Threads)
 xvram_enable_warnings(xvram-cuda-compat-facade-tests)
 add_test(NAME xvram.cuda-compat.facade-abi-rejection COMMAND xvram-cuda-compat-facade-tests)
@@ -34,6 +34,7 @@ add_test(NAME xvram.cuda-compat.consumer-profile
                  --cuda-include "${XVRAM_CUDA_INCLUDE_DIR}"
                  --cublas-include "${XVRAM_CUBLAS_INCLUDE_DIR}"
                  --crt-include "${XVRAM_CUDA_CRT_HEADERS_DIR}"
+                 --cccl-include "${XVRAM_CUDA_CCCL_HEADERS_DIR}"
                  --generator "${CMAKE_GENERATOR}"
                  --platform "${CMAKE_GENERATOR_PLATFORM}"
                  --make-program "${CMAKE_MAKE_PROGRAM}"

@@ -8,8 +8,10 @@ if(NOT XVRAM_CUBLAS_INCLUDE_DIR)
           "to an installed Toolkit include directory or enable XVRAM_FETCH_CUBLAS_REDIST.")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/CudaCompatHeaders.cmake")
+
 file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/compat-consumer-dependencies.cmake"
-     CONTENT "set(dependency_XVRAM_CUDA_INCLUDE_DIR [==[${XVRAM_CUDA_INCLUDE_DIR}]==])\nset(dependency_XVRAM_CUBLAS_INCLUDE_DIR [==[${XVRAM_CUBLAS_INCLUDE_DIR}]==])\nset(dependency_XVRAM_CUDA_CRT_HEADERS_DIR [==[${XVRAM_CUDA_CRT_HEADERS_DIR}]==])\n")
+     CONTENT "set(dependency_XVRAM_CUDA_INCLUDE_DIR [==[${XVRAM_CUDA_INCLUDE_DIR}]==])\nset(dependency_XVRAM_CUBLAS_INCLUDE_DIR [==[${XVRAM_CUBLAS_INCLUDE_DIR}]==])\nset(dependency_XVRAM_CUDA_CRT_HEADERS_DIR [==[${XVRAM_CUDA_CRT_HEADERS_DIR}]==])\nset(dependency_XVRAM_CUDA_CCCL_HEADERS_DIR [==[${XVRAM_CUDA_CCCL_HEADERS_DIR}]==])\n")
 
 add_library(xvram_cuda_compat_core STATIC
             src/cuda_compat/adapter.cpp
@@ -81,6 +83,7 @@ target_include_directories(xvram_compat_bench PUBLIC "${PROJECT_SOURCE_DIR}/src"
                                                   "${PROJECT_SOURCE_DIR}/include")
 target_include_directories(xvram_compat_bench SYSTEM PUBLIC "${XVRAM_CUDA_INCLUDE_DIR}"
                                                         "${XVRAM_CUDA_CRT_HEADERS_DIR}"
+                                                        "${XVRAM_CUDA_CCCL_HEADERS_DIR}"
                                                         "${XVRAM_CUBLAS_INCLUDE_DIR}")
 target_link_libraries(xvram_compat_bench PUBLIC xvram_cuda_compat xvram_probe_lib
                                       PRIVATE xvram_gemm_core xvram_worker_process Threads::Threads)

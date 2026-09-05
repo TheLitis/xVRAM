@@ -449,8 +449,12 @@ private:
     if (runtime_) {
       const auto& source = runtime_->telemetry();
       auto& output = snapshot_.runtime;
-      output.flags = (source.stable_addresses ? XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES : 0U) |
-                     (source.no_physical_aliases ? XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES : 0U);
+      output.flags = (source.stable_addresses
+                          ? static_cast<std::uint32_t>(XVRAM_TELEMETRY_STABLE_VIRTUAL_ADDRESSES)
+                          : 0U) |
+                     (source.no_physical_aliases
+                          ? static_cast<std::uint32_t>(XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES)
+                          : 0U);
       output.cache_target_bytes = source.target_bytes;
       output.cache_target_minimum_bytes = source.target_minimum_bytes;
       output.cache_target_maximum_bytes = source.target_maximum_bytes;

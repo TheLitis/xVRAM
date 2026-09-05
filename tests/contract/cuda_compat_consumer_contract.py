@@ -18,7 +18,7 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.
 def main() -> int:
     parser = argparse.ArgumentParser()
     for option in ("cmake", "source", "library", "link-library", "include", "cuda-include",
-                   "cublas-include", "crt-include", "generator", "configuration", "binary-root"):
+                   "cublas-include", "crt-include", "cccl-include", "generator", "configuration", "binary-root"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--platform", default="")
     parser.add_argument("--make-program", default="")
@@ -36,7 +36,8 @@ def main() -> int:
                      f"-DXVRAM_INCLUDE_DIR={args.include}",
                      f"-DXVRAM_CUDA_INCLUDE_DIR={args.cuda_include}",
                      f"-DXVRAM_CUBLAS_INCLUDE_DIR={args.cublas_include}",
-                     f"-DXVRAM_CUDA_CRT_HEADERS_DIR={args.crt_include}"]
+                     f"-DXVRAM_CUDA_CRT_HEADERS_DIR={args.crt_include}",
+                     f"-DXVRAM_CUDA_CCCL_HEADERS_DIR={args.cccl_include}"]
         if args.platform:
             configure.extend(["-A", args.platform])
         if args.make_program:

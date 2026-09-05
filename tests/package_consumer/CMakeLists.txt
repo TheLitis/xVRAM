@@ -55,7 +55,7 @@ if(TARGET xVRAM::cuda_compat)
   target_link_libraries(xvram-package-consumer-cuda-facade PRIVATE xVRAM::cuda_compat)
   target_include_directories(xvram-package-consumer-cuda-facade SYSTEM PRIVATE
     "${dependency_XVRAM_CUDA_INCLUDE_DIR}" "${dependency_XVRAM_CUBLAS_INCLUDE_DIR}"
-    "${dependency_XVRAM_CUDA_CRT_HEADERS_DIR}")
+    "${dependency_XVRAM_CUDA_CRT_HEADERS_DIR}" "${dependency_XVRAM_CUDA_CCCL_HEADERS_DIR}")
   if(MSVC)
     target_compile_options(xvram-package-consumer-cuda-facade PRIVATE /W4 /WX /permissive-)
   else()

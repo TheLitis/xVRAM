@@ -15,7 +15,8 @@ target_compile_definitions(consumer PRIVATE XVRAM_USING_CUDA_COMPAT "CONTRACT_${
 target_include_directories(consumer PRIVATE "${XVRAM_INCLUDE_DIR}")
 target_include_directories(consumer SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}"
                                                    "${XVRAM_CUBLAS_INCLUDE_DIR}"
-                                                   "${XVRAM_CUDA_CRT_HEADERS_DIR}")
+                                                   "${XVRAM_CUDA_CRT_HEADERS_DIR}"
+                                                   "${XVRAM_CUDA_CCCL_HEADERS_DIR}")
 target_link_libraries(consumer PRIVATE compat)
 if(MSVC)
   target_compile_options(consumer PRIVATE /W4 /WX /permissive-)
