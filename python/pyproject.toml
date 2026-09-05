@@ -10,7 +10,11 @@ requires-python = ">=3.9"
 
 [project.scripts]
 xvram-torch-bench = "xvram.torch_bench:main"
+xvram-compat-audit = "xvram.compat_audit:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["xvram*"]
+
+[tool.setuptools.package-data]
+xvram = ["compat_audit_profile.json"]
