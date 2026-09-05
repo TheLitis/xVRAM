@@ -96,6 +96,22 @@ installed-package smoke. An initial parallel Debug run during 32B profiling hit 
 existing controller timeouts; the full serial rerun passed without changing code
 or deadlines. CI also exercises both offline modules and the installed source manifest.
 
+### CI test organization follow-up
+
+The first Windows CI attempt exposed duplicated audit discovery in the general
+Python suite and a final-exit-grace test that charged Python startup against a
+0.5-second retirement watchdog. The unchanged commit passed all seven jobs on
+retry; the approved test-only correction removes both sources of variability.
+The general suite now selects 114 tests and the audit suite selects 135, with
+their existing 60/90-second CTest limits unchanged. A separate selection contract
+guards the disjoint, exhaustive flat-module partition, including legacy names
+and future modules, and rejects unsupported discovery layouts/hooks explicitly.
+The grace arithmetic check uses real protocol frames with a modelled process and
+controller-local clock; live-child success, crash, hang and reap tests remain.
+Production runtime, watchdog settings and frozen contracts are unchanged.
+Post-fix local CTest passed 85/85 Release and 81/81 serial Debug from the Visual
+Studio developer environment; the selection contract's seven cases also passed.
+
 ## Remaining decision gates
 
 Resolver observations do not prove actual invocation routing or owning module.

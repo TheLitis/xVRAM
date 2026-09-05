@@ -78,15 +78,25 @@ if(TARGET xvram_torch_runtime)
                "PATH=path_list_prepend:$<TARGET_FILE_DIR:xvram_torch_runtime>;PATH=path_list_prepend:${XVRAM_TORCH_PRIMARY_LIBRARY_DIR}")
 endif()
 
+set(XVRAM_PYTHON_TEST_PATTERN "test_*.py")
+set(XVRAM_COMPAT_AUDIT_TEST_PATTERN "test_compat_audit*.py")
 add_test(
   NAME xvram.torch-python.unit
-  COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
-          "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "test_*.py")
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/helpers/run_python_tests.py"
+          --start-dir "${CMAKE_CURRENT_SOURCE_DIR}/python"
+          --pattern "${XVRAM_PYTHON_TEST_PATTERN}"
+          --exclude "${XVRAM_COMPAT_AUDIT_TEST_PATTERN}")
 set_tests_properties(
   xvram.torch-python.unit
   PROPERTIES ENVIRONMENT
              "PYTHONPATH=${PROJECT_SOURCE_DIR}/python;XVRAM_TORCH_ALLOCATOR_LIBRARY=$<TARGET_FILE:xvram_torch_allocator>"
              TIMEOUT 60)
+add_test(
+  NAME xvram.python.selection-contract
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/python_test_selection_contract.py"
+          --pattern "${XVRAM_PYTHON_TEST_PATTERN}"
+          --audit-pattern "${XVRAM_COMPAT_AUDIT_TEST_PATTERN}")
+set_tests_properties(xvram.python.selection-contract PROPERTIES TIMEOUT 15 LABELS "no-driver")
 
 add_test(
   NAME xvram.torch-inference.help
@@ -109,7 +119,7 @@ set_tests_properties(xvram.compat-audit.collector-core PROPERTIES
 add_test(
   NAME xvram.compat-audit.unit
   COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
-          "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "test_compat_audit*.py")
+          "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "${XVRAM_COMPAT_AUDIT_TEST_PATTERN}")
 set_tests_properties(
   xvram.compat-audit.unit
   PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python"

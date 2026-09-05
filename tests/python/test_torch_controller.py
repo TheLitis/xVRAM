@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -17,6 +19,8 @@ PYTHON_ROOT = ROOT / "python"
 sys.path.insert(0, str(PYTHON_ROOT))
 
 from xvram.torch_bench import _normalize_plan, _parser, parse_size, run_controller
+from xvram import torch_bench
+from xvram.torch_protocol import MessageType, encode_frame
 from xvram.torch_report import EXIT_COMPLETED, EXIT_RUNTIME, EXIT_TIMEOUT
 
 
@@ -265,12 +269,72 @@ class TorchControllerTests(unittest.TestCase):
         self.assert_schema_valid(result.report)
 
     def test_final_exit_grace_is_independent_of_retirement_watchdog(self) -> None:
-        result = run_controller(
-            plan(),
-            timeout_seconds=5,
-            stall_timeout_seconds=0.5,
-            worker_command=self.command("final-slow-exit"),
+        # This is a deadline-arithmetic test, not a Python startup benchmark.
+        # Live subprocess success/hang/crash/reap coverage remains above. Feed
+        # real protocol frames synchronously and advance a controller-local
+        # clock only when the modelled child exits, avoiding OS scheduling races.
+        spec = importlib.util.spec_from_file_location("torch_worker_fixture", HELPER)
+        assert spec is not None and spec.loader is not None
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        worker_report = helper.completed_report(plan())
+        trace = {
+            "schema_version": 1,
+            "record_type": "xvram.pytorch_trace",
+            "sequence": 1,
+            "monotonic_ns": 0,
+            "kind": "lease",
+            "region_id": 1,
+            "allocation_id": None,
+            "operation": "retired",
+            "bytes": 128,
+            "reason": "test",
+        }
+        output = b"".join(
+            encode_frame(kind, payload)
+            for kind, payload in (
+                (MessageType.PROGRESS, {"sequence": 1, "operations_retired": 1}),
+                (MessageType.TRACE, {"sequence": 2, "records": [trace]}),
+                (MessageType.FINAL, {"sequence": 3, "report": worker_report}),
+            )
         )
+        process = mock.Mock(
+            stdin=io.BytesIO(), stdout=io.BytesIO(output), stderr=None, returncode=None
+        )
+        process.poll.side_effect = lambda: process.returncode
+        clock = mock.Mock()
+        clock.monotonic.return_value = 0.0
+        clock.monotonic_ns.return_value = 0
+        exit_delay = 1.0  # Longer than the 0.5 s retirement watchdog.
+
+        def wait_for_exit(*, timeout: float) -> int:
+            if timeout < exit_delay:
+                raise subprocess.TimeoutExpired("modelled-worker", timeout)
+            clock.monotonic.return_value = exit_delay
+            process.returncode = EXIT_COMPLETED
+            return EXIT_COMPLETED
+
+        process.wait.side_effect = wait_for_exit
+
+        def synchronous_thread(*, target, args, daemon):
+            thread = mock.Mock()
+            thread.start.side_effect = lambda: target(*args)
+            return thread
+
+        with (
+            mock.patch.object(torch_bench.subprocess, "Popen", return_value=process),
+            mock.patch.object(torch_bench, "_WindowsJob"),
+            mock.patch.object(torch_bench.threading, "Thread", side_effect=synchronous_thread),
+            mock.patch.object(torch_bench, "time", clock),
+        ):
+            result = run_controller(
+                plan(),
+                timeout_seconds=5,
+                stall_timeout_seconds=0.5,
+                worker_command=["modelled-worker"],
+            )
+        process.wait.assert_called_once_with(timeout=2.0)
+        self.assertEqual(clock.monotonic(), exit_delay)
         self.assertEqual(result.exit_code, EXIT_COMPLETED)
         self.assertTrue(result.report["cleanup"]["worker_reaped"])
         self.assert_schema_valid(result.report)
