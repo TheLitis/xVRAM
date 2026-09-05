@@ -1,0 +1,175 @@
+{
+  "profile_id": "llama-b10819-qwen25-q4km-win-cuda133-v1",
+  "upstream": {
+    "tag": "b10819",
+    "commit": "6a1a922d269908a29cbd4b49c27e6a8e7fd10fae",
+    "archives": [
+      {
+        "name": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/cudart-llama-bin-win-cuda-13.3-x64.zip",
+        "bytes": 390970417,
+        "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e"
+      },
+      {
+        "name": "llama-b10819-bin-win-cuda-13.3-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10819/llama-b10819-bin-win-cuda-13.3-x64.zip",
+        "bytes": 149589171,
+        "sha256": "c9069222ef057d4c9fe3d67411fed369dcb425fa9c4cd212ea8eef7c7e1a9047"
+      }
+    ],
+    "files": {
+      "cublas64_13.dll": "f1d500d0cd892f5b8c6b6cdbffd82d0c55d5f5427215668e7ceb55aeeccc1b63",
+      "cublasLt64_13.dll": "b592cd016d7673e9cb97716a22b27c4010ee635377a3ba28f37070a9bdb76a68",
+      "cudart64_13.dll": "b00ca6f53699120da815bf3e06e2e4285fae2f201235b883dcbb50eec51e2a2a",
+      "ggml-base.dll": "a2288f45e2ec77d099c4a66182563b291f47085fcf40d7aa8df629b8621b012c",
+      "ggml-cpu-alderlake.dll": "97bb6c9be0fd3b9f278b54bbafc80a93b17d6bc7c97207b0b6c6823cea4d303a",
+      "ggml-cpu-cannonlake.dll": "bc51da6cde468e7c2041c90d287f0f7363d9948831805ed401edb97019756fbc",
+      "ggml-cpu-cascadelake.dll": "627be8ad272a3d6e920923b3ef4f3d9286234271c7cd1b483fdb6e9c01cba74c",
+      "ggml-cpu-cooperlake.dll": "c58c0be6fabd9eb39759662a5e08d95ad563c0c9b6fab59041cc54217ef70131",
+      "ggml-cpu-haswell.dll": "ea7932c70f056262a51d59910b39af02a39b8b131fda8528e38d5efd4f8daf1e",
+      "ggml-cpu-icelake.dll": "d3c060b502411ee29cd5152431363d40bf5311ba217b854c1aca4b4f744490da",
+      "ggml-cpu-ivybridge.dll": "69aecdd84c0ca57106ad978d165e909b4ab817e24b0c2dac3c9f75ac99cf4c56",
+      "ggml-cpu-piledriver.dll": "2d5a2b0438109de075f305cf0a929e4b46e13394b549b587abda931590e978ab",
+      "ggml-cpu-sandybridge.dll": "c92ab38735557ab5d6c232b4a8a73aab6905ee9f17ab9552e11e81348c450902",
+      "ggml-cpu-sapphirerapids.dll": "86f1b393a391d594ce7c04365d728780c154e9248214eff6eea5439b46389bea",
+      "ggml-cpu-skylakex.dll": "d2db8c9a6a45f9709637a6ff9eb8de5538393fb8da02ef605bdc19f0fe1b6e0f",
+      "ggml-cpu-sse42.dll": "16a0753decc707db520096c20ccfc52a3a673751511c504889390d4066713536",
+      "ggml-cpu-x64.dll": "4ad573e79d23955023eabb217b007935dddb253c2ab9df6a89bf39ed64209557",
+      "ggml-cpu-zen4.dll": "876c6b51e30f3da5e2161270ce698963269997f4a09866fce04682ac9a8b3a9f",
+      "ggml-cuda.dll": "88350839e27a43212a52cf6686562b2b6ef1498c59391dfb8cda49f3ebd89a62",
+      "ggml-rpc-server.exe": "bf39c65279520eb498489236250ed7dd3c9906408fff62d10b78634e1f1cefa4",
+      "ggml-rpc.dll": "f6f95cf08998aa412765bd1d93c6d7df087c2ead2a3e1299e72d1a8948b1891d",
+      "ggml.dll": "f3fa941a47e599b988762990c78f1d090805719403b95fdd8db5bfc86025654e",
+      "libomp.dll": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+      "llama-batched-bench-impl.dll": "b6e1e7eb44fb80ca1dbd8bb8a93534a778962ca2bef50685da58ba8d36dd4e34",
+      "llama-batched-bench.exe": "e2f314769ea417aae440eb0387da2ba5cf9f88634ddc6e558cd80362fe980555",
+      "llama-bench-impl.dll": "17c8c3240cd671655a50ca9c3e9dea2e333e26fa6ad2717ff95912d2a877c868",
+      "llama-bench.exe": "3080be36c402c47bd4d1f8eae46a81b9799c079e4502628ac7b2b36eb3423ca5",
+      "llama-cli-impl.dll": "894ae4c93ab953c6a52fb7d9d936660282dfbdb252f41fe64e8692115073f4f1",
+      "llama-cli.exe": "b6ff33d8174d39a819bb0ca6e7c81085aad1f2ab201f0e0fea4b710009c1446c",
+      "llama-common.dll": "36c7a91b7ae446eb4216cb99e9a6ca88602c17c213d11f47600ffb42d1a167c2",
+      "llama-completion-impl.dll": "048bcb846fc954389af0952d415d5297c71de90016daf287a25751c9fd68de49",
+      "llama-completion.exe": "10678184d600ff60f6b3962771b6b2bef48477755236a02e2f7f7f00c0d1fa8d",
+      "llama-fit-params-impl.dll": "e21b758b59c61d22bcb4e777187cdf7608681f471970dc34c07ac82c83e7c481",
+      "llama-fit-params.exe": "e29af1126f0c42f6572f4a1080596a3bf3e1a320f12c8cbbbdaedefa2ab4973e",
+      "llama-gemma3-cli.exe": "6327b73a9dc49873d50ea78cc3a487e5f35eb2f37a49f4beba26c2404a034798",
+      "llama-gguf-split.exe": "873ccc5c6d1d5d4ce4a7f1df16f2a455bcec792eaf31dc7cd814d312fa9889b6",
+      "llama-imatrix.exe": "41f51b75ea243c08fe78fd14f5e74403e539b4b29ae036aa3fae50965e6afe72",
+      "llama-llava-cli.exe": "6327b73a9dc49873d50ea78cc3a487e5f35eb2f37a49f4beba26c2404a034798",
+      "llama-minicpmv-cli.exe": "6327b73a9dc49873d50ea78cc3a487e5f35eb2f37a49f4beba26c2404a034798",
+      "llama-mtmd-cli.exe": "203cf6840fae2e68f855b915ec4fc4bf4b72a0d65c1e0d64f275bf30720ee300",
+      "llama-mtmd-debug.exe": "cfb647e4860c20663598309f8c6113d56957f5cd1ffc2684cfe25247763a7111",
+      "llama-perplexity-impl.dll": "1cdc4395ee16bbc9bce86ba942665c05ed77b3367ed5a9e984c552a30a45155d",
+      "llama-perplexity.exe": "1fb7018ad79b10027854c737c5b64c046548fedb09ab9ae657cc4072ba0ca1d6",
+      "llama-quantize-impl.dll": "0edb2b7846140699f83ffa389d298f1d503b784c9877d5291deafbb021d19c79",
+      "llama-quantize.exe": "28c204aca13f0e95c4835f9fd4e35688e7170dec353780d80ebb8ebaeb13144b",
+      "llama-qwen2vl-cli.exe": "6327b73a9dc49873d50ea78cc3a487e5f35eb2f37a49f4beba26c2404a034798",
+      "llama-results.exe": "2b43492cd0c24e69b4eecdb92293280ed0a58f012b4d516cba2503bbee4ba803",
+      "llama-server-impl.dll": "98c2c2963a9fbdca679f3d44f60afab30e59bdb617eb31d8cd3446a6645dccdf",
+      "llama-server.exe": "149bb866b6cbcac177579e6e8693e0225c59b94a0f384ed562f9ec48f15a8cd3",
+      "llama-tokenize.exe": "3062bb75181079f3446a1e6aff42d5019ea47aeb129b1ae345bf99a64ac357dd",
+      "llama-tts.exe": "c5e4b02d6b87c54faa5d5769d97a6e6f997b7f85b101d3b2dd5b072bf352f9da",
+      "llama.dll": "74c9af774540884c5b054646589d06d91f1f433897bc21e2296e7fe1a030768e",
+      "llama.exe": "98e9a38aebb7aa80f8a38ac0433f3cfc92e67d25b4985bdcd80f4cf34c0f3456",
+      "mtmd.dll": "41674980d011a5676ec50008738217cd1b004729c78ebe8735d3170aa4c24864"
+    }
+  },
+  "models": {
+    "14b": {
+      "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+      "revision": "b466e1f8c07172155743e8e1307507d8a4f91fbd",
+      "files": [
+        {
+          "name": "qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf",
+          "bytes": 3991999872,
+          "sha256": "a09ea5e7b1eafb1b30b241726c3cc3c905c96f14ad41e246ffa5f44e53904f68"
+        },
+        {
+          "name": "qwen2.5-14b-instruct-q4_k_m-00002-of-00003.gguf",
+          "bytes": 3989373504,
+          "sha256": "21b9457d079680d284e90ef69607c4b2d8ef64a09d4729cb7b5e1357bdba41ae"
+        },
+        {
+          "name": "qwen2.5-14b-instruct-q4_k_m-00003-of-00003.gguf",
+          "bytes": 1006737120,
+          "sha256": "c8d37006760a387a35216e070e6664d7da927f10be8eb870fef2e3d4833d9976"
+        }
+      ]
+    },
+    "32b": {
+      "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
+      "revision": "a15e3cc10f8bbb2c0af6f8f1f34a32e3b060c09d",
+      "files": [
+        {
+          "name": "qwen2.5-32b-instruct-q4_k_m-00001-of-00005.gguf",
+          "bytes": 3961498272,
+          "sha256": "403434e5c845452c013661d586b97d5a53cf207462d180a07c301eafa9390d05"
+        },
+        {
+          "name": "qwen2.5-32b-instruct-q4_k_m-00002-of-00005.gguf",
+          "bytes": 3948996064,
+          "sha256": "7371e5c5d717a8c20f526dbfce5d3f201dc3f02140d1c836314cd0756e02e8d7"
+        },
+        {
+          "name": "qwen2.5-32b-instruct-q4_k_m-00003-of-00005.gguf",
+          "bytes": 3993478688,
+          "sha256": "f023ccc294c3bd3b2eac5b2dd40dea3aa4ca1d06c7460ead67c36386cd62e8fc"
+        },
+        {
+          "name": "qwen2.5-32b-instruct-q4_k_m-00004-of-00005.gguf",
+          "bytes": 3950347744,
+          "sha256": "05fe76d941454390cd7aa0de3b342f83a1d1226a959479af85bbfae7cd93e771"
+        },
+        {
+          "name": "qwen2.5-32b-instruct-q4_k_m-00005-of-00005.gguf",
+          "bytes": 3997015616,
+          "sha256": "8c2e8ecc686129c37821bd9f3b3e251e6ae80deadd3d3348f7e3e84492a63c24"
+        }
+      ]
+    }
+  },
+  "source_evidence": [
+    {
+      "evidence_id": "upstream-release-provenance",
+      "status": "source_proven",
+      "source": "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b10819",
+      "claim": "The two selected Windows CUDA 13.3 release archives are pinned by their upstream SHA-256 digests; executable and DLL hashes identify the extracted artifact bytes.",
+      "limitation": "A matching release archive or module hash does not establish runtime kernel argument or memory access contracts."
+    },
+    {
+      "evidence_id": "backend-native-vmm-pool",
+      "status": "source_proven",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/ggml/src/ggml-cuda/ggml-cuda.cu#L531-L679",
+      "claim": "The pinned CUDA backend contains its own virtual-memory pool using cuMemAddressReserve, cuMemCreate, cuMemMap, cuMemSetAccess, and full mapped-range cleanup.",
+      "limitation": "Source presence does not prove the pool was selected or bound its live allocations for a captured run; reconcile actual API observations before memory admission."
+    },
+    {
+      "evidence_id": "backend-native-streams",
+      "status": "source_proven",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/ggml/src/ggml-cuda/common.cuh#L1419-L1521",
+      "claim": "The pinned backend maintains per-device stream, cuBLAS handle, workspace, and pool state; streams are created with cudaStreamNonBlocking and cuBLAS handles are bound to the current stream.",
+      "limitation": "A one-GPU profile does not by itself prove one stream or compatibility with the isolated serial Phase 6a context. Capture and prove the actual ordering and ownership."
+    },
+    {
+      "evidence_id": "backend-copy-event-ordering",
+      "status": "source_proven",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/ggml/src/ggml-cuda/ggml-cuda.cu#L2441-L2543",
+      "claim": "Backend tensor transfer functions use asynchronous CUDA copies and include event/stream coordination for cross-backend transfers.",
+      "limitation": "These functions do not expose complete tensor alias/range contracts at a generic CUDA API boundary; observed pointers and copy sizes must not become inferred tensor bounds."
+    },
+    {
+      "evidence_id": "quantized-kernel-access-contracts",
+      "status": "unresolved",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/ggml/src/ggml-cuda/mmq.cu",
+      "claim": "A complete argument ABI, tensor subrange, padding, indirect-access, and scratch contract for every Q4_K_M prefill/decode kernel is not supplied by this diagnostic profile.",
+      "limitation": "Kernel names, module hashes, launch geometry, and allocation extents alone cannot justify managed-pointer residency. This unresolved catalog entry prevents a GO verdict."
+    },
+    {
+      "evidence_id": "whole-profile-coverage",
+      "status": "unresolved",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/ggml/src/ggml-cuda/ggml-cuda.cu#L4415-L4471",
+      "claim": "Capture must cover actual selected kernels and lifecycle stages for both 14B/32B and microbatch 1/128; the existence of source implementations is not complete execution coverage.",
+      "limitation": "The audit does not replace or rebuild kernels, infer arbitrary pointer semantics, or certify uncaptured paths. Missing teardown, dropped records, or unknown access ranges remain NO-GO blockers."
+    }
+  ]
+}
