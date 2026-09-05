@@ -1,0 +1,1118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-audit-trace-v1.schema.json",
+  "title": "xVRAM address-redacted normalized compatibility audit trace record v1",
+  "description": "One JSONL record. Process-local IDs are not raw addresses. Kernel_binding is reserved for independently verified typed evidence; the CUPTI observer emits no such records. parameter_bytes describes the API metadata struct, never kernel arguments. CUPTI activity times must not be compared with envelope steady-clock timestamps.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "collector_version",
+        "process_id",
+        "max_record_bytes",
+        "kernel_arguments_captured",
+        "tensor_bounds_known",
+        "cublas_api_visibility",
+        "timestamp_clock",
+        "activity_clock",
+        "runtime_parameter_bytes_not_kernel_arguments"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "session"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "collector_version": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "process_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_record_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_arguments_captured": {
+          "type": "boolean"
+        },
+        "tensor_bounds_known": {
+          "type": "boolean"
+        },
+        "cublas_api_visibility": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "timestamp_clock": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "activity_clock": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "runtime_parameter_bytes_not_kernel_arguments": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "callback_id",
+        "correlation_id",
+        "thread_id",
+        "symbol",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "api_enter"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "op": {
+          "enum": [
+            "allocate",
+            "free",
+            "host_allocate",
+            "host_free",
+            "host_register",
+            "host_unregister",
+            "copy",
+            "memset",
+            "vmm_reserve",
+            "vmm_free",
+            "vmm_create",
+            "vmm_release",
+            "vmm_map",
+            "vmm_unmap",
+            "vmm_access",
+            "launch",
+            "module_function",
+            "stream",
+            "event",
+            "other"
+          ]
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "physical_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "handle_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "parameter_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "src_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "width_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_range_known": {
+          "type": "boolean"
+        },
+        "dst_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_range_known": {
+          "type": "boolean"
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "callback_id",
+        "correlation_id",
+        "thread_id",
+        "symbol",
+        "detail_known",
+        "status"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "api_exit"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "op": {
+          "enum": [
+            "allocate",
+            "free",
+            "host_allocate",
+            "host_free",
+            "host_register",
+            "host_unregister",
+            "copy",
+            "memset",
+            "vmm_reserve",
+            "vmm_free",
+            "vmm_create",
+            "vmm_release",
+            "vmm_map",
+            "vmm_unmap",
+            "vmm_access",
+            "launch",
+            "module_function",
+            "stream",
+            "event",
+            "other"
+          ]
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "physical_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "handle_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "parameter_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "src_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "width_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "src_range_known": {
+          "type": "boolean"
+        },
+        "dst_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dst_range_known": {
+          "type": "boolean"
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "activity_kind",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "activity"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "activity_kind": {
+          "enum": [
+            "kernel",
+            "api_runtime",
+            "api_driver",
+            "memcpy",
+            "memset",
+            "memory",
+            "function",
+            "unknown"
+          ]
+        },
+        "activity_kind_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "start_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "end_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "operation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "resource_kind",
+        "operation",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "resource"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "resource_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "detail_known": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "reason",
+        "lost_records"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "gap"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "lost_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "callback_records",
+        "activity_records",
+        "resource_records",
+        "dropped_records",
+        "unknown_callback_details",
+        "unknown_activity_kinds",
+        "serialization_errors",
+        "collector_errors",
+        "complete",
+        "safely_finalized",
+        "terminal_checkpoint",
+        "buffers_requested",
+        "buffers_completed",
+        "incomplete_activities"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "summary"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "callback_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "activity_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "resource_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dropped_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unknown_callback_details": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unknown_activity_kinds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "serialization_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "collector_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "safely_finalized": {
+          "type": "boolean"
+        },
+        "terminal_checkpoint": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "buffers_requested": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "buffers_completed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "incomplete_activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "correlation_id",
+        "contract_id",
+        "kernel_name",
+        "bindings",
+        "scratch_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "kind": {
+          "const": "kernel_binding"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "contract_id": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tensor_name",
+              "allocation_id",
+              "generation",
+              "offset_bytes",
+              "size_bytes",
+              "access"
+            ],
+            "properties": {
+              "tensor_name": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "allocation_id": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "offset_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "size_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "access": {
+                "enum": [
+                  "read",
+                  "write",
+                  "read_write"
+                ]
+              }
+            }
+          }
+        },
+        "scratch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    }
+  ]
+}

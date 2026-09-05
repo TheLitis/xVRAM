@@ -1,0 +1,1184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-audit-v1.schema.json",
+  "title": "xVRAM observation-only CUDA compatibility audit v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "generated_at_utc",
+    "provenance",
+    "configuration",
+    "inventory",
+    "model",
+    "coverage",
+    "memory_bounds",
+    "unresolved",
+    "decision",
+    "outcome",
+    "cleanup"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_compat_audit"
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "model_revision",
+        "upstream_commit",
+        "collector_version",
+        "analyzer_version",
+        "observation_file",
+        "observation_file_sha256",
+        "binary_sha256",
+        "source_catalog",
+        "source_evidence",
+        "tool_versions"
+      ],
+      "properties": {
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_revision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "upstream_commit": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "collector_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "analyzer_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_file": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation_file_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binary_sha256": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "source_catalog": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contract_id",
+              "kernel_name",
+              "source_sha256",
+              "source_url",
+              "upstream_commit",
+              "evidence"
+            ],
+            "properties": {
+              "contract_id": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "kernel_name": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "source_url": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "upstream_commit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "evidence": {
+                "const": "source_proven"
+              }
+            }
+          }
+        },
+        "source_evidence": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence_id",
+              "status",
+              "source",
+              "claim",
+              "limitation"
+            ],
+            "properties": {
+              "evidence_id": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "status": {
+                "enum": [
+                  "observed",
+                  "source_proven",
+                  "unresolved"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "claim": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "limitation": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              }
+            }
+          }
+        },
+        "tool_versions": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "cache_budget_bytes",
+        "scratch_reserve_bytes",
+        "chunk_bytes",
+        "max_record_bytes",
+        "max_trace_bytes",
+        "max_records",
+        "raw_addresses_serialized",
+        "weight_payloads_read_by_metadata_parser"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "cache_budget_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scratch_reserve_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chunk_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_record_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_trace_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "raw_addresses_serialized": {
+          "const": false
+        },
+        "weight_payloads_read_by_metadata_parser": {
+          "const": false
+        }
+      }
+    },
+    "inventory": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "name",
+          "sha256",
+          "size_bytes",
+          "format",
+          "evidence",
+          "pe",
+          "errors"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "enum": [
+              "unknown",
+              "pe",
+              "gguf",
+              "other"
+            ]
+          },
+          "evidence": {
+            "enum": [
+              "observed",
+              "source_proven",
+              "unresolved"
+            ]
+          },
+          "pe": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "machine",
+                  "bits",
+                  "imports",
+                  "dynamic_resolution_possible",
+                  "absence_of_import_proves_static_linkage"
+                ],
+                "properties": {
+                  "machine": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  },
+                  "bits": {
+                    "enum": [
+                      32,
+                      64
+                    ]
+                  },
+                  "imports": {
+                    "type": "array",
+                    "maxItems": 1024,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "library",
+                        "delayed",
+                        "symbols"
+                      ],
+                      "properties": {
+                        "library": {
+                          "type": "string",
+                          "maxLength": 4096,
+                          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+                        },
+                        "delayed": {
+                          "type": "boolean"
+                        },
+                        "symbols": {
+                          "type": "array",
+                          "maxItems": 16384,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 4096,
+                            "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "dynamic_resolution_possible": {
+                    "type": "boolean"
+                  },
+                  "absence_of_import_proves_static_linkage": {
+                    "const": false
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            }
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "file_size_bytes",
+        "metadata_bytes_read",
+        "tensor_count",
+        "metadata_count",
+        "alignment",
+        "data_offset_bytes",
+        "known_tensor_bytes",
+        "metadata_sha256",
+        "architecture",
+        "unknown_tensor_types",
+        "layout_source",
+        "evidence"
+      ],
+      "properties": {
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file_size_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata_bytes_read": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tensor_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alignment": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_offset_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "known_tensor_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "architecture": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unknown_tensor_types": {
+          "anyOf": [
+            {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "layout_source": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096,
+              "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "enum": [
+                "observed",
+                "source_proven",
+                "unresolved"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "records",
+        "session",
+        "api_enter",
+        "api_exit",
+        "activity",
+        "resource",
+        "gap",
+        "kernel_launches",
+        "kernel_activities",
+        "failed_api_calls",
+        "dropped_records",
+        "unknown_callback_details",
+        "unknown_activity_kinds",
+        "serialization_errors",
+        "collector_errors",
+        "incomplete_activities",
+        "gap_lost_records",
+        "trace_files",
+        "complete_trace_files",
+        "resolved_kernel_launches",
+        "kernel_types",
+        "api_symbols",
+        "operations",
+        "resources",
+        "evidence",
+        "activity_kernel_types"
+      ],
+      "properties": {
+        "records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "session": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "api_enter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "api_exit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "activity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "resource": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "gap": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_launches": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "failed_api_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dropped_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unknown_callback_details": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unknown_activity_kinds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "serialization_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "collector_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "incomplete_activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "gap_lost_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "trace_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "complete_trace_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "resolved_kernel_launches": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "kernel_types": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "launches",
+              "semantic_ranges"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "launches": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "semantic_ranges": {
+                "enum": [
+                  "observed",
+                  "source_proven",
+                  "unresolved"
+                ]
+              }
+            }
+          }
+        },
+        "api_symbols": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "domain",
+              "symbol",
+              "calls"
+            ],
+            "properties": {
+              "domain": {
+                "enum": [
+                  "runtime",
+                  "driver"
+                ]
+              },
+              "symbol": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        },
+        "operations": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "successful_calls"
+            ],
+            "properties": {
+              "op": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "successful_calls": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        },
+        "resources": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "resource_kind",
+              "operation",
+              "records"
+            ],
+            "properties": {
+              "resource_kind": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "operation": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "records": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        },
+        "evidence": {
+          "const": "observed"
+        },
+        "activity_kernel_types": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "activities",
+              "argument_abi",
+              "read_write_ranges",
+              "padding",
+              "indirect_access",
+              "scratch",
+              "module_function_hash_identity"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "activities": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "argument_abi": {
+                "const": "unresolved"
+              },
+              "read_write_ranges": {
+                "const": "unresolved"
+              },
+              "padding": {
+                "const": "unresolved"
+              },
+              "indirect_access": {
+                "const": "unresolved"
+              },
+              "scratch": {
+                "const": "unresolved"
+              },
+              "module_function_hash_identity": {
+                "const": "unresolved"
+              }
+            }
+          }
+        }
+      }
+    },
+    "memory_bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observed_peak_live_allocation_bytes",
+        "observed_copy_bytes",
+        "source_proven_peak_kernel_working_set_bytes",
+        "required_cache_bytes_including_scratch_reserve",
+        "allocation_sizes_are_tensor_bounds",
+        "observed_allocation_metric",
+        "evidence"
+      ],
+      "properties": {
+        "observed_peak_live_allocation_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "observed_copy_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "source_proven_peak_kernel_working_set_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_cache_bytes_including_scratch_reserve": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allocation_sizes_are_tensor_bounds": {
+          "const": false
+        },
+        "observed_allocation_metric": {
+          "const": "storage_extents_not_physical_vram"
+        },
+        "evidence": {
+          "enum": [
+            "observed",
+            "source_proven",
+            "unresolved"
+          ]
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "count",
+          "evidence"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "evidence": {
+            "const": "unresolved"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "execution_ready",
+        "scope",
+        "interoperability_impossible_proven"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "GO",
+            "NO-GO"
+          ]
+        },
+        "execution_ready": {
+          "type": "boolean"
+        },
+        "scope": {
+          "const": "pinned_observed_workload_only"
+        },
+        "interoperability_impossible_proven": {
+          "const": false
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "invalid_input",
+            "failed"
+          ]
+        },
+        "exit_code": {
+          "type": "integer",
+          "enum": [
+            0,
+            23,
+            26,
+            27,
+            64,
+            74
+          ]
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controller_reaped",
+        "collector_finalized",
+        "complete"
+      ],
+      "properties": {
+        "controller_reaped": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "collector_finalized": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "complete": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "properties": {
+              "verdict": {
+                "const": "GO"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "decision": {
+            "properties": {
+              "execution_ready": {
+                "const": true
+              }
+            }
+          },
+          "unresolved": {
+            "maxItems": 0
+          },
+          "memory_bounds": {
+            "properties": {
+              "source_proven_peak_kernel_working_set_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "required_cache_bytes_including_scratch_reserve": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "decision": {
+            "properties": {
+              "execution_ready": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
