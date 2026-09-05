@@ -57,7 +57,8 @@ $probePath = Join-Path $outputRoot "probe.json"
 & $probe --device $Device --json $probePath --no-text --compact-json
 Assert-Gate ($LASTEXITCODE -eq 0) "capability probe failed"
 $probeReport = Get-Content -LiteralPath $probePath -Raw | ConvertFrom-Json
-$deviceReport = @($probeReport.devices | Where-Object { $_.ordinal -eq $Device })
+Assert-Gate ($probeReport.report_type -eq "xvram.capability_probe") "unexpected capability report type"
+$deviceReport = @($probeReport.cuda.devices | Where-Object { $_.ordinal -eq $Device })
 Assert-Gate ($deviceReport.Count -eq 1) "requested probe device absent"
 Assert-Gate ($deviceReport[0].name -match $ExpectedDeviceNamePattern) "hardware gate requires the requested RTX 3070"
 $total = [uint64]$deviceReport[0].total_memory_bytes
