@@ -245,6 +245,11 @@ An optional observation-only CUPTI collector is enabled separately with
 [compatibility audit guide](docs/cuda-compat-audit.md) for the pinned profile, evidence
 boundary, capture requirements, privacy, and reproduction workflow.
 
+The [evidence refinement](docs/cuda-compat-audit-refinement.md) adds opt-in resolver
+trace v2, offline launch reconciliation and pinned source-candidate indexing. It
+reconciles 72,262 observed GPU activities but deliberately retains NO-GO for transparent
+execution; source-name matches are not ABI or tensor-bound proofs.
+
 ## Build
 
 Requirements:

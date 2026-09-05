@@ -276,6 +276,22 @@ tests (two POSIX-only skips on Windows), standalone warning-clean collector/core
 and installed Python CLI smoke. Windows/Linux CI adds the audit's CPU-only collector
 registry and Python contracts while retaining all earlier regression jobs.
 
+### Evidence refinement — observed launch correlation established
+
+The follow-up [evidence refinement](cuda-compat-audit-refinement.md) adds opt-in
+resolver trace v2, independent offline Runtime/Driver/GPU reconciliation and a pinned
+source-candidate index. Four additional unchanged native CPU-offload captures cover
+14B/32B and microbatch 1/128. All 72,262 observed GPU activities reconcile; 3,072 of
+3,076 resolver callback returns provide non-null results. Each case retains one
+unresolved `cuDeviceGetNvSciSyncAttributes` result. Eighteen verified upstream files
+provide 35 candidate definitions for 39 observed names, not compiled ABI proof.
+
+The verdict remains NO-GO. Observed correlation is now separate from missing memory
+contracts and incomplete collection; neither the default trace/report v1 nor any
+production contract changed. Local Release 84/84, serial Debug 80/80 and 135 focused
+Python tests passed (two platform skips). Full provenance and the initial parallel
+Debug timeout/retest are recorded in the linked acceptance evidence.
+
 ## Phase 6b.1 and later — require separate approval
 
 1. Resolve the audit's concrete evidence gaps and approve a bounded unchanged-backend

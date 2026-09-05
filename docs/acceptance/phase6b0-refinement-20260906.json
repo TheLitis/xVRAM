@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "report_type": "xvram.cuda_compat_audit_refinement_acceptance",
+  "date": "2026-09-06",
+  "profile_id": "llama-b10819-qwen25-q4km-win-cuda133-v1",
+  "local_artifact_root": "artifacts/phase6b0-refinement-20260906",
+  "decision": "NO-GO",
+  "execution_ready": false,
+  "oversubscription_proof": false,
+  "native_cpu_offload": true,
+  "full_trace": false,
+  "interoperability_impossible_proven": false,
+  "collector_sha256": "c00e17f1e7f2a5f144d82babe55442fa3c3a7af2e45ea8e9a3cba080dfc4c173",
+  "source_index_sha256": "0be3d67a0fb6246e1f96665cc9890e7c02757928ad14f6d9e4857933156048f4",
+  "source_coverage": {
+    "activity_kernel_types": 39,
+    "ambiguous_types": 0,
+    "binary_bound_types": 0,
+    "candidate_only_types": 35,
+    "complete_profile_coverage": false,
+    "kernel_activities": 72262,
+    "unresolved_types": 4
+  },
+  "verified_source_files": 18,
+  "verified_source_only_facts": 6,
+  "source_revision": "41fe1d1258eaafbd02b03884c7eba283e9f990c2",
+  "source_sha256": {
+    "python/xvram/compat_audit_profile.json": "97798495ed2267818ff89f2be0363b2b78900a63a854d7fb10c3e8ce12fd5000",
+    "python/xvram/compat_audit_source_profile.json": "256a3ab053a9614d2c5fbdfeaddc038f20f5dd0a284956bf11bc66823283add5",
+    "python/xvram/compat_audit_analysis.py": "f36d68cb900abf8ca964ab33b72ee3f1095a06f961f776a77c1eb74ffd011682",
+    "python/xvram/compat_audit_correlations.py": "d4d9897cd520af87a54bdc66b87d335156a7c03c723b4d78277711ddf234be3b",
+    "python/xvram/compat_audit_routing.py": "08e1348feed0107bd3a654cbedbc5c8f03999e23aeb498c2380dcdb51577c492",
+    "python/xvram/compat_audit_observations.py": "48cce22ecc114d271884bbee476280a4eb8b76d56c9ac8f322c5ba8ed86132d6",
+    "python/xvram/compat_audit_sources.py": "ded7b9e7074f8e7dfebcd0325ec45412631612453d98cc5105cfc1a1d29cb602",
+    "src/compat_audit_collector/collector.cpp": "522156abc02df1511222ecb7bf1f0f1a6a80b99f00aeb991e23a89f5d367e680",
+    "src/compat_audit_collector/trace_core.hpp": "fa4f4be91456a5cb65326f627b775021b6d3fafd759255214552a7ad0d9e1569"
+  },
+  "cases": [
+    {
+      "case": "14b-ub1",
+      "native_exit_confirmed": true,
+      "process_tree_drained": true,
+      "visible_output_matches_prior": true,
+      "records": 744784,
+      "gpu_activities": 26860,
+      "nested_runtime_driver_gpu": 26860,
+      "direct_driver_launches": 0,
+      "launch_records_reconciled": true,
+      "resolver_calls": 765,
+      "resolved_calls": 764,
+      "unknown_resolver_calls": 1,
+      "artifact_sha256": {
+        "capture.json": "2ce40c8bb92dab1aaaf0806fecdf899963997535870c68b95774175964641cce",
+        "report.json": "35d20398adcd9e25738f5849a49ade8445d2374936c5918f63bce48700239632",
+        "observations.json": "f7b45ad17f58662e3c442becb310fb41788496041194ba58daf0f2f73fec1147",
+        "cupti-trace.jsonl": "5a2043a96cf91ceed456046e229aaf7c63d124bcd14ec51f215acf1b2eaba187"
+      }
+    },
+    {
+      "case": "14b-ub128",
+      "native_exit_confirmed": true,
+      "process_tree_drained": true,
+      "visible_output_matches_prior": true,
+      "records": 268636,
+      "gpu_activities": 8776,
+      "nested_runtime_driver_gpu": 8680,
+      "direct_driver_launches": 96,
+      "launch_records_reconciled": true,
+      "resolver_calls": 773,
+      "resolved_calls": 772,
+      "unknown_resolver_calls": 1,
+      "artifact_sha256": {
+        "capture.json": "fd94ff0805fe52c6995af2689345c4d87bae7c2f853bc38db74a2f8f4b812e4f",
+        "report.json": "e5988a24d5b8170f496cc2f9249443f994ef7bca17551336fb0c3d7aa561788b",
+        "observations.json": "33850ae5eb06048694c057442a97ede8d5190a9aa665dad94623b2febd11f2de",
+        "cupti-trace.jsonl": "09e9696668274f32b23eccda1837a8d61514a58c6e5d0fd2733c95d0797c0940"
+      }
+    },
+    {
+      "case": "32b-ub1",
+      "native_exit_confirmed": true,
+      "process_tree_drained": true,
+      "visible_output_matches_prior": true,
+      "records": 743505,
+      "gpu_activities": 26758,
+      "nested_runtime_driver_gpu": 26758,
+      "direct_driver_launches": 0,
+      "launch_records_reconciled": true,
+      "resolver_calls": 765,
+      "resolved_calls": 764,
+      "unknown_resolver_calls": 1,
+      "artifact_sha256": {
+        "capture.json": "190266ed8210d87f2aedfe9b6d063b0da2c0ef5ae44309eba442e7ab2ed54c30",
+        "report.json": "d310a7f3160738a7956d9ab09e5168c4dd7323d597fa252fed3edf13f7d5e8fd",
+        "observations.json": "f8defbe6ce1a966f6a1adb85316ff66d84bd755237936e470ef84b00ea093ff1",
+        "cupti-trace.jsonl": "123721f374c520d97ec4145cf6e6e71c37854b6a5fc6d4a6fec25c0375f7b69e"
+      }
+    },
+    {
+      "case": "32b-ub128",
+      "native_exit_confirmed": true,
+      "process_tree_drained": true,
+      "visible_output_matches_prior": true,
+      "records": 310678,
+      "gpu_activities": 9868,
+      "nested_runtime_driver_gpu": 9740,
+      "direct_driver_launches": 128,
+      "launch_records_reconciled": true,
+      "resolver_calls": 773,
+      "resolved_calls": 772,
+      "unknown_resolver_calls": 1,
+      "artifact_sha256": {
+        "capture.json": "1ec03ddef6f7f45a47248a1277e818a631890567c1394a37d8f199cf34c0df12",
+        "report.json": "6fbdd137d00943b7e86a61ab633674259d6f0f55a0e8b6cde9ec9fbf7a4486ea",
+        "observations.json": "85c49aa8893ecadec38d50c9cd0db52611d3fc35cbdba9960d16b7517fcb9e6d",
+        "cupti-trace.jsonl": "d7f3cb9c4f57b16eb2be790b4f0a74e4f84ddede2b2a1808d188c80838635116"
+      }
+    }
+  ],
+  "validation": {
+    "release_ctest_passed": 84,
+    "release_ctest_total": 84,
+    "debug_serial_ctest_passed": 80,
+    "debug_serial_ctest_total": 80,
+    "python_tests_run": 135,
+    "python_tests_skipped": 2,
+    "collector_core_passed": true,
+    "installed_python_smoke_passed": true,
+    "prior_contracts_preserved": true,
+    "initial_parallel_debug_note": "Two existing controller tests timed out during concurrent 32B profiling; full serial rerun passed without changing tests or timeouts."
+  },
+  "remaining_obligations": [
+    "complete_dynamic_invocation_routing",
+    "compiled_module_function_argument_abi",
+    "tensor_alias_indirect_and_scratch_ranges",
+    "native_vmm_and_device_ordering",
+    "live_working_set_and_WDDM_budget",
+    "safe_terminal_collection",
+    "null_cuDeviceGetNvSciSyncAttributes_result"
+  ],
+  "scope_notes": [
+    "Resolver counts describe callback layers, not distinct entry points or proven invocation routes.",
+    "All 72,262 observed GPU launch records reconcile; absence of missing launches is not proved.",
+    "Visible text equality is not tensor or numerical equivalence.",
+    "No additional baseline performance comparison was performed."
+  ]
+}

@@ -36,7 +36,10 @@ jobs:
           python -m pip install ./python &&
           python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1" &&
           xvram-compat-audit --help &&
-          xvram-compat-audit --version
+          xvram-compat-audit --version &&
+          python -m xvram.compat_audit_observations --help &&
+          python -m xvram.compat_audit_sources --help &&
+          python -c "from xvram.compat_audit_sources import load_profile; assert len(load_profile()[0]['files']) == 18"
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'

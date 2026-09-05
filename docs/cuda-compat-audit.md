@@ -10,6 +10,11 @@ implement a CUDA interceptor or claim that the pinned application already runs t
 xVRAM. It leaves production residency, the explicit Phase 6a adapter, and all earlier
 ABI/schema/export contracts unchanged. A useful completed audit may conclude `NO-GO`.
 
+The subsequent [evidence refinement](cuda-compat-audit-refinement.md) adds opt-in
+resolver trace v2, reconciles observed Runtime/Driver/GPU launches, and indexes pinned
+source candidates. Original v1 reports/traces remain unchanged; the finding is still
+NO-GO because full routing, memory contracts and terminal coverage are not established.
+
 ## Pinned application profile
 
 The first practical target is an unchanged official llama.cpp executable **and its
