@@ -29,7 +29,8 @@ private:
     if (value.size() > 4096) throw std::length_error("string limit");
     constexpr char hex[] = "0123456789abcdef";
     std::string result = "\"";
-    for (const unsigned char ch : value) {
+    for (const char raw_ch : value) {
+      const auto ch = static_cast<unsigned char>(raw_ch);
       if (ch == '"' || ch == '\\') { result += '\\'; result += static_cast<char>(ch); }
       else if (ch < 0x20 || ch >= 0x7f) {
         result += "\\u00"; result += hex[ch >> 4]; result += hex[ch & 15];

@@ -31,10 +31,12 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --requirement tests/requirements.txt
 
-      - name: Build and install Phase 4 Python package
+      - name: Build and install Python frontends
         run: >-
           python -m pip install ./python &&
-          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1"
+          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1" &&
+          xvram-compat-audit --help &&
+          xvram-compat-audit --version
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -82,6 +84,12 @@ jobs:
         run: >-
           ctest --test-dir build --build-config ${{ matrix.build_type }}
           --output-on-failure --no-tests=error
+
+      - name: Verify Phase 6b diagnostic audit without GPU or profiling tools
+        run: >-
+          ctest --test-dir build --build-config ${{ matrix.build_type }}
+          --output-on-failure --no-tests=error
+          -R '^xvram[.]compat-audit[.]'
 
       - name: Enable explicit CUDA compatibility profile after default-OFF regression
         run: >-
@@ -309,7 +317,7 @@ jobs:
       - name: Build Stable-ABI bridge and control tests
         run: >-
           cmake --build build --config Release --parallel
-          --target xvram_torch_runtime xvram-torch-runtime-control-tests
+          --target xvram_torch_runtime xvram-torch-runtime-control-tests xvram-compat-audit-core-tests
 
       - name: Verify Stable-ABI build, exports, registration, and control table
         run: >-
@@ -330,6 +338,12 @@ jobs:
           --output-on-failure --no-tests=error
           -R '^xvram[.]torch-runtime[.](stable-load|control)$'
 
+      - name: Verify diagnostic audit remains independent of PyTorch and CUDA
+        run: >-
+          ctest --test-dir build --build-config Release
+          --output-on-failure --no-tests=error
+          -R '^xvram[.]compat-audit[.]'
+
   linux-sanitizers:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -346,10 +360,12 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --requirement tests/requirements.txt
 
-      - name: Build and install Phase 4 Python package
+      - name: Build and install Python frontends
         run: >-
           python -m pip install ./python &&
-          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1"
+          python -c "import xvram; assert xvram.TORCH_ALLOCATOR_ABI_VERSION == 1" &&
+          xvram-compat-audit --help &&
+          xvram-compat-audit --version
 
       - name: Configure Clang ASan and UBSan
         env:
@@ -405,3 +421,8 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Verify Phase 6b diagnostic audit without GPU or profiling tools
+        run: >-
+          ctest --test-dir build --output-on-failure --no-tests=error
+          -R '^xvram[.]compat-audit[.]'

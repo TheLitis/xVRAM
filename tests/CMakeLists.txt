@@ -98,6 +98,33 @@ set_tests_properties(
   xvram.torch-inference.help xvram.torch-inference.version
   PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)
 
+add_executable(xvram-compat-audit-core-tests
+  "${PROJECT_SOURCE_DIR}/src/compat_audit_collector/core_tests.cpp")
+target_compile_features(xvram-compat-audit-core-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-compat-audit-core-tests)
+add_test(NAME xvram.compat-audit.collector-core COMMAND xvram-compat-audit-core-tests)
+set_tests_properties(xvram.compat-audit.collector-core PROPERTIES
+  TIMEOUT 15 LABELS "no-driver;compat-audit")
+
+add_test(
+  NAME xvram.compat-audit.unit
+  COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s
+          "${CMAKE_CURRENT_SOURCE_DIR}/python" -p "test_compat_audit*.py")
+set_tests_properties(
+  xvram.compat-audit.unit
+  PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python"
+             TIMEOUT 90 LABELS "no-driver;compat-audit")
+add_test(
+  NAME xvram.compat-audit.help
+  COMMAND "${Python3_EXECUTABLE}" -m xvram.compat_audit --help)
+add_test(
+  NAME xvram.compat-audit.version
+  COMMAND "${Python3_EXECUTABLE}" -m xvram.compat_audit --version)
+set_tests_properties(
+  xvram.compat-audit.help xvram.compat-audit.version
+  PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python"
+             TIMEOUT 15 LABELS "no-driver;compat-audit")
+
 add_executable(xvram-vmm-poc-unit-tests unit/vmm_poc_tests.cpp
                                           "${PROJECT_SOURCE_DIR}/src/vmm_poc/workload.cpp")
 target_include_directories(xvram-vmm-poc-unit-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")

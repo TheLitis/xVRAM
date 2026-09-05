@@ -25,6 +25,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(XVRAM_BUILD_TESTS "Build xVRAM tests" ${BUILD_TESTING})
 option(XVRAM_BUILD_CUDA_COMPAT "Build the opt-in synchronous CUDA/cuBLAS compatibility profile" OFF)
+option(XVRAM_BUILD_COMPAT_AUDIT_COLLECTOR
+       "Build the optional diagnostic-only CUPTI compatibility audit collector" OFF)
 option(XVRAM_FETCH_CUDA_HEADERS
        "Download NVIDIA's official CUDA redistributable headers when no Toolkit is installed" ON)
 option(XVRAM_FETCH_CUBLAS_REDIST
@@ -974,6 +976,13 @@ if(XVRAM_BUILD_CUDA_COMPAT)
   include(cmake/CudaCompat.cmake)
 endif()
 
+if(XVRAM_BUILD_COMPAT_AUDIT_COLLECTOR)
+  # Observation only: the collector has no dependency on the production SDK/runtime.
+  # It requires a separately installed CUPTI development package and is never staged
+  # into the application unless the audit controller explicitly requests capture.
+  add_subdirectory(src/compat_audit_collector)
+endif()
+
 install(FILES ${XVRAM_NVCOMP_RUNTIME_LIBRARIES}
         DESTINATION "${XVRAM_NVCOMP_INSTALL_DESTINATION}")
 install(FILES "${XVRAM_NVCOMP_REDIST_ROOT}/LICENSE"
@@ -1018,6 +1027,8 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/pytorch-inference-trace-record-v2.schema.json
               schemas/adaptive-compression-report-v1.schema.json
               schemas/compression-trace-record-v1.schema.json
+              schemas/cuda-compat-audit-v1.schema.json
+              schemas/cuda-compat-audit-trace-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 configure_package_config_file(
