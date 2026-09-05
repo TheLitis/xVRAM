@@ -524,14 +524,20 @@ add_test(
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/residency-trace-record-v1.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/gemm-bench-report-v1.schema.json"
           "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-report-v1.schema.json"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v1.schema.json")
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/adaptive-compression-report-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/compression-trace-record-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-report-v2.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../schemas/pytorch-inference-trace-record-v2.schema.json")
 
 add_test(
   NAME xvram.abi.hash-contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/contract/abi_hash_contract.py"
           "${PROJECT_SOURCE_DIR}/include/xvram/xvram.h"
           "${PROJECT_SOURCE_DIR}/include/xvram/torch_allocator.h"
-          "${PROJECT_SOURCE_DIR}/include/xvram/internal/torch_runtime.h")
+          "${PROJECT_SOURCE_DIR}/include/xvram/internal/torch_runtime.h"
+          "${PROJECT_SOURCE_DIR}/include/xvram/xvram_v2.h"
+          "${PROJECT_SOURCE_DIR}/include/xvram/internal/torch_runtime_v2.h")
 
 add_test(
   NAME xvram.torch-inference.json-contract

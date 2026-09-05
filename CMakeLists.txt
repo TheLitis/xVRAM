@@ -24,6 +24,7 @@ find_package(Threads REQUIRED)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(XVRAM_BUILD_TESTS "Build xVRAM tests" ${BUILD_TESTING})
+option(XVRAM_BUILD_CUDA_COMPAT "Build the opt-in synchronous CUDA/cuBLAS compatibility profile" OFF)
 option(XVRAM_FETCH_CUDA_HEADERS
        "Download NVIDIA's official CUDA redistributable headers when no Toolkit is installed" ON)
 option(XVRAM_FETCH_CUBLAS_REDIST
