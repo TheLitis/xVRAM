@@ -6,6 +6,19 @@ add_executable(xvram-cuda-compat-tests unit/cuda_compat_tests.cpp)
 target_link_libraries(xvram-cuda-compat-tests PRIVATE xvram_cuda_compat_core)
 xvram_enable_warnings(xvram-cuda-compat-tests)
 add_test(NAME xvram.cuda-compat.adapter-fake COMMAND xvram-cuda-compat-tests)
+add_executable(xvram-cuda-compat-facade-tests unit/cuda_compat_facade_tests.cpp)
+target_compile_features(xvram-cuda-compat-facade-tests PRIVATE cxx_std_20)
+target_include_directories(xvram-cuda-compat-facade-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(xvram-cuda-compat-facade-tests SYSTEM PRIVATE
+                          "${XVRAM_CUDA_INCLUDE_DIR}" "${XVRAM_CUBLAS_INCLUDE_DIR}"
+                          "${XVRAM_CUDA_CRT_HEADERS_DIR}")
+target_link_libraries(xvram-cuda-compat-facade-tests PRIVATE Threads::Threads)
+xvram_enable_warnings(xvram-cuda-compat-facade-tests)
+add_test(NAME xvram.cuda-compat.facade-abi-rejection COMMAND xvram-cuda-compat-facade-tests)
+add_test(NAME xvram.cuda-compat.facade-missing-members
+         COMMAND xvram-cuda-compat-facade-tests --missing-members)
+add_test(NAME xvram.cuda-compat.facade-wrong-version
+         COMMAND xvram-cuda-compat-facade-tests --wrong-version)
 add_test(NAME xvram.cuda-compat.export-parser
          COMMAND "${Python3_EXECUTABLE}"
                  "${CMAKE_CURRENT_SOURCE_DIR}/contract/cuda_compat_export_contract.py" --self-test)

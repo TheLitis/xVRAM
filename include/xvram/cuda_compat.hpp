@@ -231,27 +231,28 @@ inline cublasStatus_t cublasSgemm(cublasHandle_t h, cublasOperation_t oa, cublas
 } // namespace xvram::cuda_compat
 
 /* Define before including this header to redirect the approved source-call spellings.
- * Without this opt-in, use xvram::cuda_compat::cudaMalloc etc. No native library is linked. */
+ * Both bare calls and ::cudaMalloc-style calls are supported. Without this opt-in,
+ * use xvram::cuda_compat::cudaMalloc etc. No native library is linked. */
 #if defined(XVRAM_CUDA_COMPAT_REMAP_NAMES) && XVRAM_CUDA_COMPAT_REMAP_NAMES
-#define cudaMalloc ::xvram::cuda_compat::cudaMalloc
-#define cudaFree ::xvram::cuda_compat::cudaFree
-#define cudaMemcpy ::xvram::cuda_compat::cudaMemcpy
-#define cudaGetDevice ::xvram::cuda_compat::cudaGetDevice
-#define cudaGetDeviceCount ::xvram::cuda_compat::cudaGetDeviceCount
-#define cudaSetDevice ::xvram::cuda_compat::cudaSetDevice
-#define cudaDeviceSynchronize ::xvram::cuda_compat::cudaDeviceSynchronize
-#define cudaPeekAtLastError ::xvram::cuda_compat::cudaPeekAtLastError
-#define cudaGetLastError ::xvram::cuda_compat::cudaGetLastError
-#define cudaGetErrorName ::xvram::cuda_compat::cudaGetErrorName
-#define cudaGetErrorString ::xvram::cuda_compat::cudaGetErrorString
-#define cublasCreate ::xvram::cuda_compat::cublasCreate
-#define cublasDestroy ::xvram::cuda_compat::cublasDestroy
-#define cublasGetVersion ::xvram::cuda_compat::cublasGetVersion
-#define cublasSetStream ::xvram::cuda_compat::cublasSetStream
-#define cublasGetStream ::xvram::cuda_compat::cublasGetStream
-#define cublasSetPointerMode ::xvram::cuda_compat::cublasSetPointerMode
-#define cublasGetPointerMode ::xvram::cuda_compat::cublasGetPointerMode
-#define cublasSetMathMode ::xvram::cuda_compat::cublasSetMathMode
-#define cublasGetMathMode ::xvram::cuda_compat::cublasGetMathMode
-#define cublasSgemm ::xvram::cuda_compat::cublasSgemm
+#define cudaMalloc xvram::cuda_compat::cudaMalloc
+#define cudaFree xvram::cuda_compat::cudaFree
+#define cudaMemcpy xvram::cuda_compat::cudaMemcpy
+#define cudaGetDevice xvram::cuda_compat::cudaGetDevice
+#define cudaGetDeviceCount xvram::cuda_compat::cudaGetDeviceCount
+#define cudaSetDevice xvram::cuda_compat::cudaSetDevice
+#define cudaDeviceSynchronize xvram::cuda_compat::cudaDeviceSynchronize
+#define cudaPeekAtLastError xvram::cuda_compat::cudaPeekAtLastError
+#define cudaGetLastError xvram::cuda_compat::cudaGetLastError
+#define cudaGetErrorName xvram::cuda_compat::cudaGetErrorName
+#define cudaGetErrorString xvram::cuda_compat::cudaGetErrorString
+#define cublasCreate xvram::cuda_compat::cublasCreate
+#define cublasDestroy xvram::cuda_compat::cublasDestroy
+#define cublasGetVersion xvram::cuda_compat::cublasGetVersion
+#define cublasSetStream xvram::cuda_compat::cublasSetStream
+#define cublasGetStream xvram::cuda_compat::cublasGetStream
+#define cublasSetPointerMode xvram::cuda_compat::cublasSetPointerMode
+#define cublasGetPointerMode xvram::cuda_compat::cublasGetPointerMode
+#define cublasSetMathMode xvram::cuda_compat::cublasSetMathMode
+#define cublasGetMathMode xvram::cuda_compat::cublasGetMathMode
+#define cublasSgemm xvram::cuda_compat::cublasSgemm
 #endif

@@ -83,10 +83,29 @@ jobs:
           ctest --test-dir build --build-config ${{ matrix.build_type }}
           --output-on-failure --no-tests=error
 
+      - name: Enable explicit CUDA compatibility profile after default-OFF regression
+        run: >-
+          cmake -S . -B build
+          -DXVRAM_BUILD_CUDA_COMPAT=ON
+          -DXVRAM_FETCH_CUBLAS_REDIST=ON
+
+      - name: Build CUDA compatibility profile
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Test complete no-GPU suite with compatibility ON
+        run: >-
+          ctest --test-dir build --build-config ${{ matrix.build_type }}
+          --output-on-failure --no-tests=error
+
       - name: Install SDK package
         run: >-
           cmake --install build --config ${{ matrix.build_type }}
           --prefix build/install
+
+      - name: Verify relocated hash-pinned app-local cuBLAS pair
+        run: >-
+          python tests/contract/cuda_compat_relocated_contract.py
+          --install build/install --build build --configuration ${{ matrix.build_type }}
 
       - name: Verify relocated app-local nvCOMP package (Windows)
         if: runner.os == 'Windows'
@@ -213,6 +232,7 @@ jobs:
         run: >-
           cmake -S tests/package_consumer -B build/package-consumer -A x64
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+          -DXVRAM_BUILD_TREE=${{ github.workspace }}/build
 
       - name: Configure installed C and C++ consumers (Linux)
         if: runner.os == 'Linux'
@@ -220,6 +240,7 @@ jobs:
           cmake -S tests/package_consumer -B build/package-consumer -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+          -DXVRAM_BUILD_TREE=${{ github.workspace }}/build
 
       - name: Build installed-package consumers
         run: >-
@@ -340,6 +361,8 @@ jobs:
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           -DXVRAM_BUILD_TESTS=ON
+          -DXVRAM_BUILD_CUDA_COMPAT=ON
+          -DXVRAM_FETCH_CUBLAS_REDIST=ON
           -DXVRAM_WARNINGS_AS_ERRORS=ON
 
       - name: Build with sanitizers

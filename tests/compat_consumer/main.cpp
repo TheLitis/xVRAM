@@ -15,8 +15,8 @@ int main() {
   return static_cast<int>(cuInit(0));
 #elif defined(CONTRACT_unsupported_cublas)
   const double one = 1.0;
-  return static_cast<int>(cublasDgemm(nullptr, CUBLAS_OP_N, CUBLAS_OP_N, 1, 1, 1,
-                                    &one, nullptr, 1, nullptr, 1, &one, nullptr, 1));
+  return static_cast<int>(cublasDgemm(nullptr, CUBLAS_OP_N, CUBLAS_OP_N, 1, 1, 1, &one, nullptr, 1,
+                                      nullptr, 1, &one, nullptr, 1));
 #elif defined(CONTRACT_unsupported_launch)
   return static_cast<int>(cudaLaunchKernel(nullptr, dim3(1), dim3(1), nullptr, 0, nullptr));
 #else
@@ -33,6 +33,22 @@ int main() {
   cublasHandle_t handle = nullptr;
   if (cublasCreate(&handle) == CUBLAS_STATUS_SUCCESS || handle != nullptr) {
     return 3;
+  }
+  float* typed_pointer = nullptr;
+  if (::cudaMalloc(&typed_pointer, 16) == cudaSuccess || typed_pointer != nullptr) {
+    return 4;
+  }
+  if (::cublasCreate(&handle) == CUBLAS_STATUS_SUCCESS || handle != nullptr) {
+    return 5;
+  }
+  cudaStream_t stream = reinterpret_cast<cudaStream_t>(uintptr_t{17});
+  if (::cublasGetStream(handle, &stream) == CUBLAS_STATUS_SUCCESS ||
+      stream != reinterpret_cast<cudaStream_t>(uintptr_t{17})) {
+    return 6;
+  }
+  if (::cudaGetLastError() != cudaErrorInitializationError ||
+      ::cudaPeekAtLastError() != cudaSuccess) {
+    return 7;
   }
   return 0;
 #endif
