@@ -13,6 +13,7 @@
 #else
 #include <cerrno>
 #include <csignal>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 namespace {
@@ -88,6 +89,30 @@ int main(int argc, char** argv) {
   }
   options.arguments = {"success"};
   options.executable = std::filesystem::path(argv[1]).parent_path() / "missing-compat-worker";
-  check(!run_isolated_worker(options).started, "nonexistent worker should fail to start");
+  const auto missing = run_isolated_worker(options);
+  check(!missing.timed_out && !missing.trace_error && !missing.final.has_value(),
+        "missing executable must fail without timeout, trace error, or a final report");
+  check(missing.latest_report_json.empty() && missing.heartbeat_frames == 0 &&
+            missing.progress_frames == 0 && missing.trace_frames == 0 && missing.trace_bytes == 0,
+        "missing executable must not report worker activity");
+  check(!missing.error.empty(), "missing executable must retain a failure diagnostic");
+#ifdef _WIN32
+  // CreateProcessW reports an absent image before a process is created. The public
+  // controller converts this platform failure to its schema-valid exit-27 report.
+  check(!missing.started && !missing.protocol_error && missing.process_exit_code == 27,
+        "Windows missing executable must fail during process creation");
+#else
+  // fork succeeds before execv can report ENOENT. The short-lived child exits 127;
+  // EOF without a final frame is a protocol failure, mapped to public exit 27.
+  check(missing.started && missing.protocol_error && missing.process_exit_code == 127,
+        "POSIX missing executable must preserve the reaped exec-failure result");
+  // This dedicated test process owns only the already-drained helper children. Check
+  // that the exec-failure child is neither still running nor left as an unreaped zombie.
+  int child_status = 0;
+  errno = 0;
+  const auto child = waitpid(-1, &child_status, WNOHANG);
+  check(child == -1 && errno == ECHILD,
+        "POSIX missing executable left a live or unreaped child after controller return");
+#endif
   return failures == 0 ? 0 : 1;
 }
