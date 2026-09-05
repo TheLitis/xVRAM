@@ -171,6 +171,11 @@ public:
     std::uint64_t map_generation = 0;
   };
 
+  struct RetiredReservation {
+    cuda::abi::DevicePointer address = 0;
+    std::uint64_t bytes = 0;
+  };
+
   struct StagingSlot {
     void* memory = nullptr;
     cuda::abi::Event done = nullptr;
@@ -732,6 +737,30 @@ public:
                   "allocation is referenced by an active external lease");
     }
     Allocation& owner = *found->second;
+    if (config_.retain_released_va && owner.reservation != 0) {
+      // Reserve the eventual ownership transfer before unmapping or erasing any backing. The
+      // append below must not allocate after the allocation has been destructively retired.
+      if (!checked_add(telemetry_.retired_va_bytes, owner.reservation_bytes).has_value() ||
+          retired_reservations_.size() == retired_reservations_.max_size()) {
+        return fail(RuntimeStatus::host_oom, "allocation", "reserve_retired_va_ledger",
+                    "retired virtual reservation ledger capacity is exhausted");
+      }
+      if (retired_reservations_.size() == retired_reservations_.capacity()) {
+        try {
+          const std::size_t capacity = retired_reservations_.capacity();
+          const std::size_t maximum = retired_reservations_.max_size();
+          retired_reservations_.reserve(capacity == 0 ? 1U
+                                                     : (capacity > maximum / 2U ? maximum
+                                                                                 : capacity * 2U));
+        } catch (const std::bad_alloc&) {
+          return fail(RuntimeStatus::host_oom, "allocation", "reserve_retired_va_ledger",
+                      "retired virtual reservation ledger allocation failed");
+        } catch (...) {
+          return fail(RuntimeStatus::internal_failure, "allocation", "reserve_retired_va_ledger",
+                      "retired virtual reservation ledger growth failed");
+        }
+      }
+    }
     for (ChunkRecord& record : owner.chunks) {
       if (record.state == ChunkState::resident_dirty &&
           writeback(record.key) != RuntimeStatus::success) {
@@ -742,7 +771,7 @@ public:
         return error_.status;
       }
     }
-    if (!owner.reservation_quarantined && owner.reservation != 0) {
+    if (!config_.retain_released_va && !owner.reservation_quarantined && owner.reservation != 0) {
       if (const cuda::abi::Result code = api_.mem_address_free_(
               owner.reservation, static_cast<std::size_t>(owner.reservation_bytes));
           code != cuda::abi::success) {
@@ -758,6 +787,12 @@ public:
                     "authoritative backing generation could not be released");
       }
       notify_lifecycle_progress();
+    }
+    if (config_.retain_released_va && owner.reservation != 0) {
+      retired_reservations_.push_back({owner.reservation, owner.reservation_bytes});
+      ++telemetry_.retired_va_reservations;
+      telemetry_.retired_va_bytes += owner.reservation_bytes;
+      owner.reservation = 0;
     }
     telemetry_.logical_bytes = telemetry_.logical_bytes >= owner.logical_bytes
                                    ? telemetry_.logical_bytes - owner.logical_bytes
@@ -1669,6 +1704,25 @@ public:
         notify_lifecycle_progress();
       }
     }
+    // Every retired reservation was fully unmapped before release committed. It remains
+    // independently safe to free even if another, still-live allocation is quarantined. Keep
+    // failed entries owned by this ledger for the rest of the runtime lifetime.
+    for (RetiredReservation& reservation : retired_reservations_) {
+      if (api_.mem_address_free_(reservation.address, static_cast<std::size_t>(reservation.bytes)) !=
+          cuda::abi::success) {
+        telemetry_.quarantined = true;
+        poisoned_ = true;
+        note_cleanup_failure();
+      } else {
+        --telemetry_.retired_va_reservations;
+        telemetry_.retired_va_bytes -= reservation.bytes;
+        ++telemetry_.retired_va_reservations_freed;
+        telemetry_.retired_va_bytes_freed += reservation.bytes;
+        reservation.address = 0;
+      }
+    }
+    std::erase_if(retired_reservations_,
+                  [](const RetiredReservation& reservation) { return reservation.address == 0; });
     refresh_host_telemetry();
     bool chunk_users_retired = cleanup_ledger_known;
     for (const auto& [id, owner] : allocations_) {
@@ -1830,6 +1884,16 @@ public:
   [[nodiscard]] std::optional<std::uint64_t> allocation_size(const AllocationId id) const noexcept {
     const Allocation* owner = allocation(id);
     return owner == nullptr ? std::nullopt : std::optional<std::uint64_t>{owner->logical_bytes};
+  }
+
+  [[nodiscard]] std::optional<cuda::abi::DevicePointer>
+  allocation_address(const AllocationId id) const noexcept {
+    const Allocation* owner = allocation(id);
+    if (!ready() || owner == nullptr || owner->reservation == 0 ||
+        owner->reservation_quarantined || owner->logical_base == 0) {
+      return std::nullopt;
+    }
+    return owner->logical_base;
   }
 
   [[nodiscard]] std::optional<HostChunkInfo>
@@ -4395,6 +4459,7 @@ private:
 #endif
   std::uint64_t policy_sequence_ = 0;
   std::unordered_map<std::uint64_t, std::unique_ptr<Allocation>> allocations_;
+  std::vector<RetiredReservation> retired_reservations_;
   std::unique_ptr<BlockCodec> backing_codec_;
   std::unique_ptr<HostBackingStore> backing_store_;
   std::unique_ptr<CpuCodecWorkerPool> cpu_codec_pool_;
@@ -4511,6 +4576,10 @@ std::uint64_t Runtime::target_bytes() const noexcept {
 }
 std::optional<std::uint64_t> Runtime::allocation_size(const AllocationId id) const noexcept {
   return impl_->allocation_size(id);
+}
+std::optional<cuda::abi::DevicePointer>
+Runtime::allocation_address(const AllocationId id) const noexcept {
+  return impl_->allocation_address(id);
 }
 std::optional<HostChunkInfo> Runtime::backing_info(const AllocationId id,
                                                    const std::uint64_t chunk_index) const noexcept {

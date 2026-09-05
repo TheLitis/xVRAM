@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -86,6 +87,8 @@ enum class FaultSite {
   no_device,
   context_create,
   host_allocate,
+  address_reserve,
+  address_free,
   memory_create,
   map,
   set_access,
@@ -180,6 +183,9 @@ struct FakeCuda {
   std::vector<std::string> violations;
   std::vector<std::unique_ptr<Token>> tokens;
   std::map<DevicePointer, std::size_t> reservations;
+  bool recycle_freed_reservations = false;
+  std::map<DevicePointer, std::size_t> reusable_reservations;
+  std::vector<std::pair<DevicePointer, std::size_t>> freed_reservations;
   std::map<GenericAllocationHandle, PhysicalAllocation> physical;
   std::map<DevicePointer, Mapping> mappings;
   std::map<DevicePointer, LinearAllocation> linear;
@@ -458,6 +464,18 @@ Result CUDAAPI fake_mem_get_info(std::size_t* free_bytes, std::size_t* total_byt
 
 Result CUDAAPI fake_address_reserve(DevicePointer* address, const std::size_t bytes, std::size_t,
                                     DevicePointer, unsigned long long) {
+  if (fake().injection.should_inject(FaultSite::address_reserve)) {
+    return fake().injection.result;
+  }
+  const auto reusable = std::find_if(
+      fake().reusable_reservations.begin(), fake().reusable_reservations.end(),
+      [bytes](const auto& reservation) { return reservation.second == bytes; });
+  if (fake().recycle_freed_reservations && reusable != fake().reusable_reservations.end()) {
+    *address = reusable->first;
+    fake().reservations.emplace(*reusable);
+    fake().reusable_reservations.erase(reusable);
+    return CUDA_SUCCESS;
+  }
   const DevicePointer base = fake().next_reservation;
   fake().next_reservation += static_cast<DevicePointer>(bytes + 2ULL * chunk_bytes);
   fake().reservations.emplace(base, bytes);
@@ -478,6 +496,13 @@ Result CUDAAPI fake_address_free(const DevicePointer address, const std::size_t 
       fake().violation("VA reservation was freed while a mapping remained live");
       return CUDA_ERROR_INVALID_VALUE;
     }
+  }
+  if (fake().injection.should_inject(FaultSite::address_free)) {
+    return fake().injection.result;
+  }
+  fake().freed_reservations.emplace_back(address, bytes);
+  if (fake().recycle_freed_reservations) {
+    fake().reusable_reservations.emplace(address, bytes);
   }
   fake().reservations.erase(reservation);
   return CUDA_SUCCESS;
@@ -1344,6 +1369,252 @@ void runtime_allocation_release_unmaps_test() {
   CHECK(cuda.events.empty());
   CHECK(std::all_of(cuda.physical.begin(), cuda.physical.end(),
                     [](const auto& pair) { return pair.second.released; }));
+}
+
+[[nodiscard]] xvram::residency::RuntimeConfig runtime_va_config(const bool retain) {
+  xvram::residency::RuntimeConfig config;
+  config.chunk_bytes = chunk_bytes;
+  config.cache_target_bytes = 8ULL * chunk_bytes;
+  config.device_headroom_bytes = chunk_bytes;
+  config.staging_slots = 2;
+  config.stall_timeout = std::chrono::milliseconds(100);
+  config.retain_released_va = retain;
+  return config;
+}
+
+void runtime_allocation_address_is_nonresident_and_stable_test() {
+  const CheckContext context("allocation address is stable without residency");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(false));
+  CHECK(!runtime.allocation_address(AllocationId{1}));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  CHECK(!runtime.allocation_address(AllocationId{}));
+  CHECK(!runtime.allocation_address(AllocationId{999}));
+
+  RuntimeAllocation allocation;
+  CHECK(runtime.allocate(2ULL * chunk_bytes + 17U, ResidencyHint::normal, allocation) ==
+        RuntimeStatus::success);
+  const auto address = runtime.allocation_address(allocation.id);
+  CHECK(address.has_value());
+  if (!address) {
+    return;
+  }
+  const auto reservation = *cuda.reservations.begin();
+  CHECK(*address > reservation.first);
+  CHECK(*address % chunk_bytes == 0U);
+  CHECK(cuda.map_calls == 0U);
+  CHECK(runtime.telemetry().resident_bytes == 0U);
+  CHECK(runtime.telemetry().h2d_bytes == 0U);
+  CHECK(runtime.telemetry().transactions_submitted == 0U);
+  CHECK(runtime.allocation_address(allocation.id) == address);
+
+  const std::array access{AccessRange{allocation.id, chunk_bytes + 8U, 16U, AccessMode::read}};
+  CHECK(runtime.execute(access, 0, [&](const TransactionContext& transaction) {
+    CHECK(transaction.ranges.front().device_address == *address + chunk_bytes + 8U);
+    return RuntimeStatus::success;
+  }) == RuntimeStatus::success);
+  CHECK(runtime.allocation_address(allocation.id) == address);
+  CHECK(runtime.drain(true) == RuntimeStatus::success);
+  CHECK(cuda.mappings.empty());
+  CHECK(runtime.allocation_address(allocation.id) == address);
+  CHECK(runtime.release(allocation.id) == RuntimeStatus::success);
+  CHECK(!runtime.allocation_address(allocation.id));
+  CHECK(runtime.telemetry().retired_va_reservations == 0U);
+  CHECK(cuda.address_free_calls == 1U);
+  CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(!runtime.allocation_address(allocation.id));
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_retained_va_prevents_reuse_test(const bool retain) {
+  const CheckContext context(retain ? "retained VA prevents allocation ABA"
+                                    : "default release allows CUDA VA reuse");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  cuda.recycle_freed_reservations = true;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(retain));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  RuntimeAllocation first;
+  CHECK(runtime.allocate(chunk_bytes + 17U, ResidencyHint::normal, first) ==
+        RuntimeStatus::success);
+  const auto first_address = runtime.allocation_address(first.id);
+  const auto first_reservation = *cuda.reservations.begin();
+  CHECK(runtime.release(first.id) == RuntimeStatus::success);
+  CHECK(!runtime.allocation_address(first.id));
+  CHECK(!runtime.allocation_size(first.id));
+  CHECK(!runtime.backing_info(first.id, 0));
+  CHECK(runtime.telemetry().logical_bytes == 0U);
+  CHECK(runtime.telemetry().host_stored_bytes == 0U);
+  CHECK(runtime.telemetry().resident_bytes == 0U);
+  CHECK(runtime.telemetry().retired_va_reservations == (retain ? 1U : 0U));
+  CHECK(runtime.telemetry().retired_va_bytes == (retain ? first_reservation.second : 0U));
+  CHECK(cuda.address_free_calls == (retain ? 0U : 1U));
+
+  RuntimeAllocation second;
+  CHECK(runtime.allocate(chunk_bytes + 17U, ResidencyHint::normal, second) ==
+        RuntimeStatus::success);
+  CHECK(second.id != first.id);
+  CHECK((runtime.allocation_address(second.id) != first_address) == retain);
+  CHECK(runtime.release(second.id) == RuntimeStatus::success);
+  RuntimeAllocation live;
+  CHECK(runtime.allocate(3ULL * chunk_bytes, ResidencyHint::normal, live) ==
+        RuntimeStatus::success);
+  const auto before_close = cuda.reservations;
+  CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.address_free_calls == 3U);
+  CHECK(cuda.freed_reservations.size() == 3U);
+  for (const auto& reservation : before_close) {
+    CHECK(std::count_if(cuda.freed_reservations.begin(), cuda.freed_reservations.end(),
+                        [&](const auto& freed) {
+                          return freed.first == reservation.first &&
+                                 freed.second == reservation.second;
+                        }) == 1);
+  }
+  CHECK(runtime.telemetry().retired_va_reservations == 0U);
+  CHECK(runtime.telemetry().retired_va_bytes == 0U);
+  CHECK(runtime.telemetry().retired_va_reservations_freed == (retain ? 2U : 0U));
+  CHECK(runtime.telemetry().retired_va_bytes_freed ==
+        (retain ? 2ULL * first_reservation.second : 0U));
+  CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(cuda.address_free_calls == 3U);
+  CHECK(!runtime.allocation_address(live.id));
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_retained_va_rejects_active_lease_test() {
+  const CheckContext context("retained VA release respects active lease");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(true));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  RuntimeAllocation allocation;
+  CHECK(runtime.allocate(chunk_bytes, ResidencyHint::normal, allocation) == RuntimeStatus::success);
+  const auto address = runtime.allocation_address(allocation.id);
+  const std::array access{AccessRange{allocation.id, 0, chunk_bytes, AccessMode::read}};
+  ExternalLease lease;
+  CHECK(runtime.acquire_external({access, 0}, lease) == RuntimeStatus::success);
+  CHECK(runtime.release(allocation.id) == RuntimeStatus::invalid_argument);
+  CHECK(runtime.telemetry().retired_va_reservations == 0U);
+  CHECK(runtime.allocation_address(allocation.id) == address);
+  CHECK(runtime.seal_external(lease.id, ExternalSealMode::cancelled_before_submission) ==
+        RuntimeStatus::success);
+  ExternalLeasePoll completion;
+  CHECK(runtime.wait_external(lease.id, std::chrono::milliseconds(100), completion) ==
+        RuntimeStatus::callback_skipped);
+  CHECK(runtime.release(allocation.id) == RuntimeStatus::success);
+  CHECK(cuda.mappings.empty());
+  CHECK(cuda.address_free_calls == 0U);
+  CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(cuda.address_free_calls == 1U);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_retained_va_allocation_failure_preserves_ledger_test() {
+  const CheckContext context("failed allocation preserves retired VA ownership");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(true));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  RuntimeAllocation retired;
+  CHECK(runtime.allocate(chunk_bytes, ResidencyHint::normal, retired) == RuntimeStatus::success);
+  CHECK(runtime.release(retired.id) == RuntimeStatus::success);
+  const auto reservations = cuda.reservations;
+  cuda.injection.site = FaultSite::address_reserve;
+  cuda.injection.result = CUDA_ERROR_OUT_OF_MEMORY;
+  RuntimeAllocation failed;
+  CHECK(runtime.allocate(chunk_bytes, ResidencyHint::normal, failed) == RuntimeStatus::device_oom);
+  CHECK(cuda.injection.triggered);
+  CHECK(cuda.reservations == reservations);
+  CHECK(runtime.telemetry().retired_va_reservations == 1U);
+  CHECK(runtime.telemetry().logical_bytes == 0U);
+  CHECK(runtime.telemetry().host_stored_bytes == 0U);
+  CHECK(!runtime.allocation_address(failed.id));
+  CHECK(runtime.close() == RuntimeStatus::success);
+  CHECK(cuda.reservations.empty());
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_retained_va_unmap_failure_preserves_live_reservation_test() {
+  const CheckContext context("retired VA cleanup leaves quarantined live VA owned");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(true));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  RuntimeAllocation retired;
+  CHECK(runtime.allocate(chunk_bytes, ResidencyHint::normal, retired) == RuntimeStatus::success);
+  CHECK(runtime.release(retired.id) == RuntimeStatus::success);
+  RuntimeAllocation live;
+  CHECK(runtime.allocate(chunk_bytes, ResidencyHint::normal, live) == RuntimeStatus::success);
+  const std::array access{AccessRange{live.id, 0, chunk_bytes, AccessMode::read}};
+  CHECK(runtime.execute(access, 0, [](const auto&) { return RuntimeStatus::success; }) ==
+        RuntimeStatus::success);
+  cuda.injection.site = FaultSite::unmap;
+  cuda.injection.persistent = true;
+  CHECK(runtime.release(live.id) != RuntimeStatus::success);
+  CHECK(cuda.injection.triggered);
+  CHECK(runtime.poisoned());
+  CHECK(runtime.allocation_size(live.id) == chunk_bytes);
+  CHECK(!runtime.allocation_address(live.id));
+  CHECK(runtime.telemetry().allocations_released == 1U);
+  CHECK(runtime.telemetry().retired_va_reservations == 1U);
+  CHECK(cuda.reservations.size() == 2U);
+  CHECK(cuda.address_free_calls == 0U);
+  CHECK(runtime.close() == RuntimeStatus::cleanup_failure);
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(cuda.mappings.size() == 1U);
+  CHECK(cuda.address_free_calls == 1U);
+  CHECK(runtime.telemetry().retired_va_reservations_freed == 1U);
+  CHECK(runtime.telemetry().retired_va_reservations == 0U);
+  CHECK(runtime.telemetry().quarantined);
+  CHECK(cuda.violations.empty());
+}
+
+void runtime_retained_va_close_failure_keeps_failed_entry_test() {
+  const CheckContext context("retired VA close tracks partial cleanup precisely");
+  using namespace xvram::residency;
+  FakeCuda cuda;
+  CudaApi api(CudaApi::InjectedDispatch{});
+  cuda.install(api);
+  const ActiveFake active(cuda);
+  Runtime runtime(api, runtime_va_config(true));
+  CHECK(runtime.setup() == RuntimeStatus::success);
+  for (const std::uint64_t bytes : std::array<std::uint64_t, 2>{chunk_bytes, 2ULL * chunk_bytes}) {
+    RuntimeAllocation allocation;
+    CHECK(runtime.allocate(bytes, ResidencyHint::normal, allocation) == RuntimeStatus::success);
+    CHECK(runtime.release(allocation.id) == RuntimeStatus::success);
+  }
+  const auto first = *cuda.reservations.begin();
+  const auto second = *std::next(cuda.reservations.begin());
+  cuda.injection.site = FaultSite::address_free;
+  CHECK(runtime.close() == RuntimeStatus::cleanup_failure);
+  CHECK(cuda.injection.triggered);
+  CHECK(cuda.reservations.size() == 1U);
+  CHECK(cuda.reservations.begin()->first == first.first);
+  CHECK(runtime.telemetry().retired_va_reservations == 1U);
+  CHECK(runtime.telemetry().retired_va_bytes == first.second);
+  CHECK(runtime.telemetry().retired_va_reservations_freed == 1U);
+  CHECK(runtime.telemetry().retired_va_bytes_freed == second.second);
+  CHECK(runtime.telemetry().quarantined);
+  CHECK(runtime.close() == RuntimeStatus::cleanup_failure);
+  CHECK(cuda.address_free_calls == 2U);
+  CHECK(cuda.violations.empty());
 }
 
 void runtime_disabled_compression_never_loads_nvcomp_test() {
@@ -3993,6 +4264,13 @@ void fault_injection_matrix_test() {
 int main() {
   completed_sequential_test();
   runtime_allocation_release_unmaps_test();
+  runtime_allocation_address_is_nonresident_and_stable_test();
+  runtime_retained_va_prevents_reuse_test(false);
+  runtime_retained_va_prevents_reuse_test(true);
+  runtime_retained_va_rejects_active_lease_test();
+  runtime_retained_va_allocation_failure_preserves_ledger_test();
+  runtime_retained_va_unmap_failure_preserves_live_reservation_test();
+  runtime_retained_va_close_failure_keeps_failed_entry_test();
   runtime_disabled_compression_never_loads_nvcomp_test();
   runtime_raw_transfer_trace_generations_test();
   runtime_safe_callback_skip_keeps_session_reusable_test();

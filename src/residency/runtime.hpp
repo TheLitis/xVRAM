@@ -53,6 +53,9 @@ struct RuntimeConfig {
   std::int32_t device_ordinal = 0;
   RuntimeContextMode context_mode = RuntimeContextMode::isolated;
   cuda::abi::Context attached_context = nullptr;
+  // Internal pointer-frontends may keep released, fully unmapped reservations until close so
+  // an old logical address cannot identify a later allocation in the same runtime lifetime.
+  bool retain_released_va = false;
   std::uint64_t chunk_bytes = 64ULL * 1024ULL * 1024ULL;
   std::uint64_t cache_target_bytes = 0;
   std::uint64_t device_headroom_bytes = 512ULL * 1024ULL * 1024ULL;
@@ -169,6 +172,12 @@ struct ExternalLeasePoll {
 struct RuntimeTelemetry {
   std::uint64_t allocations_created = 0;
   std::uint64_t allocations_released = 0;
+  // Retained reservations consume virtual address space only, not resident or host backing bytes.
+  // Failed close frees remain in the current counters and are never counted as freed.
+  std::uint64_t retired_va_reservations = 0;
+  std::uint64_t retired_va_bytes = 0;
+  std::uint64_t retired_va_reservations_freed = 0;
+  std::uint64_t retired_va_bytes_freed = 0;
   std::uint64_t handles_created = 0;
   std::uint64_t handles_reused = 0;
   std::uint64_t handles_released = 0;
@@ -345,6 +354,11 @@ public:
   [[nodiscard]] std::uint64_t chunk_bytes() const noexcept;
   [[nodiscard]] std::uint64_t target_bytes() const noexcept;
   [[nodiscard]] std::optional<std::uint64_t> allocation_size(AllocationId id) const noexcept;
+  // Returns the stable logical base without making any bytes resident. An address is usable for
+  // GPU work only through a declared residency transaction. Unusable runtime/allocation returns
+  // nullopt, including after release, poisoning, quarantine, or close.
+  [[nodiscard]] std::optional<cuda::abi::DevicePointer>
+  allocation_address(AllocationId id) const noexcept;
   [[nodiscard]] std::optional<HostChunkInfo> backing_info(AllocationId id,
                                                           std::uint64_t chunk_index) const noexcept;
   [[nodiscard]] const RuntimeTelemetry& telemetry() const noexcept;
