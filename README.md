@@ -214,6 +214,19 @@ and optionally emits `xvram.compression_trace` v1 JSONL. See the
 [adaptive-compression guide](docs/adaptive-compression.md) for the backing format,
 budget model, CLI, safety rules, and recorded RTX gate results.
 
+## Phase 6a explicit CUDA/cuBLAS integration
+
+The optional `xVRAM::cuda_compat` target provides a synchronous host-only C++ facade for
+selected CUDA memory/device calls and column-major FP32 SGEMM. Applications must rebuild
+and initialize explicitly; xVRAM derives tiled residency ranges without caller-written
+transactions. Stable logical pointers, retained VA tombstones, and the existing event-safe
+runtime preserve the memory lifetime boundary. Compression is disabled in this profile.
+
+Enable `XVRAM_BUILD_CUDA_COMPAT=ON` and use the official NVIDIA headers. Unsupported
+native calls do not silently fall back. This is not unchanged-executable interception,
+arbitrary kernel support, or a replacement for CUDA Runtime. See the
+[compatibility guide](docs/cuda-compat.md) for integration, limits, benchmark, and gate status.
+
 ## Build
 
 Requirements:

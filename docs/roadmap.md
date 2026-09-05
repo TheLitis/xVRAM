@@ -209,7 +209,20 @@ at commit `97dde36184ebd25dc70553606aba5a468dedb0d6` in
 [GitHub Actions run 33928261245](https://github.com/TheLitis/xVRAM/actions/runs/33928261245).
 This completes Phase 5 within its stated scope; version remains `0.1.0-dev`.
 
-## Phase 6+: interception and instrumentation
+## Phase 6a: explicit synchronous CUDA/cuBLAS adapter — in progress
+
+- Optional host-only C++ facade and size-tagged C control table, with one isolated worker.
+- Stable pointer registry and VA tombstones; production raw residency and shared tiled SGEMM.
+- Positive column-major FP32 N/T GEMM with padding/interior pointers and strict FP32 math.
+- Isolated benchmark, bounded XVI1 protocol, strict report/trace contracts, and no-driver tests.
+- Default-OFF regression, ON builds, negative/installed consumers, and app-local cuBLAS checks.
+
+Implementation and validation are in progress. Completion requires the recorded RTX 3070
+NN/NT/TN/TT, split-K, and 1.1x/1.5x/2.0x CLOCK/LRU gate plus the complete Actions matrix.
+See the [compatibility guide](cuda-compat.md). This phase requires an application rebuild;
+it does not intercept unchanged executables or support arbitrary kernels/streams.
+
+## Phase 6b+: interception and instrumentation
 
 - Conservative CUDA Runtime and Driver API interception.
 - Known cuBLAS/cuDNN launch semantics.
