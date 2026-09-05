@@ -104,10 +104,11 @@ struct State {
   std::uint64_t unknown_callback_details = 0, unknown_activity_kinds = 0, incomplete_activities = 0;
   std::int64_t api_inflight = 0;
   bool initialized = false;
+  unsigned trace_schema_version = 1;
 
   JsonLine begin(std::string_view kind) {
     JsonLine line;
-    line.number("schema_version", 1);
+    line.number("schema_version", trace_schema_version);
     line.string("report_type", "xvram.cuda_compat_audit_trace");
     line.number("sequence", sequence + 1);
     line.string("kind", kind);
@@ -208,6 +209,42 @@ bool api_detail(State & s, JsonLine & line, const CUpti_CallbackData & data,
 #define META(TYPE) const auto & p = *static_cast<const TYPE *>(data.functionParams); line.number("parameter_bytes", sizeof(TYPE))
 #define OP(TEXT) line.string("op", TEXT)
   if (data.functionParams == nullptr) { OP("other"); return false; }
+  // Version 1 retains its original metadata and unknown-detail behavior. Version
+  // 2 observes only official resolver inputs/outputs; the function pointer is
+  // never called, replaced, dereferenced as code, or serialized as an address.
+  if (s.trace_schema_version == 2) {
+    const auto resolver = [&](const char * symbol, std::uint64_t flags, void ** output,
+                              bool has_version, std::int64_t version,
+                              const auto * query_status) {
+      OP("other");
+      const auto requested = bounded_name(symbol);
+      if (!resolver_symbol(requested)) return false;
+      line.string("requested_symbol", requested);
+      line.number("resolver_flags", flags);
+      if (has_version) line.integer("requested_version", version);
+      if (mutate && query_status) line.integer("query_status", static_cast<std::int64_t>(*query_status));
+      if (mutate && output && *output && (!query_status || static_cast<int>(*query_status) == 0))
+        line.number("entry_point_id", s.id("resolver_entry_point", native_key(*output)));
+      return true;
+    };
+    if (!runtime && name == "cuGetProcAddress") {
+      META(cuGetProcAddress_params);
+      return resolver(p.symbol, p.flags, p.pfn, true, p.cudaVersion,
+                      static_cast<const CUdriverProcAddressQueryResult *>(nullptr));
+    }
+    if (!runtime && name == "cuGetProcAddress_v2") {
+      META(cuGetProcAddress_v2_params);
+      return resolver(p.symbol, p.flags, p.pfn, true, p.cudaVersion, p.symbolStatus);
+    }
+    if (runtime && named(name, "cudaGetDriverEntryPoint")) {
+      META(cudaGetDriverEntryPoint_v11030_params);
+      return resolver(p.symbol, p.flags, p.funcPtr, false, 0, p.driverStatus);
+    }
+    if (runtime && named(name, "cudaGetDriverEntryPointByVersion")) {
+      META(cudaGetDriverEntryPointByVersion_v12050_params);
+      return resolver(p.symbol, p.flags, p.funcPtr, true, p.cudaVersion, p.driverStatus);
+    }
+  }
   if (runtime) {
     if (named(name, "cudaMalloc")) {
       META(cudaMalloc_v3020_params); OP("allocate"); alloc(mutate && p.devPtr ? native_key(*p.devPtr) : 0, p.size, "device"); return true;
@@ -433,6 +470,16 @@ int initialize() noexcept {
   try {
     auto * s=new State;
     state=s;
+#ifdef _WIN32
+    char version_value[3]{};
+    SetLastError(ERROR_SUCCESS);
+    const DWORD version_length=GetEnvironmentVariableA("XVRAM_AUDIT_TRACE_VERSION",version_value,
+                                                       static_cast<DWORD>(sizeof(version_value)));
+    if(version_length>=sizeof(version_value)) throw std::invalid_argument("unsupported trace version");
+    s->trace_schema_version=trace_version(version_length==0 && GetLastError()==ERROR_ENVVAR_NOT_FOUND ? nullptr : version_value);
+#else
+    s->trace_schema_version=trace_version(std::getenv("XVRAM_AUDIT_TRACE_VERSION"));
+#endif
     std::filesystem::path trace_path;
 #ifdef _WIN32
     const DWORD needed=GetEnvironmentVariableW(L"XVRAM_AUDIT_TRACE",nullptr,0);

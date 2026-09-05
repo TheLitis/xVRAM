@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-audit-observations-v1.schema.json",
+  "title": "xVRAM bounded observation-only CUDA compatibility evidence v1",
+  "description": "Derived from immutable, address-redacted normalized traces. Host nesting, API resolution and correlation are observations only. This artifact never authorizes interception or establishes tensor memory safety, execution readiness, or xVRAM oversubscription.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "traces",
+    "decision",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_compat_audit_observations"
+    },
+    "traces": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/trace"
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "execution_ready",
+        "oversubscription_proof"
+      ],
+      "properties": {
+        "verdict": {
+          "const": "NO-GO"
+        },
+        "execution_ready": {
+          "const": false
+        },
+        "oversubscription_proof": {
+          "const": false
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "host_nesting_is_not_device_ordering",
+          "resolver_results_do_not_prove_invocation_routing",
+          "kernel_module_argument_and_tensor_bounds_unresolved",
+          "terminal_and_activity_loss_preclude_complete_coverage",
+          "native_cpu_offload_is_not_xvram_oversubscription"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "u64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "positive": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "public_symbol": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "count"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "count": {
+          "$ref": "#/$defs/positive"
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "sha256",
+        "input_unchanged",
+        "correlations",
+        "routing"
+      ],
+      "properties": {
+        "trace_id": {
+          "$ref": "#/$defs/positive"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "input_unchanged": {
+          "type": "boolean"
+        },
+        "correlations": {
+          "$ref": "#/$defs/correlations"
+        },
+        "routing": {
+          "$ref": "#/$defs/routing"
+        }
+      }
+    },
+    "correlations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "records",
+        "runtime_launch_callbacks",
+        "driver_launch_callbacks",
+        "runtime_successful_launches",
+        "driver_successful_launches",
+        "runtime_failed_launches",
+        "driver_failed_launches",
+        "nested_driver_launches",
+        "direct_driver_launches",
+        "gpu_kernel_activities",
+        "correlated_gpu_activities",
+        "runtime_driver_gpu_chains",
+        "launch_records_reconciled",
+        "trace_complete",
+        "issues",
+        "trace_issues",
+        "device_ordering_proven",
+        "semantic_ranges_proven",
+        "execution_ready"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_correlations"
+        },
+        "records": {
+          "$ref": "#/$defs/u64"
+        },
+        "runtime_launch_callbacks": {
+          "$ref": "#/$defs/u64"
+        },
+        "driver_launch_callbacks": {
+          "$ref": "#/$defs/u64"
+        },
+        "runtime_successful_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "driver_successful_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "runtime_failed_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "driver_failed_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "nested_driver_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "direct_driver_launches": {
+          "$ref": "#/$defs/u64"
+        },
+        "gpu_kernel_activities": {
+          "$ref": "#/$defs/u64"
+        },
+        "correlated_gpu_activities": {
+          "$ref": "#/$defs/u64"
+        },
+        "runtime_driver_gpu_chains": {
+          "$ref": "#/$defs/u64"
+        },
+        "launch_records_reconciled": {
+          "type": "boolean"
+        },
+        "trace_complete": {
+          "type": "boolean"
+        },
+        "issues": {
+          "$ref": "#/$defs/issues"
+        },
+        "trace_issues": {
+          "$ref": "#/$defs/issues"
+        },
+        "device_ordering_proven": {
+          "const": false
+        },
+        "semantic_ranges_proven": {
+          "const": false
+        },
+        "execution_ready": {
+          "const": false
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "resolver_calls",
+        "resolved_calls",
+        "api_failed_calls",
+        "query_failed_calls",
+        "unknown_calls",
+        "requests",
+        "issues",
+        "evidence",
+        "routing_coverage_complete",
+        "semantic_ranges_proven"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_routing"
+        },
+        "resolver_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "resolved_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "api_failed_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "query_failed_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "unknown_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "requests": {
+          "type": "array",
+          "maxItems": 16384,
+          "items": {
+            "$ref": "#/$defs/request"
+          }
+        },
+        "issues": {
+          "$ref": "#/$defs/issues"
+        },
+        "evidence": {
+          "enum": [
+            "observed",
+            "unresolved"
+          ]
+        },
+        "routing_coverage_complete": {
+          "const": false
+        },
+        "semantic_ranges_proven": {
+          "const": false
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "api",
+        "requested_symbol",
+        "requested_version",
+        "resolver_flags",
+        "calls",
+        "resolved_calls",
+        "entry_point_count"
+      ],
+      "properties": {
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "api": {
+          "enum": [
+            "cuGetProcAddress",
+            "cuGetProcAddress_v2",
+            "cudaGetDriverEntryPoint",
+            "cudaGetDriverEntryPoint_ptsz",
+            "cudaGetDriverEntryPointByVersion",
+            "cudaGetDriverEntryPointByVersion_ptsz"
+          ]
+        },
+        "requested_symbol": {
+          "$ref": "#/$defs/public_symbol"
+        },
+        "requested_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -2147483648,
+          "maximum": 4294967295
+        },
+        "resolver_flags": {
+          "$ref": "#/$defs/u64"
+        },
+        "calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "resolved_calls": {
+          "$ref": "#/$defs/u64"
+        },
+        "entry_point_count": {
+          "$ref": "#/$defs/u64"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "domain": {
+                "const": "driver"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "api": {
+                "enum": [
+                  "cuGetProcAddress",
+                  "cuGetProcAddress_v2"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "api": {
+                "enum": [
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz",
+                  "cudaGetDriverEntryPointByVersion",
+                  "cudaGetDriverEntryPointByVersion_ptsz"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "api": {
+                "enum": [
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "requested_version": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "requested_version": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -421,6 +421,10 @@ _API_FIELDS = {"domain", "callback_id", "correlation_id", "thread_id", "symbol",
 _API_FIELDS |= {prefix + suffix for prefix in ("src_", "dst_") for suffix in ("allocation_id", "generation", "offset_bytes", "range_known")}
 _GEOMETRY = {prefix + axis for prefix in ("grid_", "block_") for axis in ("x", "y", "z")}
 _API_FIELDS |= _GEOMETRY
+_RESOLVER_FIELDS = {"requested_symbol", "requested_version", "resolver_flags", "query_status", "entry_point_id"}
+_RESOLVERS = {("driver", "cuGetProcAddress"), ("driver", "cuGetProcAddress_v2"),
+              ("runtime", "cudaGetDriverEntryPoint"), ("runtime", "cudaGetDriverEntryPointByVersion"),
+              ("runtime", "cudaGetDriverEntryPoint_ptsz"), ("runtime", "cudaGetDriverEntryPointByVersion_ptsz")}
 _KIND_FIELDS = {
     "session": {"collector_version", "process_id", "max_record_bytes", "kernel_arguments_captured", "tensor_bounds_known", "cublas_api_visibility", "timestamp_clock", "activity_clock", "runtime_parameter_bytes_not_kernel_arguments", "run_id", "complete"},
     "api_enter": _API_FIELDS - {"status"}, "api_exit": _API_FIELDS,
@@ -440,20 +444,29 @@ def validate_trace_record(record):
     if not isinstance(record, dict) or record.get("kind") not in _KIND_FIELDS:
         raise AuditInputError("invalid_record_kind")
     kind = record["kind"]
-    if not _ENVELOPE <= record.keys() or record.keys() - (_ENVELOPE | _KIND_FIELDS[kind]):
+    version = record.get("schema_version")
+    extra = _RESOLVER_FIELDS if version == 2 and kind in ("api_enter", "api_exit") else set()
+    if not _ENVELOPE <= record.keys() or record.keys() - (_ENVELOPE | _KIND_FIELDS[kind] | extra):
         raise AuditInputError("invalid_record_fields")
-    if record["schema_version"] != 1 or type(record["schema_version"]) is not int or record["report_type"] != TRACE_TYPE:
+    if version not in (1, 2) or type(version) is not int or record["report_type"] != TRACE_TYPE:
         raise AuditInputError("invalid_trace_version")
     required = {"api_enter": {"domain", "callback_id", "correlation_id", "thread_id", "symbol", "detail_known"}, "api_exit": {"domain", "callback_id", "correlation_id", "thread_id", "symbol", "detail_known", "status"}, "gap": {"reason", "lost_records"}, "kernel_binding": _KIND_FIELDS["kernel_binding"], "session": _KIND_FIELDS["session"] - {"run_id", "complete"}, "summary": _KIND_FIELDS["summary"], "activity": {"activity_kind", "detail_known"}, "resource": {"resource_kind", "operation", "detail_known"}}[kind]
     if not required <= record.keys():
         raise AuditInputError("missing_record_fields")
     for key, value in record.items():
-        if key in _STRINGS:
+        if key == "requested_symbol":
+            _text(value)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                raise AuditInputError("invalid_requested_symbol")
+        elif key == "requested_version":
+            if type(value) is not int or not -(1 << 31) <= value < (1 << 32):
+                raise AuditInputError("invalid_requested_version")
+        elif key in _STRINGS:
             _text(value)
         elif key in _BOOLS:
             if type(value) is not bool:
                 raise AuditInputError("invalid_boolean")
-        elif key == "status":
+        elif key in ("status", "query_status"):
             if type(value) is not int or not -(1 << 31) <= value < (1 << 31):
                 raise AuditInputError("invalid_native_status")
         elif key == "bindings":
@@ -469,6 +482,28 @@ def validate_trace_record(record):
                     _uint(binding[field])
         else:
             _uint(value, key)
+    is_resolver = (record.get("domain"), record.get("symbol")) in _RESOLVERS
+    resolver_symbol = record.get("symbol", "")
+    if resolver_symbol.endswith("_ptsz"):
+        resolver_symbol = resolver_symbol[:-5]
+    if record.keys() & _RESOLVER_FIELDS:
+        if not is_resolver or record.get("op") != "other" or not record.get("detail_known"):
+            raise AuditInputError("unexpected_resolver_fields")
+        if "requested_symbol" not in record or "resolver_flags" not in record:
+            raise AuditInputError("missing_resolver_input")
+        if resolver_symbol != "cudaGetDriverEntryPoint" and "requested_version" not in record:
+            raise AuditInputError("missing_resolver_version")
+        if resolver_symbol == "cudaGetDriverEntryPoint" and "requested_version" in record:
+            raise AuditInputError("unexpected_resolver_version")
+        if record.keys() & {"query_status", "entry_point_id"}:
+            if kind != "api_exit" or record.get("status") != 0:
+                raise AuditInputError("premature_resolver_output")
+        if "query_status" in record and resolver_symbol == "cuGetProcAddress":
+            raise AuditInputError("unexpected_resolver_query_status")
+        if "entry_point_id" in record and (record["entry_point_id"] == 0 or record.get("query_status", 0) != 0):
+            raise AuditInputError("invalid_resolver_entry_point")
+    elif version == 2 and is_resolver and record.get("detail_known"):
+        raise AuditInputError("missing_resolver_input")
     if record["sequence"] == 0:
         raise AuditInputError("invalid_sequence")
     if "domain" in record and record["domain"] not in ("runtime", "driver"):
@@ -494,7 +529,7 @@ def _json_object(pairs):
     return result
 
 
-def _trace_records(path):
+def _trace_records(path, *, digest=None):
     total = 0
     try:
         with Path(path).open("rb") as stream:
@@ -505,6 +540,8 @@ def _trace_records(path):
                 total += len(line)
                 if len(line) > MAX_RECORD_BYTES or total > MAX_TRACE_BYTES or index == MAX_RECORDS:
                     raise AuditInputError("trace_limit")
+                if digest is not None:
+                    digest.update(line)
                 try:
                     record = json.loads(line, object_pairs_hook=_json_object,
                                         parse_constant=lambda _: (_ for _ in ()).throw(AuditInputError("nonfinite_json")))

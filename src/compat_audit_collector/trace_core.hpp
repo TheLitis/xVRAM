@@ -12,6 +12,31 @@ namespace xvram::audit {
 inline constexpr std::size_t max_record_bytes = 1024U * 1024U;
 inline constexpr std::size_t max_identities = 65536;
 
+inline unsigned trace_version(const char * value) {
+  if (value == nullptr) return 1;
+  if (std::string_view(value) == "1") return 1;
+  if (std::string_view(value) == "2") return 2;
+  throw std::invalid_argument("unsupported trace version");
+}
+// Resolver symbols are public C identifiers, not user-controlled text payloads.
+// Restrict these independently of the generic JSON string serializer.
+inline bool resolver_symbol(std::string_view value) {
+  if (value.empty() || value.size() > 4096) return false;
+  const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };
+  if (!letter(value.front())) return false;
+  for (const char c : value) if (!letter(c) && (c < '0' || c > '9')) return false;
+  for (std::size_t i = 0; i + 8 <= value.size(); ++i) {
+    if (value[i] != '0' || value[i + 1] != 'x') continue;
+    bool hex = true;
+    for (std::size_t j = i + 2; j < i + 8; ++j) {
+      const char c = value[j];
+      hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+    }
+    if (hex) return false;
+  }
+  return true;
+}
+
 // Output is ASCII JSON. No raw address or handle is accepted by this interface.
 class JsonLine {
 public:

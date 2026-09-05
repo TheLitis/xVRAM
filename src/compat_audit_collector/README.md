@@ -6,6 +6,34 @@ or kernels. It makes no CUDA runtime/Driver API calls or GPU submissions. Its
 only GPU-related dependency is NVIDIA CUPTI. Tracing overhead is not application
 performance evidence.
 
+### Opt-in resolver observations (trace v2)
+
+The default remains the byte-compatible v1 record format. Set
+`XVRAM_AUDIT_TRACE_VERSION=2` for a separate v2 trace; unset or `1` selects v1,
+and any other value refuses collector initialization. Version 2 observes fixed
+public metadata for `cuGetProcAddress`, `cuGetProcAddress_v2`,
+`cudaGetDriverEntryPoint` and `cudaGetDriverEntryPointByVersion` (including their
+runtime `_ptsz` variants). No resolver result is changed or invoked.
+
+The optional fields are `requested_symbol` (bounded public C identifier),
+`requested_version` when present in the API, `resolver_flags`, and, only after
+successful API return, `query_status` when its output argument is supplied and
+`entry_point_id` when resolution returned a non-null entry point with successful
+or unavailable query status. The entry point is converted into a bounded
+process-local identity before serialization. Neither output pointer storage nor
+function code is serialized. Failed calls never have their out-parameters read.
+The v2 metadata still has `op:"other"`: observing resolution does not establish
+the function's invocation, owning binary, or semantic contract.
+
+`xvram.compat_audit_routing.summarize_routing` derives bounded request/status
+counts from one trace, while preserving Runtime/Driver callback layers as
+separate observations. Duplicates, incomplete pairs, changed inputs, unknown
+metadata, missing results and incomplete terminal evidence stay unresolved.
+`routing_coverage_complete` and `semantic_ranges_proven` are always false. CUPTI
+resolution callbacks do not observe Windows `GetProcAddress`, private export
+tables, every registration path, or the use of a returned pointer. Trace v2 does
+not change terminal-flush limitations below and cannot independently produce GO.
+
 ## Build and loading
 
 The collector requires an installed CUDA Toolkit/CUPTI 13.3 or newer, a 64-bit

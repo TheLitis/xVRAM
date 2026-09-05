@@ -23,6 +23,7 @@ def main() -> int:
     parser.add_argument("--dependencies", type=Path, required=True)
     parser.add_argument("--collector", type=Path, required=True)
     parser.add_argument("--nsys", type=Path)
+    parser.add_argument("--trace-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     import jsonschema
@@ -51,6 +52,7 @@ def main() -> int:
         directory = output / name
         command = [sys.executable, "-m", "xvram.compat_audit", "--stage", "all",
                    "--model", model, "--microbatch", str(microbatch), "--capture-mode", mode,
+                   "--trace-version", str(args.trace_version),
                    "--binary-dir", str(args.dependencies / "llama-b10819"),
                    "--model-dir", str(args.dependencies / f"qwen{model}"),
                    "--collector", str(args.collector), "--gpu-layers", "8",

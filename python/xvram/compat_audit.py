@@ -137,6 +137,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/compat-audit"))
     parser.add_argument("--collector", type=Path)
     parser.add_argument("--capture-mode", choices=("baseline", "cupti", "nsys"), default="cupti")
+    parser.add_argument("--trace-version", type=int, choices=(1, 2), default=1,
+                        help="CUPTI trace v2 additionally observes documented dynamic API resolution")
     parser.add_argument("--nsys", type=Path)
     parser.add_argument("--input-trace", type=Path, action="append", default=[])
     parser.add_argument("--microbatch", type=int, choices=(1, 128), default=128)
@@ -203,6 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise AuditPrerequisite("CUPTI capture requires the built --collector DLL")
                 env["CUDA_INJECTION64_PATH"] = str(args.collector.resolve())
                 env["XVRAM_AUDIT_TRACE"] = str(trace_path)
+                env["XVRAM_AUDIT_TRACE_VERSION"] = str(args.trace_version)
                 cupti_dir = Path(os.environ.get("CUDA_PATH", "")) / "extras" / "CUPTI" / "lib64"
                 env["PATH"] = str(args.collector.resolve().parent) + os.pathsep + str(cupti_dir) + os.pathsep + env["PATH"]
                 traces.append(trace_path)
@@ -247,6 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                "graphs": False, "flash_attention": False, "kv_dtype": "f16",
                                "speculative_decoding": False, "context_shift": False,
                            }, "tools": {"controller_version": VERSION,
+                                         "collector_trace_version": args.trace_version if args.capture_mode == "cupti" else None,
                                          "python_version": platform.python_version(),
                                          "profile_manifest_sha256": sha256_file(Path(__file__).with_name("compat_audit_profile.json")),
                                          "collector_sha256": sha256_file(args.collector) if args.capture_mode == "cupti" else None,

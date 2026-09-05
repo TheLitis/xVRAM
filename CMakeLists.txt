@@ -1029,6 +1029,8 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/compression-trace-record-v1.schema.json
               schemas/cuda-compat-audit-v1.schema.json
               schemas/cuda-compat-audit-trace-v1.schema.json
+              schemas/cuda-compat-audit-trace-v2.schema.json
+              schemas/cuda-compat-audit-observations-v1.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 configure_package_config_file(

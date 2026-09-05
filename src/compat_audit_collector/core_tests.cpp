@@ -8,6 +8,16 @@ void check(bool value) { if (!value) throw std::runtime_error("collector core te
 }
 int main() {
   using namespace xvram::audit;
+  check(trace_version(nullptr) == 1 && trace_version("1") == 1 && trace_version("2") == 2);
+  for (const char * invalid : {"", "0", "3", "02", "2 ", "-1"}) {
+    bool invalid_version = false;
+    try { static_cast<void>(trace_version(invalid)); } catch (const std::invalid_argument &) { invalid_version = true; }
+    check(invalid_version);
+  }
+  check(resolver_symbol("cuMemAlloc_v2") && resolver_symbol("cudaLaunchKernel_ptsz"));
+  for (const auto invalid : {"", "C:\\secret", "bad name", "123symbol", "name_0x123abc", "bad\nname"})
+    check(!resolver_symbol(invalid));
+  check(!resolver_symbol(std::string(4097, 'x')));
   Registry registry;
   const auto first = registry.allocate(0x123400, 128);
   check(first.known && first.generation == 1);
