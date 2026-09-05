@@ -187,25 +187,43 @@ void fixtures() {
       r.telemetry_observed = true;
       r.telemetry.total_vram_bytes = 8ULL << 30U;
       r.telemetry.gemm_calls = 2;
-      r.telemetry.tiles_retired = 2;
-      r.telemetry.tiles_submitted = 2;
+      // Many compute transactions can reuse three resident mappings. Unmap boundaries
+      // must reconcile with unmaps, independently of transaction retirement counts.
+      r.telemetry.tiles_retired = 1000;
+      r.telemetry.tiles_submitted = 1000;
+      r.telemetry.runtime.transactions_completed = 1000;
+      r.telemetry.runtime.event_boundaries = 3;
       r.telemetry.runtime.mappings = 3;
       r.telemetry.runtime.unmaps = 3;
       r.telemetry.runtime.set_access_calls = 3;
+      r.telemetry.runtime.cache_hits = 2997;
+      r.telemetry.runtime.cache_misses = 3;
+      r.telemetry.calls_attempted = 20;
+      r.telemetry.calls_submitted = 19;
+      r.telemetry.calls_completed = 18;
+      r.telemetry.calls_rejected = 2;
+      r.telemetry.effective_chunk_bytes = 64ULL << 20U;
+      r.telemetry.host_store_cap_bytes = 512ULL << 20U;
+      r.telemetry.runtime.pinned_staging_bytes = 256ULL << 20U;
+      r.telemetry.runtime.workspace_bytes = 4ULL << 20U;
+      r.telemetry.runtime.cache_target_bytes = 192ULL << 20U;
+      r.telemetry.runtime.cache_target_minimum_bytes = 192ULL << 20U;
+      r.telemetry.runtime.cache_target_maximum_bytes = 192ULL << 20U;
+      r.telemetry.runtime.resident_bytes_peak = 192ULL << 20U;
       Workload w;
       w.name = "fixture";
       w.status = "completed";
-      w.shape = {3, 2, 5, 0, 0, false, false};
+      w.shape = {100, 100, 50, 0, 0, false, false};
       w.logical_bytes = *operand_bytes(w.shape);
       w.storage_bytes = w.logical_bytes;
       w.passes_completed = 2;
-      w.output_elements_checked = 6;
+      w.output_elements_checked = 10000;
       w.digest = std::string(32, 'a');
       w.reference_digest = w.digest;
       w.reference_kind = "cpu_fp64_full";
       w.native_baseline_equal = true;
       w.native_baseline_ms = 1.0;
-      w.tiles_retired = 2;
+      w.tiles_retired = 1000;
       w.mappings = 3;
       w.unmaps = 3;
       w.pass_timings_ms = {1, 2};
@@ -214,6 +232,29 @@ void fixtures() {
     }
     std::cout << report_json(r, false) << '\n';
   }
+}
+void event_proof_tests() {
+  using namespace xvram::compat_bench;
+  auto report = base_report({});
+  report.telemetry_observed = true;
+  report.telemetry.tiles_submitted = 1000;
+  report.telemetry.tiles_retired = 1000;
+  report.telemetry.runtime.transactions_completed = 1000;
+  report.telemetry.runtime.unmaps = 3;
+  report.telemetry.runtime.event_boundaries = 3;
+  report.telemetry.cleanup_events_drained = 1;
+  complete_proof(report);
+  check(report.proof.at("event_safe") == true,
+        "resident hits must not require another unmap boundary per transaction");
+  --report.telemetry.runtime.transactions_completed;
+  complete_proof(report);
+  check(report.proof.at("event_safe") == false,
+        "unretired transaction incorrectly proved event-safe");
+  ++report.telemetry.runtime.transactions_completed;
+  --report.telemetry.runtime.event_boundaries;
+  complete_proof(report);
+  check(report.proof.at("event_safe") == false,
+        "unmap missing event boundary incorrectly proved event-safe");
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -225,5 +266,6 @@ int main(int argc, char** argv) {
   protocol_tests();
   option_tests();
   final_json_tests();
+  event_proof_tests();
   return failures == 0 ? 0 : 1;
 }

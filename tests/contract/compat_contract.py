@@ -50,14 +50,23 @@ def validate_semantics(report: dict, *, fixture: bool = False) -> None:
     assert cache["resident_bytes_peak"] <= cache["cache_target_maximum_bytes"]
     assert cache["physical_handles_created"] == cache["physical_handles_released"]
     assert execution["tiles_submitted"] == execution["tiles_retired"]
+    assert cache["transactions_completed"] == execution["tiles_retired"]
+    # This Runtime counter records safe-unmap event boundaries, not all compute events.
+    assert cache["event_boundaries"] == cache["unmaps"]
     assert compat["live_allocations"] == compat["live_handles"] == 0
     assert compat["allocations_created"] == compat["allocations_released"]
     assert compat["handles_created"] == compat["handles_destroyed"]
     assert compat["retired_va_reservations"] == compat["retired_va_bytes"] == 0
     assert compat["rejections_failed"] == 0
     assert compat["calls_attempted"] == compat["calls_completed"] + compat["calls_rejected"]
+    assert compat["calls_completed"] <= compat["calls_submitted"] <= compat["calls_attempted"]
     assert config["host_budget_bytes"] <= config["host_store_cap_bytes"]
+    assert execution["host_backing_peak_bytes"] <= config["host_store_cap_bytes"]
     assert cache["pinned_staging_bytes"] <= config["effective_chunk_bytes"] * config["staging_slots"]
+    assert cache["workspace_bytes"] <= config["workspace_bytes"]
+    assert cache["cache_target_minimum_bytes"] <= cache["cache_target_bytes"] <= cache["cache_target_maximum_bytes"]
+    if config["cache_target_bytes"]:
+        assert cache["cache_target_maximum_bytes"] <= config["cache_target_bytes"]
     workloads = report["workloads"]
     assert sum(w["tiles_retired"] for w in workloads) == execution["tiles_retired"]
     assert sum(w["mappings"] for w in workloads) == cache["mappings"]
@@ -66,7 +75,6 @@ def validate_semantics(report: dict, *, fixture: bool = False) -> None:
     if not fixture:
         assert sum(w["h2d_bytes"] for w in workloads) == cache["bytes_h2d"]
         assert sum(w["d2h_bytes"] for w in workloads) == cache["bytes_d2h"]
-        assert cache["event_boundaries"] >= execution["tiles_retired"]
     for work in workloads:
         assert work["status"] == "completed" and work["mismatches"] == 0
         assert work["output_elements_checked"] == work["m"] * work["n"]
@@ -182,6 +190,25 @@ def main() -> None:
             schema.validate(report)
             validate_semantics(report, fixture=True)
         completed = reports[0]
+        assert completed["execution"]["tiles_retired"] > completed["cache"]["event_boundaries"]
+        for section, key, value in (
+            ("cache", "transactions_completed", completed["execution"]["tiles_retired"] - 1),
+            ("cache", "event_boundaries", completed["cache"]["unmaps"] - 1),
+            ("compatibility", "calls_attempted", completed["compatibility"]["calls_attempted"] + 1),
+            ("compatibility", "calls_submitted", completed["compatibility"]["calls_attempted"] + 1),
+            ("cache", "resident_bytes_peak", completed["cache"]["cache_target_maximum_bytes"] + 1),
+            ("configuration", "host_budget_bytes", completed["configuration"]["host_store_cap_bytes"] + 1),
+            ("cache", "pinned_staging_bytes", completed["configuration"]["effective_chunk_bytes"] * completed["configuration"]["staging_slots"] + 1),
+            ("cache", "workspace_bytes", completed["configuration"]["workspace_bytes"] + 1),
+        ):
+            malformed = copy.deepcopy(completed)
+            malformed[section][key] = value
+            try:
+                validate_semantics(malformed, fixture=True)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"invalid semantic counter accepted: {section}.{key}")
         for section, key, value in (("proof", "event_safe", False), ("cleanup", "worker_terminated", None), ("verification", "mismatches", 1)):
             malformed = copy.deepcopy(completed)
             malformed[section][key] = value

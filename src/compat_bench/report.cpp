@@ -115,7 +115,11 @@ void complete_proof(Report& r) {
   r.proof["no_physical_aliases"] = (c.flags & XVRAM_TELEMETRY_NO_PHYSICAL_ALIASES) != 0;
   r.proof["mapping_access_balanced"] = c.mappings == c.set_access_calls;
   r.proof["mapping_unmap_balanced"] = c.mappings == c.unmaps;
-  r.proof["event_safe"] = t.tiles_submitted == t.tiles_retired && t.cleanup_events_drained != 0;
+  // event_boundaries counts completed boundaries consumed by unmap, not every compute
+  // transaction. Resident cache hits retire transactions without another mapping/unmap.
+  r.proof["event_safe"] = t.tiles_submitted == t.tiles_retired &&
+                          c.transactions_completed == t.tiles_retired &&
+                          c.event_boundaries == c.unmaps && t.cleanup_events_drained != 0;
   r.proof["zero_unsafe_activity"] =
       c.unsafe_remaps == 0 && c.unsafe_transitions == 0 && t.quarantined == 0;
   r.proof["bounded_cache"] = c.resident_bytes_peak <= c.cache_target_maximum_bytes;

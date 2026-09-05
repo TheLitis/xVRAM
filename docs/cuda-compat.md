@@ -148,6 +148,9 @@ not fabricated GPU timestamps. At quiescence, calls attempted equal completed pl
 rejected; submitted counts worker-dispatched calls, including argument validation, and
 must not be confused with GPU launches. Current retained-reservation counters go to
 zero at shutdown; freed counters are cumulative.
+Runtime `event_boundaries` counts safe unmaps, so it must equal `unmaps` on completion.
+Compute retirement is reconciled separately: `transactions_completed == tiles_retired`.
+Cache-hit GEMMs can retire many tiles while keeping the same few mappings resident.
 
 Exit codes retain the project family: 0 proof complete; 23 prerequisite/configuration;
 24 mismatch; 25 OOM/budget pressure; 26 timeout; 27 CUDA/platform/protocol/cleanup;
