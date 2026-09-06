@@ -292,6 +292,22 @@ production contract changed. Local Release 84/84, serial Debug 80/80 and 135 foc
 Python tests passed (two platform skips). Full provenance and the initial parallel
 Debug timeout/retest are recorded in the linked acceptance evidence.
 
+### Static binary layouts and source memory arithmetic
+
+The [offline binary follow-up](cuda-compat-audit-binary-evidence.md) inspected the exact
+official CUDA backend with hash-pinned NVIDIA cuobjdump. Across 143 sm_86 cubins and
+6,709 function symbols it established static parameter layouts for 35 of 39 observed
+names; the four remaining names belong to opaque library kernels. All 72,262 input
+activity counts reconcile, but **zero captured launches are bound to an exact cubin**.
+The new report can only express NO-GO; completed inspection is not execution readiness.
+
+Checked source-only models now cover ordinary q8 quantization extents, conditional
+stream-K fixup allocation and chunk-rounded allocation-generation unions. Their scalars
+remain declarations, not observed arguments; device ordering, tensor/indirect bounds,
+native pool growth and live budget admission remain unproven. This follow-up ran no GPU
+workload and changed neither the collector nor production runtime or frozen contracts.
+The linked acceptance record contains exact offline evidence and validation results.
+
 ## Phase 6b.1 and later — require separate approval
 
 1. Resolve the audit's concrete evidence gaps and approve a bounded unchanged-backend

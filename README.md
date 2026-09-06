@@ -250,6 +250,11 @@ trace v2, offline launch reconciliation and pinned source-candidate indexing. It
 reconciles 72,262 observed GPU activities but deliberately retains NO-GO for transparent
 execution; source-name matches are not ABI or tensor-bound proofs.
 
+The [static binary follow-up](docs/cuda-compat-audit-binary-evidence.md) extracts device
+parameter layouts for 35 of the 39 observed names and adds bounded source-only memory
+arithmetic. Captured-module bindings and live tensor bounds remain unproven: this is
+offline evidence progress, not permission to begin interception or a GO verdict.
+
 ## Build
 
 Requirements:

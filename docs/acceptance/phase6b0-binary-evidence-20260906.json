@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "report_type": "xvram.cuda_compat_binary_evidence_acceptance",
+  "date": "2026-09-06",
+  "version": "0.1.0-dev",
+  "run_kind": "offline_static_inspection",
+  "profile_id": "llama-b10819-qwen25-q4km-win-cuda133-v1",
+  "local_artifact_root": "artifacts/phase6b0-binary-evidence-20260906",
+  "report_file": "binary-evidence.json",
+  "report_sha256": "ded250d35bad4ec3c5b0375209f5328a4f17fba61c1052e1b78c3f2c30c0b8ed",
+  "upstream_commit": "6a1a922d269908a29cbd4b49c27e6a8e7fd10fae",
+  "backend_sha256": "88350839e27a43212a52cf6686562b2b6ef1498c59391dfb8cda49f3ebd89a62",
+  "tool_version": "13.3.73",
+  "tool_sha256": "cb72e7e353ed20320deb4770f75291a828c0b23ca8c2d27688c4eeced96543f5",
+  "architecture": "sm_86",
+  "source_revision_base": "36c200b7d7bd58a75115761073fbb6adef3824c4",
+  "source_sha256": {
+    "python/xvram/compat_audit_binary.py": "dda818b9d99a361dc8a6f17951ce22b43d5b18bfe3ba7e1907593c2f9dc8dbf8",
+    "python/xvram/compat_audit_binary_contract.py": "f4e41d7ffcf09293486231338f10913b1779193a11bb189bde0ecf605a0e881c",
+    "python/xvram/compat_audit_memory.py": "c85b64c91fc42a8ea0f52a4c073845b8216182cf4f345013d38260ee0daac6da",
+    "python/xvram/compat_audit_tools.py": "fd93a19dc25799e3ee151d60c922f78be1fd02b885add08fb8d6d5eaa049432a",
+    "schemas/cuda-compat-audit-binary-evidence-v1.schema.json": "eab2f88f20f3ac55fc0bbbd9af2d7600b9c9fb375124c2be49a69d51d0aacdf0"
+  },
+  "input_report_sha256": {
+    "14b-ub1": "35d20398adcd9e25738f5849a49ade8445d2374936c5918f63bce48700239632",
+    "14b-ub128": "e5988a24d5b8170f496cc2f9249443f994ef7bca17551336fb0c3d7aa561788b",
+    "32b-ub1": "d310a7f3160738a7956d9ab09e5168c4dd7323d597fa252fed3edf13f7d5e8fd",
+    "32b-ub128": "6fbdd137d00943b7e86a61ab633674259d6f0f55a0e8b6cde9ec9fbf7a4486ea"
+  },
+  "coverage": {
+    "sm86_cubins": 143,
+    "extracted_bytes": 111265920,
+    "function_symbols": 6709,
+    "candidate_modules": 16,
+    "observed_types": 39,
+    "observed_activities": 72262,
+    "static_layout_types": 35,
+    "missing_types": 4,
+    "ambiguous_types": 0,
+    "runtime_bound_types": 0,
+    "complete_profile_coverage": false
+  },
+  "tools": {
+    "invocations": 19,
+    "stdout_bytes": 50037405,
+    "all_direct_children_reaped": true,
+    "all_pipes_drained": true
+  },
+  "source_models": {
+    "source_profile_sha256": "256a3ab053a9614d2c5fbdfeaddc038f20f5dd0a284956bf11bc66823283add5",
+    "verified_required_files": 5,
+    "pinned_profile_files": 18,
+    "rules": [
+      "quantize_q8_1_strided_f32_to_contiguous_q8_v1",
+      "nvidia_mmq_stream_k_fixup_allocation_v1",
+      "allocation_generation_chunk_union"
+    ],
+    "evidence_scope": "source_model_only",
+    "runtime_binding_proven": false,
+    "device_ordering_proven": false,
+    "admission_ready": false
+  },
+  "outcome": { "status": "completed", "exit_code": 0 },
+  "decision": {
+    "verdict": "NO-GO",
+    "execution_ready": false,
+    "oversubscription_proof": false,
+    "interoperability_impossible_proven": false
+  },
+  "new_gpu_workloads": 0,
+  "inputs_are_native_cpu_offload_baselines": true,
+  "production_runtime_changed": false,
+  "collector_changed": false,
+  "frozen_contracts_changed": false,
+  "cleanup": {
+    "worker_reaped": true,
+    "process_tree_drained": true,
+    "scratch_removed": true
+  },
+  "diagnostics": [],
+  "validation": {
+    "json_schema_valid": true,
+    "semantic_contract_valid": true,
+    "local_release_ctest": { "passed": 85, "total": 85 },
+    "local_serial_debug_ctest": { "passed": 81, "total": 81 },
+    "focused_python": { "run": 265, "failed": 0, "platform_skipped": 4 },
+    "installed_python_smoke": true,
+    "cuda_required_for_tests": false
+  },
+  "remaining_gates": [
+    "captured_launch_to_exact_loaded_cubin_binding",
+    "verified_typed_scalars_and_pointer_alias_indirect_ranges",
+    "public_library_operation_memory_contracts",
+    "native_scratch_pool_and_allocation_lifetimes",
+    "device_ordering_and_complete_terminal_evidence",
+    "live_chunk_rounded_cuda_wddm_working_set_admission"
+  ]
+}

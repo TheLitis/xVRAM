@@ -39,6 +39,7 @@ jobs:
           xvram-compat-audit --version &&
           python -m xvram.compat_audit_observations --help &&
           python -m xvram.compat_audit_sources --help &&
+          python -m xvram.compat_audit_binary --help &&
           python -c "from xvram.compat_audit_sources import load_profile; assert len(load_profile()[0]['files']) == 18"
 
       - name: Configure (Windows)
