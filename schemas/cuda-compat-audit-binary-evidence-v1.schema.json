@@ -1,0 +1,716 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-audit-binary-evidence-v1.schema.json",
+  "title": "xVRAM offline CUDA binary evidence v1",
+  "description": "Bounded, hash-pinned, observation-only static cubin metadata. Static symbol candidates and parameter layouts do not establish captured module bindings, runtime arguments or tensor memory bounds. This is never a GO or oversubscription proof. Cross-record reconciliation is enforced by the dependency-free semantic validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "architecture",
+    "version",
+    "provenance",
+    "modules",
+    "kernels",
+    "coverage",
+    "tools",
+    "decision",
+    "outcome",
+    "cleanup",
+    "diagnostics",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_compat_binary_evidence"
+    },
+    "architecture": {
+      "const": "sm_86"
+    },
+    "version": {
+      "const": "0.1.0-dev"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_commit",
+        "backend_name",
+        "backend_sha256",
+        "tool_name",
+        "tool_sha256",
+        "tool_version",
+        "reports"
+      ],
+      "properties": {
+        "upstream_commit": {
+          "const": "6a1a922d269908a29cbd4b49c27e6a8e7fd10fae"
+        },
+        "backend_name": {
+          "const": "ggml-cuda.dll"
+        },
+        "backend_sha256": {
+          "enum": [
+            null,
+            "88350839e27a43212a52cf6686562b2b6ef1498c59391dfb8cda49f3ebd89a62"
+          ]
+        },
+        "tool_name": {
+          "const": "cuobjdump"
+        },
+        "tool_sha256": {
+          "enum": [
+            null,
+            "cb72e7e353ed20320deb4770f75291a828c0b23ca8c2d27688c4eeced96543f5"
+          ]
+        },
+        "tool_version": {
+          "enum": [
+            null,
+            "13.3.73"
+          ]
+        },
+        "reports": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend_sha256": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tool_sha256": {
+                "type": "null"
+              },
+              "tool_version": {
+                "type": "null"
+              },
+              "reports": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "tool_sha256": {
+                "const": "cb72e7e353ed20320deb4770f75291a828c0b23ca8c2d27688c4eeced96543f5"
+              },
+              "tool_version": {
+                "const": "13.3.73"
+              },
+              "reports": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/module"
+      }
+    },
+    "kernels": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/kernel"
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sm86_cubins",
+        "candidate_modules",
+        "observed_types",
+        "static_layout_types",
+        "missing_types",
+        "ambiguous_types",
+        "runtime_bound_types",
+        "complete_profile_coverage"
+      ],
+      "properties": {
+        "sm86_cubins": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "candidate_modules": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "observed_types": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "static_layout_types": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "missing_types": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "ambiguous_types": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "runtime_bound_types": {
+          "const": 0
+        },
+        "complete_profile_coverage": {
+          "const": false
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocations",
+        "stdout_bytes",
+        "all_direct_children_reaped",
+        "all_pipes_drained"
+      ],
+      "properties": {
+        "invocations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1027
+        },
+        "stdout_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 137441058816
+        },
+        "all_direct_children_reaped": {
+          "type": "boolean"
+        },
+        "all_pipes_drained": {
+          "type": "boolean"
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "execution_ready",
+        "oversubscription_proof"
+      ],
+      "properties": {
+        "verdict": {
+          "const": "NO-GO"
+        },
+        "execution_ready": {
+          "const": false
+        },
+        "oversubscription_proof": {
+          "const": false
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "rejected",
+            "timeout",
+            "failed"
+          ]
+        },
+        "exit_code": {
+          "enum": [
+            0,
+            23,
+            26,
+            27
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "completed"
+            },
+            "exit_code": {
+              "const": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "rejected"
+            },
+            "exit_code": {
+              "const": 23
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "timeout"
+            },
+            "exit_code": {
+              "const": 26
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "failed"
+            },
+            "exit_code": {
+              "const": 27
+            }
+          }
+        }
+      ]
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker_reaped",
+        "process_tree_drained",
+        "scratch_removed"
+      ],
+      "properties": {
+        "worker_reaped": {
+          "type": "boolean"
+        },
+        "process_tree_drained": {
+          "type": "boolean"
+        },
+        "scratch_removed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "process_tree_drained": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "worker_reaped": {
+                "const": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^(?!.*0[xX][0-9a-fA-F])[a-z][a-z0-9]*(?:_[a-z0-9]+)*$(?![\\s\\S])"
+      }
+    },
+    "limitations": {
+      "const": [
+        "static_symbol_matches_are_not_captured_module_bindings",
+        "parameter_sizes_do_not_prove_types_struct_members_or_access_ranges",
+        "opaque_library_kernels_require_public_operation_contracts",
+        "source_models_require_verified_runtime_scalar_inputs",
+        "terminal_coverage_device_ordering_and_live_budget_remain_unproven",
+        "cpu_offload_observations_are_not_xvram_oversubscription"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "backend_sha256": {
+                "const": "88350839e27a43212a52cf6686562b2b6ef1498c59391dfb8cda49f3ebd89a62"
+              },
+              "tool_sha256": {
+                "const": "cb72e7e353ed20320deb4770f75291a828c0b23ca8c2d27688c4eeced96543f5"
+              },
+              "tool_version": {
+                "const": "13.3.73"
+              },
+              "reports": {
+                "minItems": 1
+              }
+            }
+          },
+          "modules": {
+            "minItems": 1
+          },
+          "kernels": {
+            "minItems": 1
+          },
+          "diagnostics": {
+            "maxItems": 0
+          },
+          "tools": {
+            "properties": {
+              "invocations": {
+                "minimum": 3
+              },
+              "stdout_bytes": {
+                "minimum": 1
+              },
+              "all_direct_children_reaped": {
+                "const": true
+              },
+              "all_pipes_drained": {
+                "const": true
+              }
+            }
+          },
+          "cleanup": {
+            "properties": {
+              "worker_reaped": {
+                "const": true
+              },
+              "process_tree_drained": {
+                "const": true
+              },
+              "scratch_removed": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "kernel_activities"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "kernel_activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_index",
+        "sha256",
+        "size_bytes",
+        "elf_flags",
+        "symbol_functions",
+        "selected_functions",
+        "parameter_dump_sha256"
+      ],
+      "properties": {
+        "module_index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 67108864
+        },
+        "elf_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "symbol_functions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "selected_functions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "parameter_dump_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "selected_functions": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameter_dump_sha256": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "parameter_dump_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "offset_bytes",
+        "size_bytes"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_index",
+        "cubin_sha256",
+        "symbol_index",
+        "section_index",
+        "code_bytes",
+        "parameter_bytes",
+        "parameters"
+      ],
+      "properties": {
+        "module_index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999
+        },
+        "cubin_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "symbol_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99999
+        },
+        "section_index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65534
+        },
+        "code_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "parameter_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "parameters": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/parameter"
+          }
+        }
+      }
+    },
+    "kernel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "activities",
+        "status",
+        "candidates",
+        "runtime_binding_proven",
+        "memory_bounds_proven"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^(?!.*0[xX][0-9a-fA-F])[A-Za-z_][A-Za-z0-9_$:.<>, ()*&\\[\\]-]{0,1023}$(?![\\s\\S])"
+        },
+        "activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "status": {
+          "enum": [
+            "missing",
+            "static_layout_only",
+            "ambiguous"
+          ]
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/candidate"
+          }
+        },
+        "runtime_binding_proven": {
+          "const": false
+        },
+        "memory_bounds_proven": {
+          "const": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "missing"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "candidates": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "static_layout_only"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "candidates": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "ambiguous"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "candidates": {
+                "minItems": 2
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
