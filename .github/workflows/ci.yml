@@ -133,11 +133,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cmake -S src/compat_launch_probe -B build-launch-census -DXVRAM_PROBE_PC_WITNESS=ON
+          cmake -S src/compat_launch_probe -B build-launch-census -DXVRAM_PROBE_PC_WITNESS=ON -DXVRAM_PROBE_MEMORY_WITNESS=ON -DXVRAM_PROBE_KERNEL_CAPTURE=ON -DXVRAM_PROBE_TEARDOWN_WITNESS=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-launch-census --config ${{ matrix.build_type }} --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import ctypes,pathlib; p=pathlib.Path('build-launch-census/${{ matrix.build_type }}/xvram_driver_launch_census.dll').resolve(); lib=ctypes.WinDLL(str(p)); assert lib.InitializeInjection()==0"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Reuse the already hash-pinned diagnostic headers for CPU-only typed
+          # callback/read-fault tests. No CUPTI library is linked into helpers.
+          $cuptiInclude = (Select-String -Path build-launch-census/CMakeCache.txt -Pattern '^XVRAM_PROBE_CUPTI_INCLUDE:PATH=(.*)$').Matches.Groups[1].Value
+          if (-not $cuptiInclude) { throw 'CUPTI diagnostic header path missing' }
+          cmake -S . -B build "-DXVRAM_AUDIT_OBSERVER_CUPTI_INCLUDE=$cuptiInclude"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build CUDA compatibility profile
         run: cmake --build build --config ${{ matrix.build_type }} --parallel

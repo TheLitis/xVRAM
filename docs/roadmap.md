@@ -378,9 +378,17 @@ sampled cubin identities, typed order validation, source-range models and a
 post-reap observation ledger. The latter found 21 real teardown APIs after the
 previous final footer, so terminal completeness remains rejected rather than
 being inferred from native exit `0`. The full four-gate matrix is **not complete**.
-Windows Application Control currently also blocks the memory-observer callback
-test and installed PyTorch CUDA dependency; these executions are not counted as
-passed. No system-policy change or transparent residency interception was made.
+The user has removed the Windows Application Control blocker. Fresh executions
+of the memory-observer callback test, generated typed-capture test and installed
+PyTorch CUDA dependency now pass; the earlier blocked executions are still not
+counted as successes. No system-policy change or transparent residency interception
+was made by this work. Release regression with the new helpers subsequently
+passed 89/89 tests. The latest 14B typed capture reconciles device-memory cleanup
+with zero live allocations/mappings/reservations/handles and resolves all captured
+argument pointers, while source-relative models cover 8,040/8,776 launches.
+This is not tensor/cubin completeness: 544 index-dependent and 192 opaque calls,
+eight library generations without explicit unload, terminal clock/lifetime
+correlation and the full 32B matrix remain separate outstanding obligations.
 
 The [native identity follow-up](cuda-identity-witness.md) now observes 8,680
 CUkernel/library/module agreements plus 96 CUfunction-only launches in a fresh

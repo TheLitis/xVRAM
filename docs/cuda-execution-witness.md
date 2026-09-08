@@ -71,7 +71,8 @@ The next terminal-proof work must distinguish an execution-drain checkpoint
 from actual process closure, retain library/context generations through teardown,
 and establish observer-channel lifetime. A successful primary-context release
 does not by itself prove that the last reference was released. Independent
-WDDM resource-lifetime observation is a candidate check, not yet a hardware fact.
+WDDM resource-lifetime observation is now an exploratory hardware observation,
+not a completed context-destruction proof (see the follow-up below).
 Absence of queue packets alone is insufficient: packets can batch kernels and
 user-mode queues can submit work without a traditional kernel submission per job.
 
@@ -106,8 +107,8 @@ cover source arithmetic, catalog generation, strict schemas, typed field capture
 and fail-closed order/census correlation. Prior ABI/schema/export contracts remain
 unchanged.
 
-The current Windows Application Control policy blocks required local test
-dependencies. Code Integrity event 3077 identifies a signing-policy failure:
+The previous Windows Application Control policy blocked required local test
+dependencies. Code Integrity event 3077 identified a signing-policy failure:
 
 - Installed PyTorch `c10_cuda.dll`, SHA-256
   `d53bedb567148250d4d63460ff703a77a26462f2d2cb7ec04bac6291a4fc8018`.
@@ -116,21 +117,84 @@ dependencies. Code Integrity event 3077 identifies a signing-policy failure:
 - Typed-capture test after compiling the generated 39-kernel table, SHA-256
   `068327cd91e007b291d4a63cb7d45ca99e9991c79ec6da8aab55d67f78f31fe6`.
 
-The two native tests compiled with warnings-as-errors but these blocked
+Those two native tests compiled with warnings-as-errors but those blocked
 executions are **not** counted as passed. The pre-generated-table typed-capture
 test, pure allocation/VMM model and post-mortem child tests did
 execute. No security-policy, UAC, driver, registry, TDR or NVIDIA-setting change
-is part of this work. A permitted test environment is needed before claiming the
-blocked native and PyTorch regression gates.
+is part of this work. After the user reported removing the blocker, fresh normal
+executions succeeded: PyTorch `2.13.0+cu130` imports, the generated-table typed
+capture test passes, and the real typed memory callback helper passes. This is
+new execution evidence, not a reinterpretation of the earlier blocked attempts.
 
 The Debug build completed. Its initial CTest run passed 81/83 cases: one failure
 was the blocked PyTorch import, and one consumer build lacked the Visual Studio
 developer environment. The latter passed when rerun with that environment; it
 is not a product failure. The audit suite, typed capture, and frozen ABI/schema
-checks passed. A full green local regression gate is still not claimed.
+checks passed. A full green local regression gate was not claimed at that point.
 The later focused audit/frozen-contract run passed 9/9 before that final
 generated-table rebuild; after the rebuild the policy blocked the new typed-test
 binary. No attempt was made to evade the block by renaming or repackaging it.
+
+## Typed capture follow-up after the Application Control unblock
+
+Fresh bounded 14B/microbatch-128 runs retain the pinned original executable and
+CUDA backend with eight GPU layers. They remain explicitly **CPU-offload
+observations**, never xVRAM oversubscription or speed measurements.
+
+The `memory-compound-teardown-14b-mb128` run exited `0`, with owned process-tree
+reap, no truncated output and no controller errors. It captured 8,776 launch/return
+pairs and 207,854 typed fields: zero capture faults, zero unresolved pointers,
+and 192 explicitly opaque cuBLAS kernel calls. The device-memory observer
+reconciles 1,917 API pairs with zero errors/open calls and zero live allocations,
+reservations, handles or mappings at its checkpoint. This does not prove tensor
+subranges, host-pinned lifetimes or global terminal completeness.
+
+Two previous observer rejections were diagnosed from actual typed inputs:
+successful `cudaFree(nullptr)` forwarded to a null Driver free is an observed
+no-op, and llama.cpp unmaps one contiguous six-MiB pool formed by three complete
+two-MiB mappings. The latter is legal full-range unmapping, not permission to
+unmap part of an original mapping. The registry now validates the entire union
+before mutation and emits each original mapping generation. Gaps, partial
+mappings and cross-reservation unions remain rejected by CPU tests.
+
+Stopping all three Activity kinds after an independently successful GPU drain,
+then flushing CUPTI, now leaves zero outstanding/late Activity buffers in the
+post-reap ledger. The 21 late native API pairs still remain: 20 library unloads
+and a primary-context release. They are not erased or counted as proof by the
+old terminal validator. A new non-final typed teardown sidecar captures their
+actual library/context generations. Its first hardware run also identified
+eight loaded library generations without explicit observed unloads; this remains
+an unresolved lifecycle obligation, not an assumed successful destruction.
+
+An independent, owned Nsight ETW pilot retained Device, Context and HwQueue
+Start/Stop events through process exit with zero xperf-reported lost events or
+buffers. Exploratory correlation found two devices, three contexts and twelve
+queues. Queue identity is the observed OS `ParentDxgHwQueue` namespace, not the
+zeroed driver `hHwQueue` field. This first pilot lacks controller-handle-bound
+process identity and a verified QPC/SQLite clock conversion. Matched Stop events
+also do not carry a successful DDI return status. Consequently no terminal gate
+is inferred from those counts. Raw ETL/SQLite stays private because it contains
+native identities and environment metadata; only normalized IDs may be published.
+
+The new source adapter consumes actual captured scalar arguments and launch
+geometry, never derives a tensor shape from allocation length, and reports
+unavailable indirect contents/companion scratch contracts explicitly. Agreement
+with source-relative intervals is separate from proving that source semantics
+match the sampled cubin. On the saved 14B pilot it now derives ranges for
+8,040/8,776 launches, including 402 ordinary RoPE calls whose position values
+affect arithmetic rather than address selection, and 192 symbolic pointer-table
+producer calls. The latter produce 23,040 symbolic pointer writes; generation
+validity and consumer bounds remain separate obligations. The 544 remaining
+index-dependent launches and 192 opaque library launches are explicit gaps.
+The full 14B/32B, microbatch-1/128 matrix and all four
+profile-wide proof gates remain incomplete.
+
+The post-unblock Release regression with these new native helpers passed 89/89
+CTest cases, including Stable-ABI loading and frozen ABI/schema/export checks.
+Consumer negative-link cases now use independent build directories: a transient
+Windows lock on the just-executed positive-control image must not replace the
+expected unsupported-symbol diagnostic. No retry or weakened rejection rule
+was added.
 
 ## Official contracts used
 
