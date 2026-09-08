@@ -62,6 +62,11 @@ def _run_child(plan: Mapping[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, cwd=plan.get("cwd"))
+    # Optional private, controller-owned evidence for generation-safe ETW joins.
+    # Query this original Popen handle, never find/reopen an executable by PID.
+    # Its raw identity stays in a separate mapping, not the public capture result.
+    from .compat_audit_owned_identity import start as observe_start, finish as observe_finish
+    observe_start(process)
     logs: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
     counts = {"stdout": 0, "stderr": 0}
     first_stdout: list[float] = []
@@ -121,6 +126,7 @@ def _run_child(plan: Mapping[str, Any]) -> dict[str, Any]:
                 module_failures += 1
             next_module_sample = time.monotonic() + 0.25
         time.sleep(0.05)
+    observe_finish(process)
     elapsed_ms = (time.monotonic() - started) * 1000
     sampler_stop.set()
     if device_thread.is_alive():
