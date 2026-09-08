@@ -2,6 +2,7 @@
 // mechanism ONLY in the pinned, controller-owned llama-completion process.
 // Public Driver launch entry points only. No kernel argument reads or VMM work.
 #include "core.hpp"
+#include "census.hpp"
 #include "compat_audit_collector/trace_core.hpp"
 #include "platform/dynamic_library.hpp"
 #include "platform/sha256.hpp"
@@ -113,7 +114,9 @@ CUresult dispatch(bool per_thread, CUfunction function, unsigned gx, unsigned gy
           parameter.number("index", i); parameter.number("offset_bytes", snapshot.parameters[i].offset);
           parameter.number("size_bytes", snapshot.parameters[i].bytes); s->emit(parameter);
         }
-      }, [&] { return static_cast<int>((per_thread ? s->per_thread : s->legacy)(
+      }, [&] {
+        xvram::launch_probe::census::Scope marked_forward(id);
+        return static_cast<int>((per_thread ? s->per_thread : s->legacy)(
           function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra)); },
       [&](int code) { auto end = s->line("end", id); end.integer("result", code); s->emit(end); });
       return static_cast<CUresult>(result);
@@ -189,6 +192,9 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     auto* s = new State;
     current = s;
     s->metadata = std::wstring_view(mode) == L"metadata";
+#ifdef XVRAM_PROBE_CENSUS
+    xvram::launch_probe::census::initialize();
+#endif
     if (!s->driver.open_system({"nvcuda.dll"})) throw std::runtime_error("driver_unavailable");
     s->legacy = s->get<Launch>("cuLaunchKernel");
     // The saved resolver trace requests version 7000 with per-thread-default

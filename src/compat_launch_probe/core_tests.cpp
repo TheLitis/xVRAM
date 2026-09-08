@@ -1,7 +1,9 @@
 #include "core.hpp"
+#include "census.hpp"
 #include <iostream>
 #include <limits>
 #include <atomic>
+#include <thread>
 
 using namespace xvram::launch_probe;
 namespace {
@@ -24,6 +26,34 @@ struct Fake {
 }
 int main() {
   try {
+    require(census::current_call == 0);
+    try { census::Scope invalid(0); require(false); } catch (const std::logic_error&) {}
+    {
+      census::Scope scope(7);
+      require(census::current_call == 7);
+      try { census::Scope overlapping(8); require(false); } catch (const std::logic_error&) {}
+      require(census::current_call == 7);
+      bool independent = false;
+      std::thread other([&] { independent = census::current_call == 0; census::Scope local(8); });
+      other.join(); require(independent && census::current_call == 7);
+    }
+    require(census::current_call == 0);
+    try { census::Scope unwind(9); throw std::runtime_error("unwind"); }
+    catch (const std::runtime_error&) { require(census::current_call == 0); }
+    census::ApiStack stack;
+    fails([&] { (void)stack.exit(0, 1, 1, 1); });
+    fails([&] { (void)stack.enter(0, 0, 1, 1, 1); });
+    require(stack.enter(1, 0, 1, 2, 7).parent == 0);
+    require(stack.enter(2, 5, 2, 3, 7).parent == 1); // shared CUPTI correlation, distinct call
+    fails([&] { (void)stack.exit(0, 2, 3, 7); });
+    fails([&] { (void)stack.exit(5, 1, 3, 7); });
+    fails([&] { (void)stack.exit(5, 2, 2, 7); });
+    fails([&] { (void)stack.exit(5, 2, 3, 8); });
+    require(stack.exit(5, 2, 3, 7).id == 2);
+    require(stack.exit(0, 1, 2, 7).id == 1);
+    for (std::uint64_t i = 1; i <= 64; ++i) (void)stack.enter(i, 0, 1, 1, 1);
+    fails([&] { (void)stack.enter(65, 0, 1, 1, 1); });
+    for (std::uint64_t i = 64; i; --i) require(stack.exit(0, 1, 1, 1).id == i);
     Fake query;
     const auto first = inspect(query);
     require(first.parameters.size() == 2 && first.parameters[1].offset == 16);

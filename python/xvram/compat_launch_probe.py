@@ -336,12 +336,16 @@ def main(argv=None):
     run.add_argument("--mode", choices=("routing", "metadata"), required=True)
     run.add_argument("--driver-probe", type=Path,
                      help="Use the active Driver probe with the original pinned binary directory")
+    run.add_argument("--census-cupti-dir", type=Path,
+                     help="Enable simultaneous census using a census-built Driver DLL and pinned CUPTI directory")
     run.add_argument("--output-dir", type=Path, required=True)
     run.add_argument("--microbatch", type=int, choices=(1, 128), default=128)
     run.add_argument("--timeout-seconds", type=int, default=900, help="total native-run deadline, 1..900 seconds")
     args = parser.parse_args(argv)
     if args.action == "run" and not 1 <= args.timeout_seconds <= 900:
         parser.error("timeout must be 1..900 seconds")
+    if args.action == "run" and args.census_cupti_dir and not args.driver_probe:
+        parser.error("census requires the active Driver probe")
     try:
         if args.action == "exports":
             definition = export_definition(args.native, import_definition=args.import_definition)
@@ -361,6 +365,10 @@ def main(argv=None):
             binaries["xvram_driver_launch_probe.dll"] = sha256_file(args.driver_probe)
         else:
             binaries = verify_stage(args.binary_dir)
+        if args.census_cupti_dir:
+            from .compat_launch_census import CUPTI_NAME, CUPTI_SHA256
+            if sha256_file(args.census_cupti_dir / CUPTI_NAME) != CUPTI_SHA256:
+                raise ValueError("census_cupti_pin")
         profile = load_profile()
         shards = verify_model(args.model_dir, profile["models"]["14b"])
         args.output_dir = args.output_dir.resolve()
@@ -373,6 +381,9 @@ def main(argv=None):
         environment["XVRAM_LAUNCH_PROBE_TRACE"] = str(args.output_dir / "launches.jsonl")
         if args.driver_probe:
             environment["CUDA_INJECTION64_PATH"] = str(args.driver_probe.resolve())
+        if args.census_cupti_dir:
+            environment["XVRAM_LAUNCH_CENSUS_TRACE"] = str(args.output_dir / "census.jsonl")
+            environment["PATH"] = str(args.census_cupti_dir.resolve()) + os.pathsep + environment.get("PATH", "")
         environment["PATH"] = str(args.binary_dir.resolve()) + os.pathsep + environment.get("PATH", "")
         result = run_process(build_command(args, shards[0]), output_dir=args.output_dir,
                              timeout_seconds=args.timeout_seconds, environment=environment,
@@ -380,6 +391,11 @@ def main(argv=None):
         report = make_report(args.mode, "driver_entry_probe" if args.driver_probe else "runtime_proxy",
                              binaries, result, args.output_dir / "launches.jsonl", microbatch=args.microbatch)
         (args.output_dir / "probe.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        if args.census_cupti_dir:
+            from .compat_launch_census import make_report as census_report
+            census = census_report(report, args.output_dir / "census.jsonl")
+            (args.output_dir / "census-report.json").write_text(json.dumps(census, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            return census["exit_code"]
         return report["exit_code"]
     except (ValueError, KeyError, TypeError, OSError, UnicodeError) as error:
         print(f"launch probe preflight/output failure: {type(error).__name__}", file=sys.stderr)

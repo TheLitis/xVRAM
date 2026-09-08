@@ -114,6 +114,7 @@ add_executable(xvram-compat-audit-core-tests
 add_executable(xvram-launch-probe-core-tests
   "${PROJECT_SOURCE_DIR}/src/compat_launch_probe/core_tests.cpp")
 target_compile_features(xvram-launch-probe-core-tests PRIVATE cxx_std_20)
+target_link_libraries(xvram-launch-probe-core-tests PRIVATE Threads::Threads)
 xvram_enable_warnings(xvram-launch-probe-core-tests)
 add_test(NAME xvram.compat-audit.launch-probe-core COMMAND xvram-launch-probe-core-tests)
 set_tests_properties(xvram.compat-audit.launch-probe-core PROPERTIES TIMEOUT 15 LABELS "no-driver;compat-audit")
