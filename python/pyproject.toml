@@ -17,4 +17,5 @@ where = ["."]
 include = ["xvram*"]
 
 [tool.setuptools.package-data]
-xvram = ["compat_audit_profile.json", "compat_audit_source_profile.json"]
+xvram = ["compat_audit_profile.json", "compat_audit_source_profile.json",
+         "compat_audit_kernel_source_profile.json", "compat_audit_kernel_capture_catalog.json"]

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "profile_type": "xvram.cuda_kernel_source_dependencies",
+  "upstream_commit": "6a1a922d269908a29cbd4b49c27e6a8e7fd10fae",
+  "source_base_url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/6a1a922d269908a29cbd4b49c27e6a8e7fd10fae/",
+  "scope": "Reviewed CUDA dependencies only; not a complete build dependency closure or binary-source proof.",
+  "files": [
+    {"path": "ggml/src/ggml-cuda/cpy-utils.cuh", "size_bytes": 6332, "sha256": "dd7cd3edb55f8c5e160b6e6f37b0d61b94843fa3bcb9f8978965759f85ea6489"},
+    {"path": "ggml/src/ggml-cuda/vecdotq.cuh", "size_bytes": 49357, "sha256": "5999bbc5cf24c070029183c075a66f3cb6aa4a9b57798e138b4610b45a704539"},
+    {"path": "ggml/src/ggml-cuda/mmq-load-tiles.cuh", "size_bytes": 81103, "sha256": "f1adb201fa40087e294c40887e62f583f6a7adf40ddca542a735774742e0ae2c"},
+    {"path": "ggml/src/ggml-cuda/mmq-vec-dot.cuh", "size_bytes": 48256, "sha256": "58e87f162ec6e4bd5d23e99aeac76f3dd0e13a6cdfe01165cae806b51fe9ae65"},
+    {"path": "ggml/src/ggml-cuda/mmq-config-ampere.cuh", "size_bytes": 36295, "sha256": "6de9336a6c2f65c0ad83cbe9303dcd03e8cbb6185d15346133a31421000f6408"},
+    {"path": "ggml/src/ggml-cuda/mma.cuh", "size_bytes": 63456, "sha256": "c7e0f3332da182e203b4b953f9fa8535ffca3767d2b7d4d7dbf7ce486262d1af"},
+    {"path": "ggml/src/ggml-cuda/quantize.cuh", "size_bytes": 3466, "sha256": "112e190a096e1fa68d4c72ca2a450cb202586e3f2919c884f3e3316a8d5c57cd"},
+    {"path": "ggml/src/ggml-cuda/mmvq.cuh", "size_bytes": 988, "sha256": "b37f8359f519ba90ddecd9cb3ca5f8c2ae05685bfae6813d435d75763c2bb006"},
+    {"path": "ggml/src/ggml-cuda/norm.cuh", "size_bytes": 838, "sha256": "0f2d6b743ff349012424cddc8866eb0fa504ea16b7a58cb47b31b392d1f78a73"},
+    {"path": "ggml/src/ggml-cuda/vendors/cuda.h", "size_bytes": 741, "sha256": "e7847065d5d741f892d2f1f7aaaa8f418a41e3b983d1e6f09010055d4d1c38d1"}
+  ]
+}
