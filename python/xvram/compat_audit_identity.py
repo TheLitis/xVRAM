@@ -26,12 +26,15 @@ def _false(value):
         raise ValueError("witness_unsupported_proof")
 
 
-def records(path, record_type, *, cap=CAP, versions=(1,)):
+def records(path, record_type, *, cap=CAP, versions=(1,), max_records=1500000):
+    _uint(cap, 1)
+    _uint(max_records, 1)
     total = 0
+    version = None
     with Path(path).open("rb") as stream:
         for sequence, raw in enumerate(iter(lambda: stream.readline(65537), b""), 1):
             total += len(raw)
-            if len(raw) > 65536 or not raw.endswith(b"\n") or total > cap or sequence > 1500000:
+            if len(raw) > 65536 or not raw.endswith(b"\n") or total > cap or sequence > max_records:
                 raise ValueError("witness_framing")
             row = json.loads(raw, object_pairs_hook=_object,
                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError("witness_nonfinite")))
@@ -39,6 +42,9 @@ def records(path, record_type, *, cap=CAP, versions=(1,)):
                     or type(row.get("schema_version")) is not int or row["schema_version"] not in versions
                     or _uint(row.get("sequence"), 1) != sequence):
                 raise ValueError("witness_profile_or_sequence")
+            if version is not None and row["schema_version"] != version:
+                raise ValueError("witness_version_changed")
+            version = row["schema_version"]
             yield row
 
 
@@ -59,7 +65,13 @@ def identity(path, census_path, calls):
     counts = Counter(records=0, launches=0, library_loads=0, library_unloads=0,
                      library_errors=0, library_linked_launches=0, function_only_launches=0)
     summary = None
-    for row in records(path, "xvram.cuda_identity_witness"):
+    size = Path(path).stat().st_size
+    for row in records(path, "xvram.cuda_identity_witness", cap=256*1024*1024,
+                       versions=(1, 2), max_records=4000000):
+        version = row['schema_version']
+        if (size > (CAP if version == 1 else 256*1024*1024)
+                or row['sequence'] > (1500000 if version == 1 else 4000000)):
+            raise ValueError('witness_version_capacity')
         if summary is not None:
             raise ValueError("witness_after_summary")
         counts["records"] += 1
@@ -73,7 +85,7 @@ def identity(path, census_path, calls):
                 raise ValueError("witness_duplicate_session")
         elif kind == "library_api":
             _fields(row, "api_id symbol result library_id library_generation")
-            api_id = _uint(row["api_id"], 1, 500000)
+            api_id = _uint(row["api_id"], 1, 500000 if version == 1 else 2000000)
             symbol = row["symbol"]
             if api_id in apis or symbol not in ("cuLibraryLoadData", "cuLibraryLoadFromFile", "cuLibraryUnload"):
                 raise ValueError("witness_library_api")
@@ -126,7 +138,12 @@ def identity(path, census_path, calls):
         raise ValueError("witness_incomplete")
     # The sidecar API id is the census's actual instance id, not a timestamp guess.
     seen = set()
-    for row in records(census_path, "xvram.cuda_launch_census", cap=256*1024*1024, versions=(2,)):
+    census_size = Path(census_path).stat().st_size
+    for row in records(census_path, "xvram.cuda_launch_census", cap=1024*1024*1024,
+                       versions=(2, 3), max_records=4000000):
+        if (census_size > (256*1024*1024 if row['schema_version'] == 2 else 1024*1024*1024)
+                or row['sequence'] > (1500000 if row['schema_version'] == 2 else 4000000)):
+            raise ValueError('witness_census_version_capacity')
         if row["kind"] != "api_exit" or row["domain"] != "driver":
             continue
         if row["symbol"] not in ("cuLibraryLoadData", "cuLibraryLoadFromFile", "cuLibraryUnload"):
@@ -149,9 +166,10 @@ def make_report(probe, census, path, census_path):
     if probe["capture"]["timed_out"]:
         report["exit_code"] = 26
     try:
-        initial, census_initial = digest(path), digest(census_path, 256*1024*1024)
+        initial, census_initial = digest(path, 256*1024*1024), digest(census_path, 1024*1024*1024)
         counts = identity(path, census_path, probe["trace"]["counts"]["calls_returned"])
-        if initial != digest(path) or census_initial != digest(census_path, 256*1024*1024):
+        if (initial != digest(path, 256*1024*1024)
+                or census_initial != digest(census_path, 1024*1024*1024)):
             raise ValueError("witness_changed")
         report["observation"] = dict(sha256=initial, census_sha256=census_initial, counts=counts)
         if probe["exit_code"] == census["exit_code"] == 0:

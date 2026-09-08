@@ -4,6 +4,11 @@
 #include "core.hpp"
 #include "census.hpp"
 #include "witness.hpp"
+#ifdef XVRAM_PROBE_PC_WITNESS
+#include "sampling.hpp"
+#include "execution_witness.hpp"
+#include "postmortem.hpp"
+#endif
 #include "compat_audit_collector/trace_core.hpp"
 #include "platform/dynamic_library.hpp"
 #include "platform/sha256.hpp"
@@ -168,6 +173,13 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
     if (s->poisoned) return CUDA_ERROR_UNKNOWN;
     try {
       const auto id = ++s->call;
+#ifdef XVRAM_PROBE_PC_WITNESS
+      CUcontext sampling_context=nullptr;
+      if(xvram::launch_probe::sampling::enabled()) {
+        checked(s->get<decltype(&cuCtxGetCurrent)>("cuCtxGetCurrent")(&sampling_context));
+        xvram::launch_probe::sampling::before(sampling_context);
+      }
+#endif
       const auto result = xvram::launch_probe::invoke([&] {
         if (!s->metadata) return xvram::launch_probe::Snapshot{};
         Query query{*s, function, route == 2, stream};
@@ -195,6 +207,13 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
         return static_cast<int>(native(
           function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra)); },
       [&](int code) {
+#ifdef XVRAM_PROBE_PC_WITNESS
+        if(xvram::launch_probe::sampling::enabled()) {
+          if(code!=CUDA_SUCCESS) throw std::runtime_error("sampling_launch_failed");
+          xvram::launch_probe::sampling::after(id,sampling_context,
+            s->get<decltype(&cuCtxSynchronize)>("cuCtxSynchronize")());
+        }
+#endif
         auto end = s->line("end", id); end.integer("result", code); s->emit(end);
       });
       return static_cast<CUresult>(result);
@@ -255,6 +274,32 @@ struct Transaction {
     if (code != NO_ERROR) throw std::runtime_error("hook_commit_failed");
   }
 };
+#ifdef XVRAM_PROBE_PC_WITNESS
+using ProcessExit = void (WINAPI*)(unsigned long);
+ProcessExit native_process_exit=nullptr;
+void WINAPI diagnostic_process_exit(unsigned long code) noexcept {
+  if(auto* s=current.load()) {
+    try {
+      std::lock_guard lock(s->calls_mutex);
+      if(xvram::launch_probe::sampling::enabled() || xvram::launch_probe::execution_witness::enabled()) {
+        xvram::launch_probe::census::stop_flusher();
+        xvram::launch_probe::postmortem::seal();
+        xvram::launch_probe::execution_witness::seal();
+        xvram::launch_probe::execution_witness::terminal_tool=true;
+        const auto result=s->get<decltype(&cuCtxSynchronize)>("cuCtxSynchronize")();
+        xvram::launch_probe::sampling::finish(result);
+        const bool drained=xvram::launch_probe::census::drain();
+        xvram::launch_probe::postmortem::drained(result==CUDA_SUCCESS,drained);
+        xvram::launch_probe::execution_witness::finish(result==CUDA_SUCCESS,drained);
+        if(result!=CUDA_SUCCESS || !drained) throw std::runtime_error("diagnostic_terminal_drain_failed");
+        xvram::launch_probe::postmortem::finish();
+      }
+    } catch(...) { xvram::launch_probe::postmortem::error(); s->poisoned=true; code=27; }
+  }
+  xvram::launch_probe::execution_witness::terminal_tool=false;
+  native_process_exit(code);
+}
+#endif
 } // namespace
 
 extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
@@ -280,8 +325,15 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     if(!s->metadata) throw std::runtime_error("witness_requires_metadata");
     xvram::launch_probe::witness::initialize();
 #endif
+#ifdef XVRAM_PROBE_PC_WITNESS
+    xvram::launch_probe::execution_witness::initialize();
+    xvram::launch_probe::postmortem::initialize();
+#endif
 #ifdef XVRAM_PROBE_CENSUS
     xvram::launch_probe::census::initialize();
+#endif
+#ifdef XVRAM_PROBE_PC_WITNESS
+    xvram::launch_probe::sampling::initialize();
 #endif
     if (!s->driver.open_system({"nvcuda.dll"})) throw std::runtime_error("driver_unavailable");
     s->legacy = s->get<Launch>("cuLaunchKernel");
@@ -311,6 +363,16 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     std::lock_guard calls_lock(s->calls_mutex);
     Transaction transaction;
     transaction.begin();
+#ifdef XVRAM_PROBE_PC_WITNESS
+    // Official CUPTI Windows injection sample uses this pre-loader-teardown
+    // boundary. It does NOT by itself assert that all application producers
+    // were quiescent, or that the census was completely delivered.
+    const auto ntdll=GetModuleHandleW(L"ntdll.dll");
+    native_process_exit=ntdll ? reinterpret_cast<ProcessExit>(GetProcAddress(ntdll,"RtlExitUserProcess")) : nullptr;
+    if(!native_process_exit || DetourAttach(reinterpret_cast<PVOID*>(&native_process_exit),
+       reinterpret_cast<PVOID>(diagnostic_process_exit))!=NO_ERROR)
+      throw std::runtime_error("diagnostic_exit_hook_failed");
+#endif
     if (DetourAttach(reinterpret_cast<PVOID*>(&s->legacy), reinterpret_cast<PVOID>(legacy)) != NO_ERROR ||
         DetourAttach(reinterpret_cast<PVOID*>(&s->per_thread), reinterpret_cast<PVOID>(per_thread)) != NO_ERROR)
       throw std::runtime_error("hook_attach_failed");

@@ -209,6 +209,34 @@ class DeviceOrder:
             raise ValueError("proof_stale_event")
         del self.events[key]  # submitted waits already own immutable snapshots
 
+    def synchronize_stream(self, key, result):
+        """Apply a witnessed successful sync, only under single-producer order."""
+        self._admit(submission=False)
+        key = identity(key)
+        if key not in self.streams or result != 'success':
+            self.poisoned = True
+            raise ValueError('proof_stream_sync_failure')
+        for stream, value in self.streams[key].items():
+            self.completed[stream] = max(self.completed.get(stream, 0), value)
+
+    def inherit_host_retirements(self, key):
+        """Explicit single-producer edge; never inferred for concurrent callers."""
+        self._admit()
+        key = identity(key)
+        if key not in self.streams:
+            raise ValueError('proof_stale_stream')
+        for stream, value in self.completed.items():
+            self.streams[key][stream] = max(self.streams[key].get(stream, 0), value)
+
+    def synchronize_context(self, result):
+        """Single-context model; a return from another context is not admissible."""
+        self._admit(submission=False)
+        if result != 'success':
+            self.poisoned = True
+            raise ValueError('proof_context_sync_failure')
+        for key in self.streams:
+            self.synchronize_stream(key, result)
+
     def destroy_stream(self, key):
         self._admit(submission=False)
         key = identity(key)

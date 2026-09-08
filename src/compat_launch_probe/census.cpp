@@ -1,6 +1,10 @@
 // Opt-in simultaneous census. No CUDA calls in callbacks or shutdown hooks.
 #include "census.hpp"
 #include "witness.hpp"
+#ifdef XVRAM_PROBE_PC_WITNESS
+#include "execution_witness.hpp"
+#include "postmortem.hpp"
+#endif
 #include "compat_audit_collector/trace_core.hpp"
 #include "platform/sha256.hpp"
 #include <cupti.h>
@@ -14,7 +18,10 @@
 namespace xvram::launch_probe::census {
 namespace {
 using audit::JsonLine;
-#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+#ifdef XVRAM_PROBE_PC_WITNESS
+constexpr std::uint64_t cap = 1024ULL * 1024 * 1024;
+constexpr unsigned trace_version = 3;
+#elif defined(XVRAM_PROBE_LEGACY_RESOLVER)
 constexpr std::uint64_t cap = 256ULL * 1024 * 1024;
 constexpr unsigned trace_version = 2;
 #else
@@ -27,6 +34,9 @@ struct State {
   CUpti_SubscriberHandle subscriber = nullptr;
   std::mutex mutex;
   std::atomic_uint64_t errors{0}, dropped{0}, outstanding{0};
+  std::atomic_bool stop{false};
+  std::thread flusher;
+  std::uint64_t open_calls=0;
   std::uint64_t sequence = 0, bytes = 0, api_id = 0;
   bool closed = false;
   JsonLine line(const char* kind) {
@@ -36,7 +46,12 @@ struct State {
   }
   void emit(const JsonLine& line) {
     const auto data = line.finish();
-    if (closed || data.size() > cap - bytes) throw std::runtime_error("census_trace_capacity");
+    // v3 deliberately retains late post-footer callbacks as invalidating
+    // evidence. It must not hide the native teardown behind a closed flag.
+#ifndef XVRAM_PROBE_PC_WITNESS
+    if(closed) throw std::runtime_error("census_trace_closed");
+#endif
+    if (data.size() > cap - bytes) throw std::runtime_error("census_trace_capacity");
     DWORD written = 0;
     if (!WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) || written != data.size())
       throw std::runtime_error("census_trace_write");
@@ -57,12 +72,37 @@ void check(CUptiResult result) {
   if (result != CUPTI_SUCCESS) throw std::runtime_error("census_cupti_failure");
 }
 void CUPTIAPI callback(void*, CUpti_CallbackDomain domain, CUpti_CallbackId cbid, const void* raw) noexcept {
+#ifdef XVRAM_PROBE_PC_WITNESS
+  const bool api=raw && (domain==CUPTI_CB_DOMAIN_RUNTIME_API || domain==CUPTI_CB_DOMAIN_DRIVER_API);
+  const auto* callback_data=api ? static_cast<const CUpti_CallbackData*>(raw) : nullptr;
+  const bool entering=api && callback_data->callbackSite==CUPTI_API_ENTER;
+  const bool tool_sync=api && domain==CUPTI_CB_DOMAIN_DRIVER_API && execution_witness::terminal_tool &&
+    callback_data->functionName && std::string_view(callback_data->functionName)=="cuCtxSynchronize";
+  postmortem::callback_begin(api,entering,tool_sync);
+  // STATE_FATAL_ERROR is enabled independently of normal API callbacks; never
+  // hide it behind a closed file, a null payload, or teardown failure.
+  if(!api) postmortem::error();
+  struct EndObservation {
+    bool api, entering;
+    ~EndObservation() { postmortem::callback_end(api,entering); }
+  } observation{api,entering};
+#endif
   if (!state || !raw) return;
-  if (in_callback) { ++state->dropped; return; }
+  if (in_callback) {
+    ++state->dropped;
+#ifdef XVRAM_PROBE_PC_WITNESS
+    postmortem::error();
+#endif
+    return;
+  }
   in_callback = true;
   try {
     std::lock_guard lock(state->mutex);
+#ifdef XVRAM_PROBE_PC_WITNESS
+    {
+#else
     if (!state->closed) {
+#endif
       if (domain != CUPTI_CB_DOMAIN_RUNTIME_API && domain != CUPTI_CB_DOMAIN_DRIVER_API)
         throw std::runtime_error("census_callback_domain");
       const auto& data = *static_cast<const CUpti_CallbackData*>(raw);
@@ -70,9 +110,15 @@ void CUPTIAPI callback(void*, CUpti_CallbackDomain domain, CUpti_CallbackId cbid
       ApiFrame frame;
       if (!exit) {
         frame = api_stack.enter(++state->api_id, current_call, static_cast<std::uint32_t>(domain), cbid, data.correlationId);
+        ++state->open_calls;
       } else {
         frame = api_stack.exit(current_call, static_cast<std::uint32_t>(domain), cbid, data.correlationId);
+        if(!state->open_calls) throw std::runtime_error("census_open_call_underflow");
+        --state->open_calls;
       }
+#ifdef XVRAM_PROBE_PC_WITNESS
+      if(domain==CUPTI_CB_DOMAIN_DRIVER_API) execution_witness::api(data,frame.id);
+#endif
 #ifdef XVRAM_PROBE_WITNESS
       if(domain==CUPTI_CB_DOMAIN_DRIVER_API) witness::api(data,frame.id);
 #endif
@@ -88,11 +134,26 @@ void CUPTIAPI callback(void*, CUpti_CallbackDomain domain, CUpti_CallbackId cbid
       }
       state->emit(line);
     }
-  } catch (...) { ++state->errors; }
+  } catch (...) {
+    ++state->errors;
+#ifdef XVRAM_PROBE_PC_WITNESS
+    postmortem::error();
+#endif
+  }
   in_callback = false;
 }
 void CUPTIAPI requested(std::uint8_t** buffer, std::size_t* size, std::size_t* records,
                        CUpti_BufferCallbackRequestInfo*) noexcept {
+#ifdef XVRAM_PROBE_PC_WITNESS
+  postmortem::activity_begin(true);
+  struct EndRequest {
+    std::uint8_t** buffer;
+    ~EndRequest() {
+      if(!*buffer) { postmortem::activity_cancel(); postmortem::error(); }
+      postmortem::activity_end(false);
+    }
+  } observation{buffer};
+#endif
   *buffer = nullptr; *size = 0; *records = 0;
   if (!state) return;
   if (state->outstanding.fetch_add(1) >= 8) { --state->outstanding; ++state->dropped; return; }
@@ -102,6 +163,10 @@ void CUPTIAPI requested(std::uint8_t** buffer, std::size_t* size, std::size_t* r
 }
 void CUPTIAPI completed(std::uint8_t* buffer, std::size_t, std::size_t valid,
                        CUpti_BufferCallbackCompleteInfo*) noexcept {
+#ifdef XVRAM_PROBE_PC_WITNESS
+  postmortem::activity_begin(false);
+  struct EndCompletion { ~EndCompletion() { postmortem::activity_end(true); } } observation;
+#endif
   if (state) {
     try {
       CUpti_Activity* record = nullptr;
@@ -111,7 +176,9 @@ void CUPTIAPI completed(std::uint8_t* buffer, std::size_t, std::size_t valid,
         check(result);
         if (!record) throw std::runtime_error("census_null_activity");
         std::lock_guard lock(state->mutex);
+#ifndef XVRAM_PROBE_PC_WITNESS
         if (state->closed) break;
+#endif
         if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
           const auto& kernel = *reinterpret_cast<const CUpti_ActivityKernel12*>(record);
           auto line = state->line("kernel"); line.number("correlation_id", kernel.correlationId);
@@ -124,7 +191,15 @@ void CUPTIAPI completed(std::uint8_t* buffer, std::size_t, std::size_t valid,
       std::size_t dropped = 0;
       check(cuptiActivityGetNumDroppedRecords_v2(state->subscriber, nullptr, 0, &dropped));
       state->dropped += dropped;
-    } catch (...) { ++state->errors; }
+#ifdef XVRAM_PROBE_PC_WITNESS
+      if(dropped) postmortem::error();
+#endif
+    } catch (...) {
+      ++state->errors;
+#ifdef XVRAM_PROBE_PC_WITNESS
+      postmortem::error();
+#endif
+    }
     --state->outstanding;
   }
   std::free(buffer);
@@ -138,7 +213,16 @@ void footer() noexcept {
     line.number("errors", state->errors); line.number("dropped", state->dropped);
     line.number("buffers_outstanding", state->outstanding);
     line.boolean("terminal_complete", false); state->emit(line); state->closed = true;
-  } catch (...) { ++state->errors; }
+#ifdef XVRAM_PROBE_PC_WITNESS
+    if(!FlushFileBuffers(state->file)) throw std::runtime_error("census_terminal_flush_failed");
+    postmortem::census_closed();
+#endif
+  } catch (...) {
+    ++state->errors;
+#ifdef XVRAM_PROBE_PC_WITNESS
+    postmortem::error();
+#endif
+  }
   state->mutex.unlock();
 }
 } // namespace
@@ -171,12 +255,24 @@ void initialize() {
   check(cuptiEnableCallback(1, state->subscriber, CUPTI_CB_DOMAIN_STATE, CUPTI_CBID_STATE_FATAL_ERROR));
   for (const auto kind : {CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER, CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL})
     check(cuptiActivityEnable_v2(state->subscriber, kind, nullptr));
-  std::thread([] {
-    for (;;) {
+  state->flusher=std::thread([] {
+    while(!state->stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if(state->stop) break;
       // CUPTI flushing occurs on an independent tool thread, never a callback.
       if (cuptiActivityFlushAll(0) != CUPTI_SUCCESS) ++state->errors;
     }
-  }).detach();
+  });
+}
+void stop_flusher() {
+  if(!state) throw std::runtime_error("census_not_initialized");
+  state->stop=true;
+  if(state->flusher.joinable()) state->flusher.join();
+}
+bool drain() {
+  if(!state || !state->stop) return false;
+  if(cuptiActivityFlushAll(0)!=CUPTI_SUCCESS) return false;
+  std::lock_guard lock(state->mutex);
+  return !state->closed && !state->errors && !state->dropped && !state->outstanding && !state->open_calls;
 }
 } // namespace xvram::launch_probe::census

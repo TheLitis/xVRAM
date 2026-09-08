@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Serialized CUPTI PC identity witness v1",
+  "description": "One serialized diagnostic record. Schema validity alone is not proof of complete coverage, ordering, memory safety, or successful cleanup.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "serialized_diagnostic",
+        "sampling_period",
+        "hardware_buffer_bytes",
+        "configured_buffer_pcs",
+        "result_buffer_pcs",
+        "terminal_complete"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "session"
+        },
+        "serialized_diagnostic": {
+          "type": "boolean",
+          "const": true
+        },
+        "sampling_period": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 31
+        },
+        "hardware_buffer_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "configured_buffer_pcs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "result_buffer_pcs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "terminal_complete": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "context_present",
+        "errors",
+        "copies_submitted"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "preflight"
+        },
+        "context_present": {
+          "type": "boolean"
+        },
+        "errors": {
+          "$ref": "#/$defs/u64"
+        },
+        "copies_submitted": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "stall_reasons"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "enabled"
+        },
+        "stall_reasons": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "cubin_cookie",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "cubin"
+        },
+        "cubin_cookie": {
+          "$ref": "#/$defs/cookie"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "observed_after_call",
+        "correlation_id",
+        "cubin_cookie",
+        "function_index",
+        "name"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "sample_identity"
+        },
+        "observed_after_call": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "cubin_cookie": {
+          "$ref": "#/$defs/cookie"
+        },
+        "function_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "not": {"pattern": "[\\u0000-\\u001f]"}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "observed_after_call",
+        "pc_records",
+        "dropped_samples"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "collection"
+        },
+        "observed_after_call": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "pc_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        },
+        "dropped_samples": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "cupti_result"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "error"
+        },
+        "cupti_result": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "bytes",
+        "active_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "copy_rejected"
+        },
+        "bytes": {
+          "$ref": "#/$defs/u64"
+        },
+        "active_bytes": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "errors",
+        "copies_submitted",
+        "copies_retired",
+        "terminal_complete",
+        "sampler_cleanup_proven"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_pc_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1500000
+        },
+        "kind": {
+          "type": "string",
+          "const": "summary"
+        },
+        "errors": {
+          "$ref": "#/$defs/u64"
+        },
+        "copies_submitted": {
+          "$ref": "#/$defs/u64"
+        },
+        "copies_retired": {
+          "$ref": "#/$defs/u64"
+        },
+        "terminal_complete": {
+          "type": "boolean",
+          "const": false
+        },
+        "sampler_cleanup_proven": {
+          "type": "boolean"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "u64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "cookie": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    }
+  }
+}

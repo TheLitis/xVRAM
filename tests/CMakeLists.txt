@@ -144,6 +144,7 @@ set_tests_properties(
   xvram.compat-audit.unit
   PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python"
              TIMEOUT 90 LABELS "no-driver;compat-audit")
+include("${PROJECT_SOURCE_DIR}/cmake/CompatAuditTests.cmake")
 add_test(
   NAME xvram.compat-audit.help
   COMMAND "${Python3_EXECUTABLE}" -m xvram.compat_audit --help)

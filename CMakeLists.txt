@@ -824,7 +824,11 @@ if(NOT XVRAM_BUILD_TORCH_RUNTIME STREQUAL "OFF")
         XVRAM_TORCH_C10_LIBRARY NAMES c10 PATHS ${XVRAM_TORCH_LIBRARY_DIRS} NO_DEFAULT_PATH)
     endif()
   endif()
-  if(XVRAM_TORCH_STABLE_INCLUDE_DIR AND XVRAM_TORCH_LIBRARY AND XVRAM_TORCH_CPU_LIBRARY AND
+  # Cached library paths cannot make a failed Python discovery successful (for
+  # example, a replaced interpreter or an OS-blocked PyTorch dependency).
+  if(Python3_Interpreter_FOUND AND XVRAM_TORCH_INCLUDE_RESULT EQUAL 0 AND
+     XVRAM_TORCH_LIBRARY_RESULT EQUAL 0 AND XVRAM_TORCH_ABI_RESULT EQUAL 0 AND
+     XVRAM_TORCH_STABLE_INCLUDE_DIR AND XVRAM_TORCH_LIBRARY AND XVRAM_TORCH_CPU_LIBRARY AND
      XVRAM_TORCH_C10_LIBRARY)
     set(XVRAM_TORCH_RUNTIME_ENABLED ON)
   elseif(XVRAM_BUILD_TORCH_RUNTIME STREQUAL "ON")
@@ -1033,8 +1037,12 @@ install(FILES schemas/capability-report-v1.schema.json
               schemas/cuda-compat-audit-observations-v1.schema.json
               schemas/cuda-compat-audit-binary-evidence-v1.schema.json
               schemas/cuda-identity-witness-v1.schema.json
+              schemas/cuda-identity-witness-v2.schema.json
               schemas/cuda-identity-evidence-v1.schema.json
               schemas/cuda-pc-preflight-v1.schema.json
+              schemas/cuda-pc-witness-v1.schema.json
+              schemas/cuda-order-witness-v1.schema.json
+              schemas/cuda-launch-census-trace-v3.schema.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/xvram/schemas")
 
 configure_package_config_file(

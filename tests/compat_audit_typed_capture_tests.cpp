@@ -1,8 +1,10 @@
 #include "compat_launch_probe/typed_capture.hpp"
+#include "capture_catalog.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 namespace tc=xvram::launch_probe::typed_capture;
+static_assert(tc::kernels.size()==39 && tc::kernels[0].supported && !tc::kernels[38].supported);
 using xvram::launch_probe::Snapshot;
 namespace {
 void require(bool condition) { if(!condition) throw std::runtime_error("typed_capture_test"); }

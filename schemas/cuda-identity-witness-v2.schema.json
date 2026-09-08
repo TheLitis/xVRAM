@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Large opt-in native identity sidecar v2; no cubin/completeness proof",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type",
+    "sequence",
+    "kind"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "record_type": {
+      "const": "xvram.cuda_identity_witness"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4000000
+    },
+    "kind": {
+      "enum": [
+        "session",
+        "library_api",
+        "launch_identity",
+        "summary"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "session"
+        },
+        "terminal_complete": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "terminal_complete"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "library_api"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "enum": [
+            "cuLibraryLoadData",
+            "cuLibraryLoadFromFile",
+            "cuLibraryUnload"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "library_id": {
+          "$ref": "#/$defs/id"
+        },
+        "library_generation": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "api_id",
+        "symbol",
+        "result",
+        "library_id",
+        "library_generation"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "launch_identity"
+        },
+        "call_id": {
+          "$ref": "#/$defs/positive"
+        },
+        "library_id": {
+          "$ref": "#/$defs/id"
+        },
+        "library_generation": {
+          "$ref": "#/$defs/id"
+        },
+        "module_observation_id": {
+          "$ref": "#/$defs/positive"
+        },
+        "library_module_equal": {
+          "type": "boolean"
+        },
+        "cubin_binding_proven": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "library_id",
+        "library_generation",
+        "module_observation_id",
+        "library_module_equal",
+        "cubin_binding_proven"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "summary"
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "terminal_complete": {
+          "const": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "errors",
+        "terminal_complete"
+      ]
+    }
+  ],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "id": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "positive": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    }
+  }
+}

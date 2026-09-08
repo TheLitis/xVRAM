@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "terminal_complete",
+        "cupti_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_census"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "const": "session"
+        },
+        "terminal_complete": {
+          "const": false,
+          "type": "boolean"
+        },
+        "cupti_sha256": {
+          "const": "9b10d2fafaff1a4dc9e447c4a1355fccb04ee024fa7e7d28c9e4c5ab53347faf"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "domain",
+        "correlation_id",
+        "probe_call_id",
+        "symbol",
+        "api_id",
+        "parent_api_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_census"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "const": "api_enter"
+        },
+        "domain": {
+          "enum": [
+            "driver",
+            "runtime"
+          ]
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "probe_call_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "parent_api_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "domain",
+        "correlation_id",
+        "probe_call_id",
+        "symbol",
+        "result",
+        "api_id",
+        "parent_api_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_census"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "const": "api_exit"
+        },
+        "domain": {
+          "enum": [
+            "driver",
+            "runtime"
+          ]
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "probe_call_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "result": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "parent_api_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "correlation_id",
+        "name",
+        "start_ns",
+        "end_ns"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_census"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "const": "kernel"
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "start_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "end_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "errors",
+        "dropped",
+        "buffers_outstanding",
+        "terminal_complete"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_census"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "const": "summary"
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "buffers_outstanding": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "terminal_complete": {
+          "const": false,
+          "type": "boolean"
+        }
+      }
+    }
+  ],
+  "title": "Large opt-in CUDA launch census trace v3"
+}

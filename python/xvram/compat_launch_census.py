@@ -14,6 +14,10 @@ from .compat_launch_probe import analyze_trace, validate_report as validate_prob
 CUPTI_NAME = "cupti64_2026.2.1.dll"
 CUPTI_SHA256 = "9b10d2fafaff1a4dc9e447c4a1355fccb04ee024fa7e7d28c9e4c5ab53347faf"
 CAP = 128 * 1024 * 1024
+# Frozen v1/v2 admission remains unchanged; large diagnostic captures opt into v3.
+TRACE_LIMITS = {1: (CAP, 750000, 250000),
+                2: (2 * CAP, 1500000, 500000),
+                3: (8 * CAP, 4000000, 2000000)}
 PROOF = ("all_launches_covered", "terminal_complete", "semantic_ranges", "cubin_binding", "oversubscription")
 LAUNCH = re.compile(r"^(?:cuda|cu)(?:Launch|GraphLaunch)")
 
@@ -43,7 +47,7 @@ def _name(value):
 def analyze(path: Path, probe_calls: int):
     _integer(probe_calls)
     size = path.stat().st_size
-    if not probe_calls or size > 2 * CAP:
+    if not probe_calls or size > TRACE_LIMITS[3][0]:
         raise ValueError("census_limit")
     digest = hashlib.sha256()
     apis, active, children, kernels, depths, failed = {}, {}, Counter(), [], {}, set()
@@ -55,19 +59,20 @@ def analyze(path: Path, probe_calls: int):
     with path.open("rb") as stream:
         while raw := stream.readline(65537):
             total += len(raw)
-            if len(raw) > 65536 or not raw.endswith(b"\n") or sequence >= (1500000 if version == 2 else 750000):
+            if (len(raw) > 65536 or not raw.endswith(b"\n")
+                    or (version is not None and sequence >= TRACE_LIMITS[version][1])):
                 raise ValueError("census_framing_limit")
             digest.update(raw)
             record = json.loads(raw, object_pairs_hook=_unique)
             sequence += 1
             if (not isinstance(record, dict) or record.get("record_type") != "xvram.cuda_launch_census"
-                    or type(record.get("schema_version")) is not int or record["schema_version"] not in (1, 2)
+                    or type(record.get("schema_version")) is not int or record["schema_version"] not in TRACE_LIMITS
                     or _integer(record.get("sequence")) != sequence or summary is not None):
                 raise ValueError("census_sequence")
             if version is not None and record["schema_version"] != version:
                 raise ValueError("census_version_changed")
             version = record["schema_version"]
-            if max(size, total) > CAP * version:
+            if max(size, total) > TRACE_LIMITS[version][0]:
                 raise ValueError("census_version_capacity")
             kind = record.get("kind")
             if sequence == 1 and kind != "session":
@@ -91,7 +96,8 @@ def analyze(path: Path, probe_calls: int):
                 if not correlation:
                     raise ValueError("census_zero_correlation")
                 if kind == "api_enter":
-                    if key != len(apis) + 1 or len(apis) >= 250000 * version or (parent and parent not in active):
+                    if (key != len(apis) + 1 or len(apis) >= TRACE_LIMITS[version][2]
+                            or (parent and parent not in active)):
                         raise ValueError("census_api_identity")
                     apis[key] = value
                     active[key] = value

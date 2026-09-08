@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Typed CUDA execution order witness v1",
+  "description": "One serialized diagnostic record. Schema validity alone is not proof of complete coverage, ordering, memory safety, or successful cleanup.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "session"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "thread_id",
+        "context_id",
+        "stream_id",
+        "event_id",
+        "flags",
+        "stream_kind",
+        "symbol",
+        "terminal_tool",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "api_enter"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "stream_kind": {
+          "type": "string",
+          "enum": [
+            "none",
+            "explicit",
+            "per_thread",
+            "legacy"
+          ]
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^cu[A-Za-z0-9_]+$"
+        },
+        "terminal_tool": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "thread_id",
+        "context_id",
+        "stream_id",
+        "event_id",
+        "flags",
+        "stream_kind",
+        "symbol",
+        "terminal_tool",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "api_exit"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "stream_kind": {
+          "type": "string",
+          "enum": [
+            "none",
+            "explicit",
+            "per_thread",
+            "legacy"
+          ]
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^cu[A-Za-z0-9_]+$"
+        },
+        "terminal_tool": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "open_calls"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "seal"
+        },
+        "open_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "late_producer"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "errors",
+        "open_calls"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "incomplete"
+        },
+        "errors": {
+          "$ref": "#/$defs/u64"
+        },
+        "open_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "gpu_drained",
+        "census_drained",
+        "sealed",
+        "errors",
+        "open_calls"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_order_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "summary"
+        },
+        "gpu_drained": {
+          "type": "boolean"
+        },
+        "census_drained": {
+          "type": "boolean"
+        },
+        "sealed": {
+          "type": "boolean"
+        },
+        "errors": {
+          "$ref": "#/$defs/u64"
+        },
+        "open_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "u64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    }
+  }
+}

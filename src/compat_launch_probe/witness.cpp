@@ -10,6 +10,13 @@
 
 namespace xvram::launch_probe::witness {
 namespace {
+#ifdef XVRAM_PROBE_PC_WITNESS
+constexpr std::uint64_t cap = 256ULL * 1024 * 1024;
+constexpr unsigned trace_version = 2;
+#else
+constexpr std::uint64_t cap = 64ULL * 1024 * 1024;
+constexpr unsigned trace_version = 1;
+#endif
 struct State {
   HANDLE file = INVALID_HANDLE_VALUE;
   std::mutex mutex;
@@ -20,13 +27,12 @@ struct State {
   bool closed = false;
   audit::JsonLine line(const char* kind) {
     audit::JsonLine line;
-    line.number("schema_version", 1); line.string("record_type", "xvram.cuda_identity_witness");
+    line.number("schema_version", trace_version); line.string("record_type", "xvram.cuda_identity_witness");
     line.number("sequence", ++sequence); line.string("kind", kind);
     return line;
   }
   void emit(const audit::JsonLine& line) {
     const auto data = line.finish();
-    constexpr std::uint64_t cap = 64ULL * 1024 * 1024;
     if (closed || data.size() > cap-bytes) throw std::runtime_error("witness_capacity");
     DWORD written = 0;
     if (!WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) || written != data.size())
