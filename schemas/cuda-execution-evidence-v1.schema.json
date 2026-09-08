@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "version",
+    "provenance",
+    "configuration",
+    "coverage",
+    "kernels",
+    "gates",
+    "decision",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_execution_evidence"
+    },
+    "version": {
+      "const": "0.1.0-dev"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probe_report",
+        "probe_trace",
+        "census_report",
+        "census_trace",
+        "binary_evidence"
+      ],
+      "properties": {
+        "probe_report": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "probe_trace": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "census_report": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "census_trace": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "binary_evidence": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "microbatch",
+        "gpu_layers",
+        "context_size",
+        "generated_token_limit"
+      ],
+      "properties": {
+        "model": {
+          "const": "14b"
+        },
+        "microbatch": {
+          "enum": [
+            1,
+            128
+          ]
+        },
+        "gpu_layers": {
+          "const": 8
+        },
+        "context_size": {
+          "const": 2048
+        },
+        "generated_token_limit": {
+          "const": 32
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observed_launches",
+        "metadata_calls",
+        "live_layouts",
+        "matching_candidate",
+        "ambiguous_candidates",
+        "abi_mismatch",
+        "no_static_candidate",
+        "observed_launches_reconciled"
+      ],
+      "properties": {
+        "observed_launches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "metadata_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "live_layouts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "matching_candidate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "ambiguous_candidates": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "abi_mismatch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "no_static_candidate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "observed_launches_reconciled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "kernels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "live_layout_id",
+          "name",
+          "calls",
+          "parameter_count",
+          "layout_sha256",
+          "status",
+          "candidates",
+          "binding_proven",
+          "memory_bounds_proven"
+        ],
+        "properties": {
+          "live_layout_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?!.*0[xX][0-9a-fA-F]{6,}).+$"
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "parameter_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 256
+          },
+          "layout_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "status": {
+            "enum": [
+              "matching_candidate",
+              "ambiguous_candidates",
+              "abi_mismatch",
+              "no_static_candidate"
+            ]
+          },
+          "candidates": {
+            "type": "array",
+            "maxItems": 1024,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "module_index",
+                "cubin_sha256",
+                "symbol_index",
+                "abi_match"
+              ],
+              "properties": {
+                "module_index": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 999999
+                },
+                "cubin_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "symbol_index": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 99999
+                },
+                "abi_match": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "binding_proven": {
+            "const": false
+          },
+          "memory_bounds_proven": {
+            "const": false
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_bounds",
+        "cubin_binding",
+        "device_ordering",
+        "trace_completeness"
+      ],
+      "properties": {
+        "memory_bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "proven",
+            "blockers"
+          ],
+          "properties": {
+            "proven": {
+              "const": false
+            },
+            "blockers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,127}$"
+              }
+            }
+          }
+        },
+        "cubin_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "proven",
+            "blockers"
+          ],
+          "properties": {
+            "proven": {
+              "const": false
+            },
+            "blockers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,127}$"
+              }
+            }
+          }
+        },
+        "device_ordering": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "proven",
+            "blockers"
+          ],
+          "properties": {
+            "proven": {
+              "const": false
+            },
+            "blockers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,127}$"
+              }
+            }
+          }
+        },
+        "trace_completeness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "proven",
+            "blockers"
+          ],
+          "properties": {
+            "proven": {
+              "const": false
+            },
+            "blockers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,127}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "execution_ready",
+        "oversubscription_proof"
+      ],
+      "properties": {
+        "verdict": {
+          "const": "NO-GO"
+        },
+        "execution_ready": {
+          "const": false
+        },
+        "oversubscription_proof": {
+          "const": false
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code"
+      ],
+      "properties": {
+        "status": {
+          "const": "completed"
+        },
+        "exit_code": {
+          "const": 0
+        }
+      }
+    }
+  }
+}
