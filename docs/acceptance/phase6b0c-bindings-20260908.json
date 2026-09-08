@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "report_type": "xvram.cuda_compat_launch_bindings_acceptance",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "run_kind": "native_cpu_offload_pilot",
+  "profile_id": "llama-b10819-qwen25-q4km-win-cuda133-v1",
+  "source_revision_base": "9087cacb5501b06f1392ce15add94e825cb02450",
+  "local_artifact_root": "artifacts/phase6b0c-bindings-20260908",
+  "configuration": {
+    "model": "14b",
+    "application": "completion",
+    "microbatch": 128,
+    "context_size": 2048,
+    "gpu_layers": 8,
+    "generation_limit": 32,
+    "seed": 424242,
+    "kv_dtype": "f16",
+    "graphs": false,
+    "flash_attention": false,
+    "speculative_decoding": false,
+    "context_shift": false
+  },
+  "device": {
+    "name": "NVIDIA GeForce RTX 3070",
+    "driver_version": "616.56",
+    "observed_total_bytes": 8589934592
+  },
+  "collector_sha256": "33b2f66149a3bf3b7eccc3a9d8e6626ad026c7097b6728a725d2fd46fd2b4265",
+  "profile_manifest_sha256": "97798495ed2267818ff89f2be0363b2b78900a63a854d7fb10c3e8ce12fd5000",
+  "source_sha256": {
+    "src/compat_audit_collector/collector.cpp": "71e78bda4438b44c77321a2c7c283b44229c67509614c79e586ae080dd0fd20d",
+    "src/compat_audit_collector/module_evidence.hpp": "db55c657b815ac4d7dda2919ebb26a06ed98bc882baea6ff1674896bd2fcd7b7",
+    "src/platform/sha256.cpp": "4cb250b34c24c2b27273c97a8a15bb5d9c1b039e0bed33cb1eeaf7f2574461f2",
+    "python/xvram/compat_audit_bindings.py": "8fb53b182d765c161de825fdf351052d4b2432a448604496364a1b136c61dd22",
+    "python/xvram/compat_audit_bindings_contract.py": "1bb67a1dfdeba5d1200fb8e3316d313cb96dddf267f8185f6293995c8ae49f91",
+    "python/xvram/compat_audit_trace_v3.py": "f257420ed44aa7c2c0f67928161d2bd10f30c8a80bb6ed0ad0935513190e45a0"
+  },
+  "artifact_sha256": {
+    "pilot-14b-ub128/capture.json": "cf595b99ceba150e6acd8bb661abfd8a9693de9fe787220c2d65f90f78e9a4d3",
+    "pilot-14b-ub128/report.json": "d3b365d528e5108fabce73fe84eb0d129ce034e33dec4293f3e5f22d912c5fc9",
+    "pilot-14b-ub128/cupti-trace.jsonl": "531d2afa896c2b95e6a16313fe456d3adc7b225ba6b3efd2554909700750111e",
+    "pilot-bindings.json": "af20c1c2f971ef9a0f5c53f9918fb3fa52fbcf71f956a9e3690e85212e5ce483"
+  },
+  "binary_evidence_sha256": "ded250d35bad4ec3c5b0375209f5328a4f17fba61c1052e1b78c3f2c30c0b8ed",
+  "schema_sha256": {
+    "cuda-compat-audit-trace-v3.schema.json": "431ed5362f19f0fce0478cc99dc40a79b068110ab52db16794f8217f3a5f43e7",
+    "cuda-compat-launch-bindings-v1.schema.json": "8a853508874b02244d672e08aa052768f65f5d0ad66bd8c6e8e44667d60429ad"
+  },
+  "coverage": {
+    "trace_records": 268657,
+    "gpu_activities": 8776,
+    "correlated_gpu_activities": 8776,
+    "loaded_modules": 21,
+    "hashed_modules": 21,
+    "static_module_matches": 16,
+    "function_activities": 0,
+    "native_function_lookups": 0,
+    "native_launch_links": 0,
+    "proven_launch_bindings": 0
+  },
+  "collector": {
+    "copies_submitted": 21,
+    "copies_retired": 21,
+    "hash_records": 21,
+    "active_copy_bytes": 0,
+    "total_copy_bytes": 43784544,
+    "peak_copy_bytes": 27292936,
+    "dropped_records": 0,
+    "collector_errors": 0,
+    "serialization_errors": 0,
+    "incomplete_activities": 0,
+    "unknown_callback_details": 141016,
+    "safely_finalized": false,
+    "terminal_checkpoint": "process_exit_unflushed",
+    "complete": false
+  },
+  "native_exit_code": 0,
+  "analysis_exit_code": 0,
+  "decision": {
+    "verdict": "NO-GO",
+    "execution_ready": false,
+    "oversubscription_proof": false,
+    "interoperability_impossible_proven": false,
+    "pilot_structural_stop": true
+  },
+  "remaining_matrix_cases_run": 0,
+  "remaining_matrix_cases_skipped": [
+    "14b-ub1",
+    "32b-ub1",
+    "32b-ub128"
+  ],
+  "stop_reason": "missing_launch_module_identity_edge_in_allowed_cupti_observations",
+  "cleanup": {
+    "native_worker_reaped": true,
+    "native_process_tree_drained": true,
+    "analysis_worker_reaped": true,
+    "analysis_process_tree_drained": true,
+    "analysis_scratch_removed": true
+  },
+  "validation": {
+    "trace_json_schema_valid": true,
+    "report_json_schema_valid": true,
+    "semantic_contract_valid": true,
+    "local_release_ctest": {
+      "passed": 85,
+      "total": 85
+    },
+    "local_serial_debug_ctest": {
+      "passed": 81,
+      "total": 81
+    },
+    "focused_python": {
+      "run": 283,
+      "failed": 0,
+      "platform_skipped": 4
+    },
+    "installed_python_smoke": true,
+    "frozen_contracts_unchanged": true
+  },
+  "diagnostics": [],
+  "limitations": [
+    "cpu_offload_not_xvram_oversubscription",
+    "no_function_activities_or_native_function_lookups_observed",
+    "incomplete_stock_process_finalization",
+    "memory_ranges_device_ordering_and_live_admission_unproven"
+  ]
+}

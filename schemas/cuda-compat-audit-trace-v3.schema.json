@@ -33,7 +33,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "session"
@@ -41,7 +41,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "collector_version": {
           "type": "string",
@@ -51,12 +51,12 @@
         "process_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "max_record_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kernel_arguments_captured": {
           "type": "boolean"
@@ -118,7 +118,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "api_enter"
@@ -126,7 +126,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "domain": {
           "enum": [
@@ -137,17 +137,17 @@
         "callback_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "correlation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "thread_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "symbol": {
           "type": "string",
@@ -184,27 +184,27 @@
         "context_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "size_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "range_known": {
           "type": "boolean"
@@ -217,37 +217,37 @@
         "stream_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "event_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "physical_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "handle_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "parameter_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kernel_name": {
           "type": "string",
@@ -257,42 +257,42 @@
         "src_pitch_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_pitch_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "width_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "height": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "shared_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_range_known": {
           "type": "boolean"
@@ -300,17 +300,17 @@
         "dst_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_range_known": {
           "type": "boolean"
@@ -318,32 +318,32 @@
         "grid_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "requested_symbol": {
           "type": "string",
@@ -359,17 +359,17 @@
         "resolver_flags": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       },
       "allOf": [
@@ -559,7 +559,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "api_exit"
@@ -567,7 +567,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "domain": {
           "enum": [
@@ -578,17 +578,17 @@
         "callback_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "correlation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "thread_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "symbol": {
           "type": "string",
@@ -630,27 +630,27 @@
         "context_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "size_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "range_known": {
           "type": "boolean"
@@ -663,37 +663,37 @@
         "stream_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "event_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "physical_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "handle_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "parameter_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kernel_name": {
           "type": "string",
@@ -703,42 +703,42 @@
         "src_pitch_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_pitch_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "width_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "height": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "shared_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "src_range_known": {
           "type": "boolean"
@@ -746,17 +746,17 @@
         "dst_allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dst_range_known": {
           "type": "boolean"
@@ -764,32 +764,32 @@
         "grid_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "requested_symbol": {
           "type": "string",
@@ -805,7 +805,7 @@
         "resolver_flags": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "query_status": {
           "type": "integer",
@@ -815,17 +815,17 @@
         "entry_point_id": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       },
       "allOf": [
@@ -1067,7 +1067,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "activity"
@@ -1075,7 +1075,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "activity_kind": {
           "enum": [
@@ -1092,37 +1092,37 @@
         "activity_kind_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "context_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "stream_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "correlation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "start_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "end_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "size_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "name": {
           "type": "string",
@@ -1135,32 +1135,32 @@
         "shared_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "allocation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "offset_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "range_known": {
           "type": "boolean"
@@ -1168,52 +1168,52 @@
         "memory_kind_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "operation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "grid_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_x": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_y": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "block_z": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "function_index": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       }
     },
@@ -1240,7 +1240,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "resource"
@@ -1248,7 +1248,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "resource_kind": {
           "type": "string",
@@ -1263,27 +1263,27 @@
         "context_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "stream_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "size_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "callback_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "detail_known": {
           "type": "boolean"
@@ -1291,7 +1291,7 @@
         "module_generation": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copy_queued": {
           "type": "boolean"
@@ -1320,7 +1320,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "gap"
@@ -1328,7 +1328,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "reason": {
           "type": "string",
@@ -1338,7 +1338,7 @@
         "lost_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       }
     },
@@ -1382,7 +1382,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "summary"
@@ -1390,47 +1390,47 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "callback_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "activity_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "resource_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "dropped_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "unknown_callback_details": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "unknown_activity_kinds": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "serialization_errors": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "collector_errors": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "complete": {
           "type": "boolean"
@@ -1446,47 +1446,47 @@
         "buffers_requested": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "buffers_completed": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "incomplete_activities": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copies_submitted": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copies_retired": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copy_active_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copy_total_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_copy_peak_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_hash_records": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       }
     },
@@ -1516,7 +1516,7 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "kernel_binding"
@@ -1524,7 +1524,7 @@
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "domain": {
           "enum": [
@@ -1535,7 +1535,7 @@
         "correlation_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "contract_id": {
           "type": "string",
@@ -1571,22 +1571,22 @@
               "allocation_id": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 18446744073709552000
+                "maximum": 18446744073709551615
               },
               "generation": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 18446744073709552000
+                "maximum": 18446744073709551615
               },
               "offset_bytes": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 18446744073709552000
+                "maximum": 18446744073709551615
               },
               "size_bytes": {
                 "type": "integer",
                 "minimum": 0,
-                "maximum": 18446744073709552000
+                "maximum": 18446744073709551615
               },
               "access": {
                 "enum": [
@@ -1601,7 +1601,7 @@
         "scratch_bytes": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         }
       }
     },
@@ -1631,12 +1631,12 @@
         "sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "timestamp_ns": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "kind": {
           "const": "module_hash"
@@ -1644,22 +1644,22 @@
         "context_id": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_id": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "module_generation": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "source_sequence": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 18446744073709552000
+          "maximum": 18446744073709551615
         },
         "size_bytes": {
           "type": "integer",

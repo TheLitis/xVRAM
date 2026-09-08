@@ -308,6 +308,25 @@ native pool growth and live budget admission remain unproven. This follow-up ran
 workload and changed neither the collector nor production runtime or frozen contracts.
 The linked acceptance record contains exact offline evidence and validation results.
 
+### Phase 6b.0c module-identity pilot — concluded NO-GO
+
+The [module binding follow-up](cuda-compat-audit-bindings.md) adds opt-in trace v3,
+bounded owned cubin hashing outside callbacks, lifetime metadata, a contained
+offline analyzer and separate strict contracts. On 2026-09-08 the unchanged
+14B/microbatch-128 CPU-offload pilot exited zero and drained its process tree.
+All 8,776 observed GPU activities reconcile; 21 loaded modules were hashed and
+16 match the pinned backend's static cubin evidence. There were zero function
+activities, zero native function lookups and zero proven launch-to-cubin bindings.
+
+The pilot reached the approved structural stop. The three other matrix cases
+were not run, and no interception, extra CUDA queries, hooks or backend changes
+were introduced. Module hashes prove loaded bytes, not which module supplied a
+launch. Terminal completeness and semantic memory contracts remain unresolved.
+Local Release 85/85, serial Debug 81/81, 283 focused Python tests (four platform
+skips), installed Python smoke and full pilot schema/semantic checks passed.
+The core runtime and all previous contracts remain unchanged; version is
+`0.1.0-dev`. This closes the bounded follow-up, not the transparent-execution gate.
+
 ## Phase 6b.1 and later — require separate approval
 
 1. Resolve the audit's concrete evidence gaps and approve a bounded unchanged-backend
