@@ -137,7 +137,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/compat-audit"))
     parser.add_argument("--collector", type=Path)
     parser.add_argument("--capture-mode", choices=("baseline", "cupti", "nsys"), default="cupti")
-    parser.add_argument("--trace-version", type=int, choices=(1, 2), default=1,
+    parser.add_argument("--trace-version", type=int, choices=(1, 2, 3), default=1,
                         help="CUPTI trace v2 additionally observes documented dynamic API resolution")
     parser.add_argument("--nsys", type=Path)
     parser.add_argument("--input-trace", type=Path, action="append", default=[])

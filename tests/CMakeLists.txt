@@ -109,7 +109,9 @@ set_tests_properties(
   PROPERTIES ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python" TIMEOUT 15)
 
 add_executable(xvram-compat-audit-core-tests
-  "${PROJECT_SOURCE_DIR}/src/compat_audit_collector/core_tests.cpp")
+  "${PROJECT_SOURCE_DIR}/src/compat_audit_collector/core_tests.cpp"
+  "${PROJECT_SOURCE_DIR}/src/platform/sha256.cpp")
+target_include_directories(xvram-compat-audit-core-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(xvram-compat-audit-core-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-compat-audit-core-tests)
 add_test(NAME xvram.compat-audit.collector-core COMMAND xvram-compat-audit-core-tests)

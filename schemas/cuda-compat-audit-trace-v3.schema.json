@@ -1,0 +1,1676 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xvram.dev/schemas/cuda-compat-audit-trace-v3.schema.json",
+  "title": "xVRAM module identity observation trace v3",
+  "description": "Opt-in owned cubin hash and lifetime evidence. Native and CUPTI identities are distinct; module hashes and function names do not establish launch bindings. No argument values or binary contents are serialized.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "collector_version",
+        "process_id",
+        "max_record_bytes",
+        "kernel_arguments_captured",
+        "tensor_bounds_known",
+        "cublas_api_visibility",
+        "timestamp_clock",
+        "activity_clock",
+        "runtime_parameter_bytes_not_kernel_arguments"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "session"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "collector_version": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "process_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "max_record_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "kernel_arguments_captured": {
+          "type": "boolean"
+        },
+        "tensor_bounds_known": {
+          "type": "boolean"
+        },
+        "cublas_api_visibility": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "timestamp_clock": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "activity_clock": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "runtime_parameter_bytes_not_kernel_arguments": {
+          "type": "boolean"
+        },
+        "run_id": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "callback_id",
+        "correlation_id",
+        "thread_id",
+        "symbol",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "api_enter"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "op": {
+          "enum": [
+            "allocate",
+            "free",
+            "host_allocate",
+            "host_free",
+            "host_register",
+            "host_unregister",
+            "copy",
+            "memset",
+            "vmm_reserve",
+            "vmm_free",
+            "vmm_create",
+            "vmm_release",
+            "vmm_map",
+            "vmm_unmap",
+            "vmm_access",
+            "launch",
+            "module_function",
+            "stream",
+            "event",
+            "other"
+          ]
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "physical_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "handle_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "parameter_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "src_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "width_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_range_known": {
+          "type": "boolean"
+        },
+        "dst_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_range_known": {
+          "type": "boolean"
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "requested_symbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "requested_version": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 4294967295
+        },
+        "resolver_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "requested_symbol"
+                ]
+              },
+              {
+                "required": [
+                  "requested_version"
+                ]
+              },
+              {
+                "required": [
+                  "resolver_flags"
+                ]
+              },
+              {
+                "required": [
+                  "query_status"
+                ]
+              },
+              {
+                "required": [
+                  "entry_point_id"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "requested_symbol",
+              "resolver_flags"
+            ],
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cuGetProcAddress",
+                  "cuGetProcAddress_v2",
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz",
+                  "cudaGetDriverEntryPointByVersion",
+                  "cudaGetDriverEntryPointByVersion_ptsz"
+                ]
+              },
+              "op": {
+                "const": "other"
+              },
+              "detail_known": {
+                "const": true
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "symbol": {
+                      "enum": [
+                        "cuGetProcAddress",
+                        "cuGetProcAddress_v2",
+                        "cudaGetDriverEntryPointByVersion",
+                        "cudaGetDriverEntryPointByVersion_ptsz"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "requested_version"
+                  ]
+                }
+              }
+            ],
+            "anyOf": [
+              {
+                "properties": {
+                  "domain": {
+                    "const": "driver"
+                  },
+                  "symbol": {
+                    "enum": [
+                      "cuGetProcAddress",
+                      "cuGetProcAddress_v2"
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "domain": {
+                    "const": "runtime"
+                  },
+                  "symbol": {
+                    "enum": [
+                      "cudaGetDriverEntryPoint",
+                      "cudaGetDriverEntryPoint_ptsz",
+                      "cudaGetDriverEntryPointByVersion",
+                      "cudaGetDriverEntryPointByVersion_ptsz"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz"
+                ]
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "requested_version"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cuGetProcAddress",
+                  "cuGetProcAddress_v2",
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz",
+                  "cudaGetDriverEntryPointByVersion",
+                  "cudaGetDriverEntryPointByVersion_ptsz"
+                ]
+              },
+              "detail_known": {
+                "const": true
+              }
+            },
+            "required": [
+              "symbol",
+              "detail_known"
+            ]
+          },
+          "then": {
+            "required": [
+              "requested_symbol",
+              "resolver_flags"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "callback_id",
+        "correlation_id",
+        "thread_id",
+        "symbol",
+        "detail_known",
+        "status"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "api_exit"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "op": {
+          "enum": [
+            "allocate",
+            "free",
+            "host_allocate",
+            "host_free",
+            "host_register",
+            "host_unregister",
+            "copy",
+            "memset",
+            "vmm_reserve",
+            "vmm_free",
+            "vmm_create",
+            "vmm_release",
+            "vmm_map",
+            "vmm_unmap",
+            "vmm_access",
+            "launch",
+            "module_function",
+            "stream",
+            "event",
+            "other"
+          ]
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "physical_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "handle_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "parameter_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "src_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_pitch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "width_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "src_range_known": {
+          "type": "boolean"
+        },
+        "dst_allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dst_range_known": {
+          "type": "boolean"
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "requested_symbol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "requested_version": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 4294967295
+        },
+        "resolver_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "query_status": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "entry_point_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "module_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "requested_symbol"
+                ]
+              },
+              {
+                "required": [
+                  "requested_version"
+                ]
+              },
+              {
+                "required": [
+                  "resolver_flags"
+                ]
+              },
+              {
+                "required": [
+                  "query_status"
+                ]
+              },
+              {
+                "required": [
+                  "entry_point_id"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "requested_symbol",
+              "resolver_flags"
+            ],
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cuGetProcAddress",
+                  "cuGetProcAddress_v2",
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz",
+                  "cudaGetDriverEntryPointByVersion",
+                  "cudaGetDriverEntryPointByVersion_ptsz"
+                ]
+              },
+              "op": {
+                "const": "other"
+              },
+              "detail_known": {
+                "const": true
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "symbol": {
+                      "enum": [
+                        "cuGetProcAddress",
+                        "cuGetProcAddress_v2",
+                        "cudaGetDriverEntryPointByVersion",
+                        "cudaGetDriverEntryPointByVersion_ptsz"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "requested_version"
+                  ]
+                }
+              }
+            ],
+            "anyOf": [
+              {
+                "properties": {
+                  "domain": {
+                    "const": "driver"
+                  },
+                  "symbol": {
+                    "enum": [
+                      "cuGetProcAddress",
+                      "cuGetProcAddress_v2"
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "domain": {
+                    "const": "runtime"
+                  },
+                  "symbol": {
+                    "enum": [
+                      "cudaGetDriverEntryPoint",
+                      "cudaGetDriverEntryPoint_ptsz",
+                      "cudaGetDriverEntryPointByVersion",
+                      "cudaGetDriverEntryPointByVersion_ptsz"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "entry_point_id"
+                ]
+              },
+              {
+                "required": [
+                  "query_status"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "entry_point_id",
+              "query_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "query_status": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz"
+                ]
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "requested_version"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "symbol": {
+                "const": "cuGetProcAddress"
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "query_status"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "symbol": {
+                "enum": [
+                  "cuGetProcAddress",
+                  "cuGetProcAddress_v2",
+                  "cudaGetDriverEntryPoint",
+                  "cudaGetDriverEntryPoint_ptsz",
+                  "cudaGetDriverEntryPointByVersion",
+                  "cudaGetDriverEntryPointByVersion_ptsz"
+                ]
+              },
+              "detail_known": {
+                "const": true
+              }
+            },
+            "required": [
+              "symbol",
+              "detail_known"
+            ]
+          },
+          "then": {
+            "required": [
+              "requested_symbol",
+              "resolver_flags"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "activity_kind",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "activity"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "activity_kind": {
+          "enum": [
+            "kernel",
+            "api_runtime",
+            "api_driver",
+            "memcpy",
+            "memset",
+            "memory",
+            "function",
+            "unknown"
+          ]
+        },
+        "activity_kind_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "start_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "end_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "shared_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "range_known": {
+          "type": "boolean"
+        },
+        "memory_kind_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "operation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "grid_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "block_z": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "function_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "resource_kind",
+        "operation",
+        "detail_known"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "resource"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "resource_kind": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "stream_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "callback_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "detail_known": {
+          "type": "boolean"
+        },
+        "module_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copy_queued": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "reason",
+        "lost_records"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "gap"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "lost_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "callback_records",
+        "activity_records",
+        "resource_records",
+        "dropped_records",
+        "unknown_callback_details",
+        "unknown_activity_kinds",
+        "serialization_errors",
+        "collector_errors",
+        "complete",
+        "safely_finalized",
+        "terminal_checkpoint",
+        "buffers_requested",
+        "buffers_completed",
+        "incomplete_activities",
+        "module_copies_submitted",
+        "module_copies_retired",
+        "module_copy_active_bytes",
+        "module_copy_total_bytes",
+        "module_copy_peak_bytes",
+        "module_hash_records"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "summary"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "callback_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "activity_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "resource_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "dropped_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "unknown_callback_details": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "unknown_activity_kinds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "serialization_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "collector_errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "safely_finalized": {
+          "type": "boolean"
+        },
+        "terminal_checkpoint": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "buffers_requested": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "buffers_completed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "incomplete_activities": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copies_submitted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copies_retired": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copy_active_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copy_total_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_copy_peak_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_hash_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "kind",
+        "timestamp_ns",
+        "domain",
+        "correlation_id",
+        "contract_id",
+        "kernel_name",
+        "bindings",
+        "scratch_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "kernel_binding"
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "domain": {
+          "enum": [
+            "runtime",
+            "driver"
+          ]
+        },
+        "correlation_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "contract_id": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tensor_name",
+              "allocation_id",
+              "generation",
+              "offset_bytes",
+              "size_bytes",
+              "access"
+            ],
+            "properties": {
+              "tensor_name": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^(?!.*0x[0-9a-fA-F]{6,})[^\\u0000]*$"
+              },
+              "allocation_id": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709552000
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709552000
+              },
+              "offset_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709552000
+              },
+              "size_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709552000
+              },
+              "access": {
+                "enum": [
+                  "read",
+                  "write",
+                  "read_write"
+                ]
+              }
+            }
+          }
+        },
+        "scratch_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "sequence",
+        "timestamp_ns",
+        "kind",
+        "context_id",
+        "module_id",
+        "module_generation",
+        "source_sequence",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "report_type": {
+          "const": "xvram.cuda_compat_audit_trace"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "kind": {
+          "const": "module_hash"
+        },
+        "context_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709552000
+        },
+        "module_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "module_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "source_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709552000
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  ]
+}

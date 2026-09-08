@@ -16,6 +16,7 @@ inline unsigned trace_version(const char * value) {
   if (value == nullptr) return 1;
   if (std::string_view(value) == "1") return 1;
   if (std::string_view(value) == "2") return 2;
+  if (std::string_view(value) == "3") return 3;
   throw std::invalid_argument("unsupported trace version");
 }
 // Resolver symbols are public C identifiers, not user-controlled text payloads.

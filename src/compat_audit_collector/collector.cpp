@@ -3,6 +3,8 @@
 // Lifecycle follows NVIDIA CUDA 13.3 cupti_trace_injection, except its Windows
 // process-exit Detours hook is deliberately omitted (see README.md).
 #include "trace_core.hpp"
+#include "module_evidence.hpp"
+#include "platform/sha256.hpp"
 
 #include <cupti.h>
 
@@ -94,6 +96,12 @@ struct State {
   std::condition_variable wake;
   Sink sink;
   Registry registry;
+  ModuleCopies module_copies;
+  ModuleLifetimes cupti_modules, native_modules;
+  // Native function ownership is scoped by context and exact module generation.
+  struct FunctionOwner { std::uint64_t module=0, generation=0, function_generation=0; };
+  std::map<std::pair<std::uint64_t,std::uint64_t>,FunctionOwner> function_owners;
+  std::uint64_t next_function_generation=0, module_hash_records=0;
   std::map<std::thread::id, std::uint64_t> threads;
   CUpti_SubscriberHandle subscriber = nullptr;
   std::thread flusher;
@@ -147,11 +155,21 @@ struct State {
     line.number("buffers_requested", buffers_requested.load());
     line.number("buffers_completed", buffers_completed.load());
     line.number("incomplete_activities", incomplete_activities);
+    if (trace_schema_version == 3) {
+      line.number("module_copies_submitted",module_copies.submitted);
+      line.number("module_copies_retired",module_copies.retired);
+      line.number("module_copy_active_bytes",module_copies.active_bytes);
+      line.number("module_copy_total_bytes",module_copies.total_bytes);
+      line.number("module_copy_peak_bytes",module_copies.peak_bytes);
+      line.number("module_hash_records",module_hash_records);
+    }
     line.boolean("safely_finalized", safe);
     line.string("terminal_checkpoint", safe ? "explicit_finalize" : "process_exit_unflushed");
     const bool complete = safe && api_inflight == 0 && dropped == 0 && errors == 0 &&
         serialization_errors == 0 && unknown_callback_details == 0 && unknown_activity_kinds == 0 &&
-        incomplete_activities == 0 && buffers_requested == buffers_completed;
+        incomplete_activities == 0 && buffers_requested == buffers_completed &&
+        (trace_schema_version != 3 || (module_copies.submitted == module_copies.retired &&
+          module_copies.retired == module_hash_records && module_copies.active_bytes == 0));
     line.boolean("complete", complete);
     static_cast<void>(emit(line, true));
   }
@@ -188,7 +206,8 @@ void geometry(JsonLine & line, std::uint64_t gx, std::uint64_t gy, std::uint64_t
 }
 
 // Only fixed, official CUDA API metadata is read. Kernel argument arrays,
-// application buffers, cubin bytes and opaque private ABI data are never read.
+// application buffers and opaque private ABI data are never read. V3 separately
+// copies only CUPTI-owned module resource bytes while their callback is valid.
 bool api_detail(State & s, JsonLine & line, const CUpti_CallbackData & data,
                 bool runtime, bool exited, bool success) {
   const auto name = bounded_name(data.functionName);
@@ -212,7 +231,7 @@ bool api_detail(State & s, JsonLine & line, const CUpti_CallbackData & data,
   // Version 1 retains its original metadata and unknown-detail behavior. Version
   // 2 observes only official resolver inputs/outputs; the function pointer is
   // never called, replaced, dereferenced as code, or serialized as an address.
-  if (s.trace_schema_version == 2) {
+  if (s.trace_schema_version >= 2) {
     const auto resolver = [&](const char * symbol, std::uint64_t flags, void ** output,
                               bool has_version, std::int64_t version,
                               const auto * query_status) {
@@ -303,6 +322,68 @@ bool api_detail(State & s, JsonLine & line, const CUpti_CallbackData & data,
     if (named(name,"cudaEventQuery")) { META(cudaEventQuery_v3020_params); OP("event"); line.number("event_id",s.id("event",native_key(p.event))); return true; }
     if (named(name,"cudaStreamSynchronize")) { META(cudaStreamSynchronize_v3020_params); OP("stream"); line.number("stream_id",stream_id(s,data.context,reinterpret_cast<CUstream>(p.stream),name.ends_with("_ptsz"))); return true; }
   } else {
+    if (s.trace_schema_version == 3) {
+      const auto context=context_id(s,data.context);
+      const auto module_identity=[&](CUmodule module) {
+        return s.id("native_module_"+std::to_string(context),native_key(module));
+      };
+      const auto function_identity=[&](CUfunction function) {
+        return s.id("driver_function_"+std::to_string(context),native_key(function));
+      };
+      if (name=="cuModuleLoad" || name=="cuModuleLoadData" || name=="cuModuleLoadDataEx" || name=="cuModuleLoadFatBinary") {
+        CUmodule * output=nullptr;
+        if (name=="cuModuleLoad") { META(cuModuleLoad_params); output=p.module; }
+        else if (name=="cuModuleLoadData") { META(cuModuleLoadData_params); output=p.module; }
+        else if (name=="cuModuleLoadDataEx") { META(cuModuleLoadDataEx_params); output=p.module; }
+        else { META(cuModuleLoadFatBinary_params); output=p.module; }
+        OP("other");
+        if (mutate && output && *output) {
+          const auto module=module_identity(*output);
+          const auto life=s.native_modules.load(context,module);
+          line.number("module_id",module); line.number("module_generation",life.generation);
+        }
+        return true;
+      }
+      if (name=="cuModuleUnload") {
+        META(cuModuleUnload_params); OP("other");
+        const auto module=module_identity(p.hmod);
+        const auto life=mutate ? s.native_modules.unload(context,module) : s.native_modules.lookup(context,module);
+        line.number("module_id",module); line.number("module_generation",life.generation);
+        return true;
+      }
+      if (name=="cuModuleGetFunction") {
+        META(cuModuleGetFunction_params); OP("module_function");
+        const auto module=module_identity(p.hmod);
+        const auto life=s.native_modules.lookup(context,module);
+        line.number("module_id",module); line.number("module_generation",life.live ? life.generation : 0);
+        line.string("kernel_name",bounded_name(p.name));
+        if (mutate && p.hfunc && *p.hfunc) {
+          const auto function=function_identity(*p.hfunc);
+          const auto key=std::pair{context,function};
+          if (!s.function_owners.contains(key) && s.function_owners.size()>=max_identities) throw std::length_error("function limit");
+          auto & owner=s.function_owners[key];
+          if (!life.live || owner.module!=module || owner.generation!=life.generation || owner.function_generation==0)
+            owner={module,life.live ? life.generation : 0,++s.next_function_generation};
+          line.number("function_id",function); line.number("function_generation",owner.function_generation);
+        }
+        return true;
+      }
+      if (named(name,"cuLaunchKernel")) {
+        META(cuLaunchKernel_params); OP("launch");
+        const auto function=function_identity(p.f);
+        line.number("function_id",function);
+        const auto owner=s.function_owners.find({context,function});
+        if (owner!=s.function_owners.end()) {
+          const auto life=s.native_modules.lookup(context,owner->second.module);
+          if (life.live && life.generation==owner->second.generation) {
+            line.number("module_id",owner->second.module); line.number("module_generation",life.generation);
+            line.number("function_generation",owner->second.function_generation);
+          }
+        }
+        geometry(line,p.gridDimX,p.gridDimY,p.gridDimZ,p.blockDimX,p.blockDimY,p.blockDimZ,p.sharedMemBytes);
+        line.number("stream_id",stream_id(s,data.context,p.hStream,name.ends_with("_ptsz"))); return true;
+      }
+    }
     if (name=="cuMemAlloc_v2") { META(cuMemAlloc_v2_params); OP("allocate"); alloc(mutate && p.dptr ? *p.dptr : 0,p.bytesize,"device"); return true; }
     if (name=="cuMemFree_v2") { META(cuMemFree_v2_params); OP("free"); free(p.dptr); return true; }
     if (name=="cuMemAddressReserve") { META(cuMemAddressReserve_params); OP("vmm_reserve"); alloc(mutate && p.ptr ? *p.ptr : 0,p.size,"virtual_reservation"); return true; }
@@ -339,7 +420,24 @@ void resource(State & s, CUpti_CallbackId cbid, const CUpti_ResourceData & data)
     // CUPTI stream identifiers are unique for a context lifetime; native handles are not emitted.
   } else if(cbid==CUPTI_CBID_RESOURCE_MODULE_LOADED || cbid==CUPTI_CBID_RESOURCE_MODULE_UNLOAD_STARTING) {
     line.string("resource_kind","module"); line.string("operation",cbid==CUPTI_CBID_RESOURCE_MODULE_LOADED ? "load" : "unload");
-    if(data.resourceDescriptor) { const auto & module=*static_cast<const CUpti_ModuleResourceData *>(data.resourceDescriptor); line.number("module_id",s.id("cupti_module",module.moduleId)); line.number("size_bytes",module.cubinSize); }
+    if(data.resourceDescriptor) {
+      const auto & module=*static_cast<const CUpti_ModuleResourceData *>(data.resourceDescriptor);
+      const auto context=context_id(s,data.context);
+      const auto id=s.id(s.trace_schema_version==3 ? "cupti_module_"+std::to_string(context) : "cupti_module",module.moduleId);
+      line.number("module_id",id); line.number("size_bytes",module.cubinSize);
+      if (s.trace_schema_version==3) {
+        const bool loading=cbid==CUPTI_CBID_RESOURCE_MODULE_LOADED;
+        const auto life=loading ? s.cupti_modules.load(context,id) : s.cupti_modules.unload(context,id);
+        line.number("module_generation",life.generation);
+        if (loading) {
+          // No parser, hash, file I/O, CUDA call or queue-space wait here.
+          const bool copied=s.module_copies.push(module.pCubin,module.cubinSize,
+                                                 ModuleCopy{context,id,life.generation,s.sequence+1,{}});
+          line.boolean("module_copy_queued",copied);
+          if (!copied) { ++s.dropped; known=false; }
+        } else if (life.generation==0) known=false;
+      }
+    }
     else known=false;
   } else { line.string("resource_kind","other"); line.string("operation","other"); known=false; }
   line.boolean("detail_known",known);
@@ -420,7 +518,16 @@ void activity(State & s, const CUpti_Activity & raw) {
   case CUPTI_ACTIVITY_KIND_FUNCTION: {
     const auto & a=reinterpret_cast<const CUpti_ActivityFunction &>(raw);
     line.string("activity_kind","function"); line.string("name",bounded_name(a.name));
-    line.number("context_id",s.id("cupti_context",a.contextId)); line.number("module_id",s.id("cupti_module",a.moduleId)); line.number("function_id",s.id("cupti_function",a.id)); break;
+    const auto context=s.id("cupti_context",a.contextId);
+    line.number("context_id",context);
+    line.number("module_id",s.id(s.trace_schema_version==3 ? "cupti_module_"+std::to_string(context) : "cupti_module",a.moduleId));
+    line.number("function_id",s.id(s.trace_schema_version==3 ? "cupti_function_"+std::to_string(context) : "cupti_function",a.id));
+    if (s.trace_schema_version==3) {
+      line.number("function_index",a.functionIndex);
+      // Buffered activities do not establish which reused module generation ran.
+      line.number("module_generation",0);
+    }
+    break;
   }
   default: line.string("activity_kind","unknown"); ++s.unknown_activity_kinds; known=false; break;
   }
@@ -462,6 +569,28 @@ void exit_footer() noexcept {
   if(s->mutex.try_lock()) {
     try { s->summary(false); s->finalized=true; } catch(...) { ++s->serialization_errors; }
     s->mutex.unlock();
+  }
+}
+void hash_modules(State & s) noexcept {
+  for (;;) {
+    ModuleCopy item;
+    {
+      std::lock_guard lock(s.mutex);
+      if (s.finalized || !s.module_copies.pop(item)) return;
+    }
+    try {
+      const auto bytes=item.bytes.size();
+      const auto digest=platform::sha256_bytes(item.bytes);
+      // Free the owned copy before releasing its admission credit.
+      std::vector<std::byte>().swap(item.bytes);
+      std::lock_guard lock(s.mutex);
+      s.module_copies.retire(bytes);
+      auto line=s.begin("module_hash");
+      line.number("context_id",item.context); line.number("module_id",item.module);
+      line.number("module_generation",item.generation); line.number("source_sequence",item.source_sequence);
+      line.number("size_bytes",bytes); line.string("sha256",digest);
+      if (s.emit(line)) ++s.module_hash_records;
+    } catch (...) { ++s.errors; ++s.dropped; return; }
   }
 }
 int initialize() noexcept {
@@ -523,7 +652,9 @@ int initialize() noexcept {
       while(!s->stop) {
         s->wake.wait_for(wait_lock,std::chrono::milliseconds(200),[s]{return s->stop.load();});
         if(s->stop) break;
-        wait_lock.unlock(); account(cuptiActivityFlushAll(0)); wait_lock.lock();
+        wait_lock.unlock(); account(cuptiActivityFlushAll(0));
+        if (s->trace_schema_version==3) hash_modules(*s);
+        wait_lock.lock();
       }
     });
     s->initialized=true;
@@ -545,6 +676,7 @@ int finalize() noexcept {
     std::size_t dropped=0; account(cuptiActivityGetNumDroppedRecords_v2(s->subscriber,nullptr,0,&dropped)); s->dropped+=dropped;
     account(cuptiEnableAllDomains(0,s->subscriber));
     account(cuptiUnsubscribe(s->subscriber));
+    if (s->trace_schema_version==3) hash_modules(*s);
     std::lock_guard trace_lock(s->mutex);
     s->summary(true); s->finalized=true;
     return s->errors==0 && s->serialization_errors==0 ? 1 : 0;

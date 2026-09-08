@@ -84,7 +84,7 @@ def summarize_routing(trace_path):
                 issues["unmatched_resolver_exit"] += 1
                 counts["unknown_calls"] += 1
                 continue
-            if record["schema_version"] != 2 or not entered[2] or not record["detail_known"] or inputs[0] is None or inputs[2] is None:
+            if record["schema_version"] not in (2, 3) or not entered[2] or not record["detail_known"] or inputs[0] is None or inputs[2] is None:
                 issues["resolver_metadata_unavailable"] += 1
                 counts["unknown_calls"] += 1
                 continue

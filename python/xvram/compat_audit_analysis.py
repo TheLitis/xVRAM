@@ -441,6 +441,9 @@ _OPS = {"allocate", "free", "host_allocate", "host_free", "host_register", "host
 
 def validate_trace_record(record):
     """Validate the strict, address-redacted normalized record contract."""
+    if isinstance(record, dict) and type(record.get("schema_version")) is int and record["schema_version"] == 3:
+        from .compat_audit_trace_v3 import validate_record
+        return validate_record(record)
     if not isinstance(record, dict) or record.get("kind") not in _KIND_FIELDS:
         raise AuditInputError("invalid_record_kind")
     kind = record["kind"]

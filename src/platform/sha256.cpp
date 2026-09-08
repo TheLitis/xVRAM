@@ -147,6 +147,12 @@ private:
 
 } // namespace
 
+std::string sha256_bytes(const std::span<const std::byte> bytes) {
+  Sha256 hash;
+  if (!hash.update(bytes)) return {};
+  return hash.finish();
+}
+
 FileSha256Result sha256_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input) {

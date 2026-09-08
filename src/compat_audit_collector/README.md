@@ -10,7 +10,7 @@ performance evidence.
 
 The default remains the byte-compatible v1 record format. Set
 `XVRAM_AUDIT_TRACE_VERSION=2` for a separate v2 trace; unset or `1` selects v1,
-and any other value refuses collector initialization. Version 2 observes fixed
+and `3` selects module observations; other values refuse initialization. Version 2 observes fixed
 public metadata for `cuGetProcAddress`, `cuGetProcAddress_v2`,
 `cudaGetDriverEntryPoint` and `cudaGetDriverEntryPointByVersion` (including their
 runtime `_ptsz` variants). No resolver result is changed or invoked.
@@ -35,6 +35,27 @@ tables, every registration path, or the use of a returned pointer. Trace v2 does
 not change terminal-flush limitations below and cannot independently produce GO.
 
 ## Build and loading
+
+### Opt-in module identity observations (trace v3)
+
+`XVRAM_AUDIT_TRACE_VERSION=3` retains resolver metadata and adds module load/unload
+generations, successful native function lookups and bounded owned cubin copies.
+The default remains v1; v1/v2 schemas and serialization are unchanged.
+
+Only `CUpti_ModuleResourceData::pCubin` is copied, during its load callback. The
+CPU flusher hashes each owned copy outside callbacks and emits `module_hash`
+with its original resource sequence, context/module IDs and generation. Copies
+are limited to 64 MiB each, 128 MiB active (including hashing), and 512 MiB total.
+There is no waiting for queue space. OOM/limit/write errors make evidence incomplete.
+Raw cubins are neither serialized nor written to disk. Exit remains unflushed;
+pending copies and hash counts appear in the best-effort incomplete footer.
+
+Native module/function namespaces remain separate from CUPTI IDs. Buffered
+function activities retain `functionIndex` but report module generation zero:
+arrival order cannot select a potentially reused generation. The symbol index
+is not presumed to be an ELF symbol index. Module hashes, names, temporal nesting
+and unique candidates do not establish the missing launch/module bridge. V3
+adds no CUDA calls, private-ABI decoding, exit hooks or kernel instrumentation.
 
 The collector requires an installed CUDA Toolkit/CUPTI 13.3 or newer, a 64-bit
 host compiler, and C++20. Windows x64 is the primary build. The POSIX file backend
