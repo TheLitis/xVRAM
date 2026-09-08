@@ -320,6 +320,36 @@ class QuantizedMatvecTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(MemoryRuleError):
                 ranges.matvec_quantized(**self.args(**changes))
 
+    def test_analytical_adjacent_rows_match_enumerated_fusion_disabled_accesses(self):
+        for quant_type in (12, 14):
+            for rows in (1, 3, 33, 257):
+                args = self.args(quant_type=quant_type, columns=512, output_rows=rows, output_columns=1,
+                                 grid=(rows, 1, 1), source_strides=(2, 2*rows, 2*rows),
+                                 destination_strides=(rows, rows, rows))
+                analytical = ranges.matvec_quantized(**args)
+                # Same source ranges with the fusion specialization enabled but
+                # every optional fusion pointer absent: exercises enumeration.
+                enumerated = ranges.matvec_quantized(**dict(args, has_fusion=True))
+                self.assertEqual(analytical["ranges"], enumerated["ranges"])
+                self.assertEqual(analytical["interval_strategy"], "analytical_contiguous_single_output")
+
+    def test_actual_vocabulary_projection_without_increasing_enumeration_limit(self):
+        before = ranges.MAX_ROWS
+        result = ranges.matvec_quantized(**self.args(quant_type=14, columns=5120, output_rows=152064,
+            output_columns=1, grid=(152064, 1, 1), source_strides=(20, 3041280, 3041280),
+            vector_strides=(160, 160, 160), destination_strides=(152064, 152064, 152064)))
+        self.assertEqual(intervals(result, "x", "read"), [(0, 638668800)])
+        self.assertEqual(intervals(result, "y", "read"), [(0, 5760)])
+        self.assertEqual(intervals(result, "dst", "write"), [(0, 608256)])
+        self.assertEqual(ranges.MAX_ROWS, before)
+        self.assertFalse(result["memory_bounds_proven"])
+
+    def test_analytical_path_retains_signed_index_overflow_rejection(self):
+        with self.assertRaisesRegex(MemoryRuleError, "arithmetic_overflow"):
+            ranges.matvec_quantized(**self.args(columns=5120, output_rows=200000000,
+                output_columns=1, grid=(200000000, 1, 1), source_strides=(20, 0, 0),
+                destination_strides=(200000000, 0, 0)))
+
 
 class CaptureLayoutTests(unittest.TestCase):
     def test_ordinals_types_and_lengths(self):
@@ -392,6 +422,35 @@ class MMQStreamKTests(unittest.TestCase):
                         dict(source_strides=(2**31-1, 1, 1))]:
             with self.subTest(changes=changes), self.assertRaises(MemoryRuleError):
                 ranges.mmq_stream_k(**self.args(**changes))
+
+    def test_stage_specific_fixup_matches_existing_model_without_main_inputs(self):
+        for quant_type in (12, 14):
+            for tile in (40, 128):
+                for blocks in (1, 2, 3, 4, 5, 7, 16, 20):
+                    args = self.args(stage="fixup", quant_type=quant_type, tile_columns=tile,
+                                     grid=(blocks, 4, 1), block=(32, 4, 1), shared_bytes=0)
+                    old = ranges.mmq_stream_k(**args)
+                    new = ranges.mmq_stream_k_fixup(quant_type=quant_type, tile_columns=tile,
+                        blocks_per_row=3, output_rows=256, output_columns=1, channels=1, samples=1,
+                        destination_strides=args["destination_strides"],
+                        descriptors=tuple(ranges.fastdiv_descriptor(n) for n in (3, 1, 1, 1)),
+                        grid=args["grid"], block=args["block"], shared_bytes=0, compiled_arch=860)
+                    self.assertEqual(intervals(old, "tmp_fixup", "read"), intervals(new, "tmp_last_tile", "read"))
+                    self.assertEqual(intervals(old, "dst", "read"), intervals(new, "dst", "read"))
+                    self.assertEqual(intervals(old, "dst", "write"), intervals(new, "dst", "write"))
+                    self.assertTrue(new["requires_matching_main_content_generation"])
+                    self.assertFalse(new["matching_main_content_generation_proven"])
+
+    def test_stage_specific_fixup_checks_consumed_parameters(self):
+        args = dict(quant_type=12, tile_columns=40, blocks_per_row=3, output_rows=256, output_columns=1,
+                    channels=1, samples=1, destination_strides=(256, 256, 256),
+                    descriptors=tuple(ranges.fastdiv_descriptor(n) for n in (3, 1, 1, 1)),
+                    grid=(4, 4, 1), block=(32, 4, 1), shared_bytes=0, compiled_arch=860)
+        for changes in (dict(ids_null=False), dict(output_rows=255), dict(block=(32, 8, 1)),
+                        dict(shared_bytes=4), dict(compiled_arch=890), dict(blocks_per_row=4),
+                        dict(output_columns=2, destination_strides=(2**31-1, 256, 256))):
+            with self.subTest(changes=changes), self.assertRaises(MemoryRuleError):
+                ranges.mmq_stream_k_fixup(**dict(args, **changes))
 
 
 class OtherDirectTests(unittest.TestCase):

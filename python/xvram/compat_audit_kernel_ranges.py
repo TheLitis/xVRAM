@@ -368,7 +368,8 @@ def rope_neox(*, shape, source_strides, destination_strides, n_dims, n_offs,
         accesses.add("x", "read", _product(src_start + first, 4), _product(length, 4))
         accesses.add("dst", "write", _product(dst_start + first, destination_bytes), _product(length, destination_bytes))
         accesses.add("pos", "read", i2 * 4, 4)
-    return accesses.result("rope_neox_forward_no_ff_v1", index_requirements=deepcopy(CAPTURE_REQUIREMENTS["indices"]))
+    return accesses.result("rope_neox_forward_no_ff_v1", index_requirements=deepcopy(CAPTURE_REQUIREMENTS["indices"]),
+                           position_values_affect_addresses=False, position_contents_needed_for_address_ranges=False)
 
 
 def batched_pointer_tables(*, ne12, ne13, ne23, source0_byte_strides,
@@ -579,10 +580,25 @@ def matvec_quantized(*, quant_type, columns, output_rows, output_columns, channe
     if grid != ((output_rows + rows_per_block-1)//rows_per_block, channels, samples) or block != (32, 4, 1):
         raise MemoryRuleError("invalid_quantized_matvec_geometry")
     read_rows = grid[0] * rows_per_block
-    _rows(read_rows, channels, samples)
     kblocks = columns // 256
     block_bytes = 144 if quant_type == 12 else 210
     accesses = _Accesses()
+    if (output_columns == 1 and channels == 1 and samples == 1 and not has_fusion
+            and sx[0] == kblocks):
+        # Exact union of adjacent whole-block row envelopes for the ordinary
+        # vocabulary projection. No enumeration-cap increase and no clipping:
+        # prove the same signed source-index intermediates at their maxima.
+        x_last = _product(output_rows-1, sx[0], maximum=I32_MAX)
+        x_blocks = _sum(x_last, kblocks, maximum=I32_MAX)
+        _sum(columns//32, maximum=I32_MAX)
+        _sum(output_rows-1, maximum=I32_MAX)
+        accesses.add("x", "read", 0, _product(x_blocks, block_bytes))
+        accesses.add("y", "read", 0, _product(columns//32, 36))
+        accesses.add("dst", "write", 0, _product(output_rows, 4))
+        return accesses.result("matvec_q4k_q6k_sm86_v1", read_bound_kind="whole_quantized_block_envelope",
+            padded_source_rows=0, interval_strategy="analytical_contiguous_single_output",
+            required_source_dependencies=["ggml/src/ggml-cuda/vecdotq.cuh"])
+    _rows(read_rows, channels, samples)
     for sample, channel, row in product(range(samples), range(channels), range(read_rows)):
         x_start = _dot((row, channel//channel_ratio, sample//sample_ratio), sx, maximum=I32_MAX)
         _sum(x_start, kblocks, maximum=I32_MAX)
@@ -736,6 +752,88 @@ def mmq_stream_k(*, stage, quant_type, tile_columns, columns, output_rows, outpu
                                       "ggml/src/ggml-cuda/mmq-load-tiles.cuh",
                                       "ggml/src/ggml-cuda/mmq-vec-dot.cuh",
                                       "ggml/src/ggml-cuda/mma.cuh"])
+
+
+def mmq_stream_k_fixup(*, quant_type, tile_columns, blocks_per_row, output_rows, output_columns,
+                      channels, samples, destination_strides, descriptors, grid, block,
+                      shared_bytes, compiled_arch, ids_null=True):
+    """No-ID sm86 fixup using only its own consumed ABI fields.
+
+    The fixup has no x/y strides, channel broadcast ratios, or vector width.
+    None are synthesized here. Scratch reads are conditional source ranges;
+    matching main-kernel writes and their retired content generation remain
+    independent mandatory obligations, not inferred from a previous call.
+    """
+    if type(quant_type) is not int or quant_type not in (12, 14):
+        raise MemoryRuleError("outside_observed_mmq_type")
+    if type(tile_columns) is not int or tile_columns not in (40, 128):
+        raise MemoryRuleError("outside_observed_mmq_tile")
+    if type(compiled_arch) is not int or compiled_arch != 860 or ids_null is not True:
+        raise MemoryRuleError("outside_observed_mmq_arch_or_ids")
+    blocks_k, output_rows, output_columns, channels, samples = _dims(
+        (blocks_per_row, output_rows, output_columns, channels, samples), 5)
+    if output_rows % 128:
+        raise MemoryRuleError("outside_mmq_no_fallback_shape")
+    sd = _strides(destination_strides, 3, maximum=I32_MAX)
+    if sd[0] < output_rows:
+        raise MemoryRuleError("invalid_mmq_destination_stride")
+    tiles_x, tiles_y = (output_columns+tile_columns-1)//tile_columns, output_rows//128
+    total = _product(samples, channels, tiles_x, tiles_y, blocks_k, maximum=(1 << 30)-1)
+    if total > MAX_INTERVALS:
+        raise MemoryRuleError("mmq_schedule_limit")
+    if not isinstance(descriptors, (list, tuple)) or len(descriptors) != 4:
+        raise MemoryRuleError("invalid_fastdiv_descriptors")
+    for actual, divisor in zip(descriptors, (blocks_k, channels, samples, tiles_x)):
+        _descriptor(actual, divisor)
+    grid, block = _geometry(grid), _geometry(block)
+    nblocks = _integer(grid[0], maximum=MAX_ROWS, positive=True)
+    if grid[1:] != (4, 1) or block != (32, 4, 1) or _integer(shared_bytes) != 0:
+        raise MemoryRuleError("invalid_mmq_fixup_geometry")
+    # Pinned Ampere Q4_K/Q6_K config: I=128, K_vram=256, qk=256.
+    # Thus native alignment by blocks_per_iter=K_vram/qk is exactly one.
+    _product(nblocks, total, maximum=I64_MAX)
+    scratch_elements = _product(nblocks, tile_columns, 128, maximum=I32_MAX)
+    starts = [bid*total//nblocks for bid in range(nblocks+1)]
+    partial_slots = {bid for bid in range(nblocks) if starts[bid] < starts[bid+1] and starts[bid+1] % blocks_k}
+    accesses, read_slots = _Accesses(), set()
+    for bid in range(nblocks):
+        first, stop = starts[bid], starts[bid+1]
+        if first == stop or first % blocks_k == 0 or (first//blocks_k == stop//blocks_k and stop % blocks_k):
+            continue
+        previous, boundary = bid-1, first
+        while previous >= 0:
+            cursor = starts[previous]
+            if cursor == boundary:
+                previous -= 1; boundary = cursor; continue
+            if previous not in partial_slots:
+                raise MemoryRuleError("mmq_fixup_reads_unwritten_slot")
+            read_slots.add(previous)
+            accesses.add("tmp_last_tile", "read", previous*tile_columns*128*4, tile_columns*128*4)
+            if cursor % blocks_k == 0 or cursor//blocks_k < first//blocks_k:
+                break
+            previous -= 1; boundary = cursor
+        else:
+            raise MemoryRuleError("mmq_fixup_predecessor_underflow")
+        coordinate = first//blocks_k
+        coordinate, jt = divmod(coordinate, tiles_x)
+        coordinate, channel = divmod(coordinate, channels)
+        it, sample = divmod(coordinate, samples)
+        if it >= tiles_y:
+            raise MemoryRuleError("mmq_tile_outside_shape")
+        offset = _sum(_product(sample, sd[2], maximum=I32_MAX),
+                      _product(channel, sd[1], maximum=I32_MAX),
+                      _product(jt, tile_columns, sd[0], maximum=I32_MAX),
+                      _product(it, 128, maximum=I32_MAX), maximum=I32_MAX)
+        for column in range(min(tile_columns, output_columns-jt*tile_columns)):
+            first_element = _sum(offset, _product(column, sd[0], maximum=I32_MAX), maximum=I32_MAX)
+            _sum(first_element, 127, maximum=I32_MAX)
+            for mode in ("read", "write"):
+                accesses.add("dst", mode, _product(first_element, 4), 128*4)
+    return accesses.result("mmq_stream_k_fixup_sm86_no_ids_v1", stage="fixup",
+        global_scratch_bytes=_product(scratch_elements, 4) if partial_slots else 0,
+        expected_main_written_slots=sorted(partial_slots), required_scratch_slots=sorted(read_slots),
+        requires_matching_main_content_generation=True, matching_main_content_generation_proven=False,
+        required_source_dependencies=["ggml/src/ggml-cuda/mmq-config-ampere.cuh"])
 
 
 def _linear_grid(elements, grid, block):
@@ -996,13 +1094,13 @@ class SourceKernelRanges:
                  "rope_neox": rope_neox, "batched_pointer_tables": batched_pointer_tables,
                  "rms_norm": rms_norm, "quantize_mmq_q8_1": quantize_mmq_q8_1,
                  "matvec_f16": matvec_f16, "matvec_quantized": matvec_quantized,
-                 "mmq_stream_k": mmq_stream_k, "copy_f32": copy_f32,
+                 "mmq_stream_k": mmq_stream_k, "mmq_stream_k_fixup": mmq_stream_k_fixup, "copy_f32": copy_f32,
                  "convert_f16_f32": convert_f16_f32, "unary_gated": unary_gated,
                  "binary_broadcast": binary_broadcast, "softmax_256": softmax_256,
                  "matf_half2": matf_half2}
         if not isinstance(rule, str) or rule not in rules:
             raise MemoryRuleError("unsupported_kernel_rule")
-        if rule in ("matvec_quantized", "mmq_stream_k", "matf_half2", "copy_f32") and self.extra_provenance is None:
+        if rule in ("matvec_quantized", "mmq_stream_k", "mmq_stream_k_fixup", "matf_half2", "copy_f32") and self.extra_provenance is None:
             raise MemoryRuleError("required_kernel_dependency_unverified")
         result = rules[rule](**scalars)
         result["source_provenance"] = deepcopy(self.provenance)
