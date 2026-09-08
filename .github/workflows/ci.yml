@@ -43,6 +43,7 @@ jobs:
           python -m xvram.compat_audit_bindings --help &&
           python -m xvram.compat_launch_probe --help &&
           python -m xvram.compat_launch_census --help &&
+          python -m xvram.compat_pc_preflight --help &&
           python -c "from xvram.compat_audit_sources import load_profile; assert len(load_profile()[0]['files']) == 18"
 
       - name: Configure (Windows)
@@ -122,7 +123,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import ctypes,pathlib; p=pathlib.Path('build-launch-census/${{ matrix.build_type }}/xvram_driver_launch_census.dll').resolve(); lib=ctypes.WinDLL(str(p)); assert lib.InitializeInjection()==0"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake -S src/compat_launch_probe -B build-launch-census -DXVRAM_PROBE_LEGACY_RESOLVER=ON
+          cmake -S src/compat_launch_probe -B build-launch-census -DXVRAM_PROBE_LEGACY_RESOLVER=ON -DXVRAM_PROBE_WITNESS=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build-launch-census --config ${{ matrix.build_type }} --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

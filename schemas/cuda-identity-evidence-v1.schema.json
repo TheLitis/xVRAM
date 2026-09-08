@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "xVRAM native library identity evidence v1 (not execution proof)",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "report_type", "version", "observation", "diagnostics", "proof", "exit_code"],
+  "properties": {
+    "schema_version": {"const": 1}, "report_type": {"const": "xvram.cuda_identity_evidence"},
+    "version": {"const": "0.1.0-dev"}, "exit_code": {"enum": [0, 26, 27]},
+    "diagnostics": {"type": "array", "maxItems": 1, "uniqueItems": true,
+      "items": {"const": "identity_witness_invalid_or_incomplete"}},
+    "proof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["memory_bounds", "cubin_binding", "device_ordering", "trace_completeness"],
+      "properties": {"memory_bounds": {"const": false}, "cubin_binding": {"const": false},
+        "device_ordering": {"const": false}, "trace_completeness": {"const": false}}
+    },
+    "observation": {"oneOf": [{"type": "null"}, {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "census_sha256", "counts"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/hash"}, "census_sha256": {"$ref": "#/$defs/hash"},
+        "counts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["records", "launches", "library_loads", "library_unloads", "library_errors", "library_linked_launches", "function_only_launches"],
+          "properties": {
+            "records": {"$ref": "#/$defs/count"}, "launches": {"$ref": "#/$defs/count"},
+            "library_loads": {"$ref": "#/$defs/count"}, "library_unloads": {"$ref": "#/$defs/count"},
+            "library_errors": {"$ref": "#/$defs/count"},
+            "library_linked_launches": {"$ref": "#/$defs/count"}, "function_only_launches": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    }]}
+  },
+  "allOf": [{"if": {"properties": {"exit_code": {"const": 0}}},
+    "then": {"properties": {"observation": {"type": "object"}, "diagnostics": {"maxItems": 0}}}}],
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "maximum": 1500000}}
+}

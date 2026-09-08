@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native identity sidecar v1; no cubin/completeness proof",
+  "type": "object", "required": ["schema_version", "record_type", "sequence", "kind"],
+  "properties": {"schema_version": {"const": 1}, "record_type": {"const": "xvram.cuda_identity_witness"},
+    "sequence": {"type": "integer", "minimum": 1, "maximum": 1500000},
+    "kind": {"enum": ["session", "library_api", "launch_identity", "summary"]}},
+  "oneOf": [
+    {"properties": {"kind": {"const": "session"}, "terminal_complete": {"const": false}},
+     "required": ["terminal_complete"]},
+    {"properties": {"kind": {"const": "library_api"}, "api_id": {"type": "integer", "minimum": 1, "maximum": 500000},
+       "symbol": {"enum": ["cuLibraryLoadData", "cuLibraryLoadFromFile", "cuLibraryUnload"]},
+       "result": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+       "library_id": {"$ref": "#/$defs/id"}, "library_generation": {"$ref": "#/$defs/id"}},
+     "required": ["api_id", "symbol", "result", "library_id", "library_generation"]},
+    {"properties": {"kind": {"const": "launch_identity"}, "call_id": {"$ref": "#/$defs/positive"},
+       "library_id": {"$ref": "#/$defs/id"}, "library_generation": {"$ref": "#/$defs/id"},
+       "module_observation_id": {"$ref": "#/$defs/positive"}, "library_module_equal": {"type": "boolean"},
+       "cubin_binding_proven": {"const": false}},
+     "required": ["call_id", "library_id", "library_generation", "module_observation_id", "library_module_equal", "cubin_binding_proven"]},
+    {"properties": {"kind": {"const": "summary"}, "errors": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+       "terminal_complete": {"const": false}}, "required": ["errors", "terminal_complete"]}
+  ],
+  "unevaluatedProperties": false,
+  "$defs": {"id": {"type": "integer", "minimum": 0, "maximum": 100000},
+    "positive": {"type": "integer", "minimum": 1, "maximum": 100000}}
+}

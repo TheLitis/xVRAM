@@ -1,5 +1,6 @@
 // Opt-in simultaneous census. No CUDA calls in callbacks or shutdown hooks.
 #include "census.hpp"
+#include "witness.hpp"
 #include "compat_audit_collector/trace_core.hpp"
 #include "platform/sha256.hpp"
 #include <cupti.h>
@@ -72,6 +73,9 @@ void CUPTIAPI callback(void*, CUpti_CallbackDomain domain, CUpti_CallbackId cbid
       } else {
         frame = api_stack.exit(current_call, static_cast<std::uint32_t>(domain), cbid, data.correlationId);
       }
+#ifdef XVRAM_PROBE_WITNESS
+      if(domain==CUPTI_CB_DOMAIN_DRIVER_API) witness::api(data,frame.id);
+#endif
       auto line = state->line(exit ? "api_exit" : "api_enter");
       line.number("api_id", frame.id); line.number("parent_api_id", frame.parent);
       line.string("domain", domain == CUPTI_CB_DOMAIN_RUNTIME_API ? "runtime" : "driver");

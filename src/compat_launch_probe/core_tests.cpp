@@ -30,9 +30,32 @@ struct FakeContextless {
   int stream_context(int) { step(); return owner; }
   int function() { step(); return result; }
 };
+struct FakeLibrary {
+  int calls=0, fault=-1, handle=2, owner=3;
+  void step() { if(calls++==fault) throw std::runtime_error("injected library query"); }
+  int library() { step(); return handle; }
+  int module(int library) { step(); require(library==handle); return owner; }
+};
 }
 int main() {
   try {
+    FakeLibrary library;
+    require(resolve_library(library,3)==2 && library.calls==2);
+    for(int fault=0;fault<2;++fault) {
+      FakeLibrary broken; broken.fault=fault;
+      fails([&] { (void)resolve_library(broken,3); });
+      require(broken.calls==fault+1);
+    }
+    for(int module:{0,4}) {
+      FakeLibrary broken;
+      fails([&] { (void)resolve_library(broken,module); });
+      require(broken.calls==(module==0 ? 0 : 2));
+    }
+    FakeLibrary null_library; null_library.handle=0;
+    fails([&] { (void)resolve_library(null_library,3); });
+    require(null_library.calls==1);
+    FakeLibrary null_module; null_module.owner=0;
+    fails([&] { (void)resolve_library(null_module,3); });
     FakeContextless resolved;
     require(resolve_contextless(resolved) == 2 && resolved.calls == 3);
     for (int fault = 0; fault < 3; ++fault) {

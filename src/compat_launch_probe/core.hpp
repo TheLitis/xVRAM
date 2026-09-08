@@ -30,6 +30,16 @@ template<class Q> auto resolve_contextless(Q& query) {
   return function;
 }
 
+// An independently queried library/module edge must agree with cuFuncGetModule.
+// It authenticates neither CUPTI module IDs nor the bytes of a cubin.
+template<class Q, class Module> auto resolve_library(Q& query, Module expected) {
+  if (!expected) throw std::runtime_error("witness_function_module_missing");
+  const auto library = query.library();
+  if (!library || query.module(library) != expected)
+    throw std::runtime_error("witness_module_disagreement");
+  return library;
+}
+
 // Metadata is a new snapshot on EVERY call, never a cache keyed by a reusable
 // native pointer. No borrowed parameter/name storage escapes this operation.
 // Q is injected by tests; the native implementation calls only documented APIs.

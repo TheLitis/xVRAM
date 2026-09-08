@@ -348,6 +348,8 @@ def main(argv=None):
                      help="Use the active Driver probe with the original pinned binary directory")
     run.add_argument("--census-cupti-dir", type=Path,
                      help="Enable simultaneous census using a census-built Driver DLL and pinned CUPTI directory")
+    run.add_argument("--identity-witness", action="store_true",
+                     help="Collect a separate identity sidecar with a witness-enabled diagnostic DLL")
     run.add_argument("--output-dir", type=Path, required=True)
     run.add_argument("--microbatch", type=int, choices=(1, 128), default=128)
     run.add_argument("--timeout-seconds", type=int, default=900, help="total native-run deadline, 1..900 seconds")
@@ -356,6 +358,8 @@ def main(argv=None):
         parser.error("timeout must be 1..900 seconds")
     if args.action == "run" and args.census_cupti_dir and not args.driver_probe:
         parser.error("census requires the active Driver probe")
+    if args.action == "run" and args.identity_witness and (not args.census_cupti_dir or args.mode != "metadata"):
+        parser.error("identity witness requires census and metadata mode")
     try:
         if args.action == "exports":
             definition = export_definition(args.native, import_definition=args.import_definition)
@@ -389,6 +393,8 @@ def main(argv=None):
         environment["GGML_CUDA_DISABLE_GRAPHS"] = "1"
         environment["XVRAM_LAUNCH_PROBE_MODE"] = args.mode
         environment["XVRAM_LAUNCH_PROBE_TRACE"] = str(args.output_dir / "launches.jsonl")
+        if args.identity_witness:
+            environment["XVRAM_IDENTITY_WITNESS_TRACE"] = str(args.output_dir / "identity.jsonl")
         if args.driver_probe:
             environment["CUDA_INJECTION64_PATH"] = str(args.driver_probe.resolve())
         if args.census_cupti_dir:
@@ -405,6 +411,11 @@ def main(argv=None):
             from .compat_launch_census import make_report as census_report
             census = census_report(report, args.output_dir / "census.jsonl")
             (args.output_dir / "census-report.json").write_text(json.dumps(census, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            if args.identity_witness:
+                from .compat_audit_identity import make_report as identity_report
+                witness = identity_report(report, census, args.output_dir / "identity.jsonl", args.output_dir / "census.jsonl")
+                (args.output_dir / "identity-report.json").write_text(json.dumps(witness, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+                return witness["exit_code"]
             return census["exit_code"]
         return report["exit_code"]
     except (ValueError, KeyError, TypeError, OSError, UnicodeError) as error:

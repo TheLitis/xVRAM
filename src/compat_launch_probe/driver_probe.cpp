@@ -3,6 +3,7 @@
 // Public Driver launch entry points only. No kernel argument reads or VMM work.
 #include "core.hpp"
 #include "census.hpp"
+#include "witness.hpp"
 #include "compat_audit_collector/trace_core.hpp"
 #include "platform/dynamic_library.hpp"
 #include "platform/sha256.hpp"
@@ -79,24 +80,52 @@ struct ContextlessQuery {
   }
 };
 #endif
+#ifdef XVRAM_PROBE_WITNESS
+struct LibraryQuery {
+  State& state;
+  CUkernel kernel;
+  CUlibrary library() {
+    CUlibrary result=nullptr;
+    checked(state.get<decltype(&cuKernelGetLibrary)>("cuKernelGetLibrary")(&result,kernel));
+    return result;
+  }
+  CUmodule module(CUlibrary library) {
+    CUmodule result=nullptr;
+    checked(state.get<decltype(&cuLibraryGetModule)>("cuLibraryGetModule")(&result,library));
+    return result;
+  }
+};
+#endif
 struct Query {
   State& state;
   CUfunction function;
   bool contextless = false;
   CUstream stream = nullptr;
+  CUmodule resolved_module = nullptr;
+  CUlibrary resolved_library = nullptr;
+  CUkernel original_kernel = nullptr;
+  bool library_module_equal = false;
   bool resolve() {
     if (!function) return false;
 #ifdef XVRAM_PROBE_LEGACY_RESOLVER
     if (contextless) {
       // Explicit pinned-profile contract, never an INVALID_HANDLE retry or a
       // guess at the handle's internal representation. Leave launch f unchanged.
-      ContextlessQuery query{state, reinterpret_cast<CUkernel>(function), stream};
+      original_kernel = reinterpret_cast<CUkernel>(function);
+      ContextlessQuery query{state, original_kernel, stream};
       function = xvram::launch_probe::resolve_contextless(query);
     }
 #endif
-    CUmodule module = nullptr;
-    checked(state.get<decltype(&cuFuncGetModule)>("cuFuncGetModule")(&module, function));
-    return module != nullptr;
+    checked(state.get<decltype(&cuFuncGetModule)>("cuFuncGetModule")(&resolved_module, function));
+#ifdef XVRAM_PROBE_WITNESS
+    if(contextless) {
+      // The original CUkernel remains unchanged for the native forward.
+      LibraryQuery query{state,original_kernel};
+      resolved_library=xvram::launch_probe::resolve_library(query,resolved_module);
+      library_module_equal=true;
+    }
+#endif
+    return resolved_module != nullptr;
   }
   std::string name() {
     const char* name = nullptr;
@@ -142,7 +171,11 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
       const auto result = xvram::launch_probe::invoke([&] {
         if (!s->metadata) return xvram::launch_probe::Snapshot{};
         Query query{*s, function, route == 2, stream};
-        return xvram::launch_probe::inspect(query);
+        auto snapshot=xvram::launch_probe::inspect(query);
+#ifdef XVRAM_PROBE_WITNESS
+        xvram::launch_probe::witness::launch(id,query.resolved_library,query.resolved_module,query.library_module_equal);
+#endif
+        return snapshot;
       }, [&](const auto& snapshot) {
         auto begin = s->line("begin", id);
         begin.string("api", route == 2 ? "cuLaunchKernel_resolved_legacy" : route == 1 ? "cuLaunchKernel_resolved_ptsz" : "cuLaunchKernel");
@@ -161,7 +194,9 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
         xvram::launch_probe::census::Scope marked_forward(id);
         return static_cast<int>(native(
           function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra)); },
-      [&](int code) { auto end = s->line("end", id); end.integer("result", code); s->emit(end); });
+      [&](int code) {
+        auto end = s->line("end", id); end.integer("result", code); s->emit(end);
+      });
       return static_cast<CUresult>(result);
     } catch (...) { s->poisoned = true; return CUDA_ERROR_UNKNOWN; }
   } catch (...) { return CUDA_ERROR_UNKNOWN; }
@@ -241,6 +276,10 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     auto* s = new State;
     current = s;
     s->metadata = std::wstring_view(mode) == L"metadata";
+#ifdef XVRAM_PROBE_WITNESS
+    if(!s->metadata) throw std::runtime_error("witness_requires_metadata");
+    xvram::launch_probe::witness::initialize();
+#endif
 #ifdef XVRAM_PROBE_CENSUS
     xvram::launch_probe::census::initialize();
 #endif

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Isolated PC-sampling preflight v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "report_type", "version", "provenance", "observation", "capture", "proof", "outcome"],
+  "properties": {
+    "schema_version": {"const": 1}, "report_type": {"const": "xvram.cuda_pc_preflight"}, "version": {"const": "0.1.0-dev"},
+    "provenance": {"type": "object", "additionalProperties": false,
+      "required": ["xvram-pc-sampling-probe.exe", "cupti64_2026.2.1.dll", "nvperf_host.dll", "nvperf_target.dll"],
+      "properties": {"xvram-pc-sampling-probe.exe": {"$ref": "#/$defs/hash"}, "cupti64_2026.2.1.dll": {"$ref": "#/$defs/hash"},
+        "nvperf_host.dll": {"$ref": "#/$defs/hash"}, "nvperf_target.dll": {"$ref": "#/$defs/hash"}}},
+    "observation": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
+      "required": ["profiler_initialize", "device_support_result", "device_support_level", "launch", "synchronize", "data", "unload", "disable", "destroy"],
+      "properties": {"profiler_initialize": {"$ref": "#/$defs/result"}, "device_support_result": {"$ref": "#/$defs/result"},
+        "device_support_level": {"$ref": "#/$defs/result"}, "launch": {"$ref": "#/$defs/result"},
+        "synchronize": {"$ref": "#/$defs/result"}, "data": {"$ref": "#/$defs/result"}, "unload": {"$ref": "#/$defs/result"},
+        "disable": {"$ref": "#/$defs/result"}, "destroy": {"$ref": "#/$defs/result"}}}]},
+    "capture": {"type": "object", "additionalProperties": false,
+      "required": ["exit_code", "timed_out", "controller_reaped", "process_tree_drained", "output_truncated", "errors"],
+      "properties": {"exit_code": {"type": ["integer", "null"]}, "timed_out": {"type": ["boolean", "null"]},
+        "controller_reaped": {"type": ["boolean", "null"]}, "process_tree_drained": {"type": ["boolean", "null"]},
+        "output_truncated": {"type": ["boolean", "null"]},
+        "errors": {"type": ["array", "null"], "maxItems": 64, "items": {"type": "string", "pattern": "^[a-z_]+$", "maxLength": 128}}}},
+    "proof": {"type": "object", "additionalProperties": false,
+      "required": ["memory_bounds", "cubin_binding", "device_ordering", "trace_completeness"],
+      "properties": {"memory_bounds": {"const": false}, "cubin_binding": {"const": false},
+        "device_ordering": {"const": false}, "trace_completeness": {"const": false}}},
+    "outcome": {"oneOf": [
+      {"const": {"status": "ready", "exit_code": 0}}, {"const": {"status": "permission_required", "exit_code": 23}},
+      {"const": {"status": "timeout", "exit_code": 26}}, {"const": {"status": "failed", "exit_code": 27}}]}
+  },
+  "allOf": [
+    {"if": {"properties": {"outcome": {"properties": {"status": {"enum": ["ready", "permission_required"]}}}}},
+     "then": {"properties": {
+       "capture": {"properties": {"timed_out": {"const": false}, "controller_reaped": {"const": true},
+         "process_tree_drained": {"const": true}, "output_truncated": {"const": false}, "errors": {"const": []}}},
+       "observation": {"type": "object", "properties": {"profiler_initialize": {"const": 0},
+         "device_support_result": {"const": 0}, "device_support_level": {"const": 3},
+         "launch": {"const": 0}, "synchronize": {"const": 0}, "unload": {"const": 0}, "destroy": {"const": 0}}}}}},
+    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "ready"}}}}},
+     "then": {"properties": {"capture": {"properties": {"exit_code": {"const": 0}}},
+       "observation": {"properties": {"data": {"const": 0}, "disable": {"const": 0}}}}}},
+    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "permission_required"}}}}},
+     "then": {"properties": {"capture": {"properties": {"exit_code": {"const": 27}}},
+       "observation": {"properties": {"data": {"const": 35}, "disable": {"enum": [0, 35]}}}}}},
+    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "timeout"}}}}},
+     "then": {"properties": {"capture": {"properties": {"timed_out": {"const": true}}}, "observation": {"type": "null"}}}}
+  ],
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result": {"type": "integer", "minimum": -1, "maximum": 2147483647}}
+}
