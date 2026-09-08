@@ -373,6 +373,15 @@ are unchanged; the original backend still executes with ordinary CPU offload.
 
 ## Phase 6b.1 and later — evidence gates remain mandatory
 
+The [native identity follow-up](cuda-identity-witness.md) now observes 8,680
+CUkernel/library/module agreements plus 96 CUfunction-only launches in a fresh
+14B CPU-offload run. It does not authenticate cubin bytes or close any of the four
+proof gates. The separate, isolated PC-sampling preflight reached successful GPU
+launch/sync but returned `CUPTI_ERROR_INSUFFICIENT_PRIVILEGES` on data collection.
+This path needs an explicitly authorized administrative diagnostic run; no driver,
+registry, TDR or NVIDIA setting was changed. Other memory/order/completeness and
+32B proof work remains unfinished. See the new document for exact remaining gaps.
+
 The [execution-proof stage](cuda-execution-proof.md) is now **in progress**. Its
 first increment adds conditional tensor-range and generation-scoped event-order
 checkers plus strict cross-evidence analysis. Of 39 live layouts, 35 exactly match

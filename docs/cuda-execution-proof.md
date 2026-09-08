@@ -93,6 +93,10 @@ Phase 6b.0f v2 trace hashes are additionally frozen by tests.
 
 ## Next native witness work — not implemented by this increment
 
+Follow-up: the [native identity witness](cuda-identity-witness.md) implements part
+of item 1 below and records the actual PC-sampling permission barrier. It does not
+close any of the four gates; the remaining items are still required.
+
 1. **Identity:** observe successful `cuLibraryLoadData` / `cuLibraryGetKernel` and
    unload lifetimes using generation-scoped local IDs. These API labels are present
    in the accepted census, but their arguments/outputs were not captured. The
