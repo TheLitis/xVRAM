@@ -1,4 +1,5 @@
 #include "compat_launch_probe/typed_capture.hpp"
+#include "compat_launch_probe/activity_drain.hpp"
 #include "capture_catalog.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -17,6 +18,18 @@ struct Sink {
 }
 int main() {
   try {
+    const std::array activity_kinds{1,2,3};
+    std::vector<int> activity_calls;
+    for (int fault=-1; fault<4; ++fault) {
+      activity_calls.clear();
+      const auto disable=[&](int kind) { activity_calls.push_back(kind); return kind==fault ? 1 : 0; };
+      const auto flush=[&] { activity_calls.push_back(4); return fault==0 ? 1 : 0; };
+      require(!xvram::launch_probe::retire_activity(false,true,activity_kinds,disable,flush));
+      require(!xvram::launch_probe::retire_activity(true,false,activity_kinds,disable,flush));
+      require(activity_calls.empty());
+      require(xvram::launch_probe::retire_activity(true,true,activity_kinds,disable,flush)==(fault==-1));
+      require(activity_calls==std::vector<int>({1,2,3,4}));
+    }
     constexpr tc::Field pointer[]{ {"value",tc::ValueType::ptr,0} };
     constexpr tc::Field scalar[]{ {"value",tc::ValueType::u32,0} };
     const tc::Argument arguments[]{ {"input",0,8,pointer}, {"count",8,4,scalar} };

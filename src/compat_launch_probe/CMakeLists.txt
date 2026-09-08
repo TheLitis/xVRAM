@@ -38,6 +38,41 @@ option(XVRAM_PROBE_CENSUS "Add opt-in simultaneous CUPTI census (requires offici
 option(XVRAM_PROBE_LEGACY_RESOLVER "Observe the distinct public legacy resolver entry (trace v2)" OFF)
 option(XVRAM_PROBE_WITNESS "Collect separate live library/module identity witnesses" OFF)
 option(XVRAM_PROBE_PC_WITNESS "Experimental serialized PC identity diagnostic; not execution proof" OFF)
+option(XVRAM_PROBE_MEMORY_WITNESS "Observe device allocation/VMM generations; not tensor memory proof" OFF)
+option(XVRAM_PROBE_KERNEL_CAPTURE "Capture exact catalog-typed host parameter banks without tensor-bound inference" OFF)
+option(XVRAM_PROBE_TEARDOWN_WITNESS "Retain typed library/context lifecycle observations through native teardown" OFF)
+if(XVRAM_PROBE_TEARDOWN_WITNESS)
+  if(NOT XVRAM_PROBE_CENSUS OR NOT XVRAM_PROBE_PC_WITNESS)
+    message(FATAL_ERROR "Teardown witness requires the simultaneous census and execution witness")
+  endif()
+  target_sources(xvram_driver_launch_probe PRIVATE teardown_witness.cpp)
+  target_compile_definitions(xvram_driver_launch_probe PRIVATE XVRAM_PROBE_TEARDOWN_WITNESS)
+endif()
+if(XVRAM_PROBE_KERNEL_CAPTURE)
+  if(NOT XVRAM_PROBE_PC_WITNESS OR NOT XVRAM_PROBE_MEMORY_WITNESS)
+    message(FATAL_ERROR "Typed kernel capture requires PC and memory witness profiles")
+  endif()
+  set(probe_capture_header "${CMAKE_CURRENT_BINARY_DIR}/audit-generated/capture_catalog.hpp")
+  add_custom_command(OUTPUT "${probe_capture_header}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/generate-audit-kernel-header.py"
+            --catalog "${CMAKE_CURRENT_SOURCE_DIR}/../../python/xvram/compat_audit_kernel_capture_catalog.json"
+            --output "${probe_capture_header}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/generate-audit-kernel-header.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../python/xvram/compat_audit_kernel_capture_catalog.json"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../python/xvram/compat_audit_kernel_catalog.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../python/xvram/compat_audit_kernel_ranges.py"
+    VERBATIM)
+  target_sources(xvram_driver_launch_probe PRIVATE kernel_capture.cpp "${probe_capture_header}")
+  target_include_directories(xvram_driver_launch_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/audit-generated")
+  target_compile_definitions(xvram_driver_launch_probe PRIVATE XVRAM_PROBE_KERNEL_CAPTURE)
+endif()
+if(XVRAM_PROBE_MEMORY_WITNESS)
+  if(NOT XVRAM_PROBE_CENSUS)
+    message(FATAL_ERROR "Memory witness requires the simultaneous Driver API census")
+  endif()
+  target_sources(xvram_driver_launch_probe PRIVATE memory_witness.cpp)
+  target_compile_definitions(xvram_driver_launch_probe PRIVATE XVRAM_PROBE_MEMORY_WITNESS)
+endif()
 if(XVRAM_PROBE_PC_WITNESS)
   if(NOT XVRAM_PROBE_WITNESS)
     message(FATAL_ERROR "PC witness requires the identity witness profile")

@@ -46,6 +46,6 @@ public:
 #ifdef XVRAM_PROBE_CENSUS
 void initialize();
 void stop_flusher();
-bool drain();
+bool drain(bool gpu_drained);
 #endif
 } // namespace xvram::launch_probe::census

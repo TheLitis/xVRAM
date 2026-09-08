@@ -1,6 +1,13 @@
 // Opt-in simultaneous census. No CUDA calls in callbacks or shutdown hooks.
 #include "census.hpp"
+#include "activity_drain.hpp"
 #include "witness.hpp"
+#ifdef XVRAM_PROBE_TEARDOWN_WITNESS
+#include "teardown_witness.hpp"
+#endif
+#ifdef XVRAM_PROBE_MEMORY_WITNESS
+#include "memory_witness.hpp"
+#endif
 #ifdef XVRAM_PROBE_PC_WITNESS
 #include "execution_witness.hpp"
 #include "postmortem.hpp"
@@ -121,6 +128,12 @@ void CUPTIAPI callback(void*, CUpti_CallbackDomain domain, CUpti_CallbackId cbid
 #endif
 #ifdef XVRAM_PROBE_WITNESS
       if(domain==CUPTI_CB_DOMAIN_DRIVER_API) witness::api(data,frame.id);
+#endif
+#ifdef XVRAM_PROBE_MEMORY_WITNESS
+      if(domain==CUPTI_CB_DOMAIN_DRIVER_API) memory_witness::api(data,frame.id);
+#endif
+#ifdef XVRAM_PROBE_TEARDOWN_WITNESS
+      if(domain==CUPTI_CB_DOMAIN_DRIVER_API) teardown_witness::api(data,frame.id);
 #endif
       auto line = state->line(exit ? "api_exit" : "api_enter");
       line.number("api_id", frame.id); line.number("parent_api_id", frame.parent);
@@ -269,9 +282,17 @@ void stop_flusher() {
   state->stop=true;
   if(state->flusher.joinable()) state->flusher.join();
 }
-bool drain() {
+bool drain(bool gpu_drained) {
   if(!state || !state->stop) return false;
-  if(cuptiActivityFlushAll(0)!=CUPTI_SUCCESS) return false;
+  // Keep API callbacks enabled through native teardown. Activity collection,
+  // however, must stop before its final flush or teardown requests fresh
+  // buffers after the claimed drain. Forced delivery is not GPU completion:
+  // the caller supplies the independently observed synchronization result.
+  const std::array kinds{CUPTI_ACTIVITY_KIND_RUNTIME, CUPTI_ACTIVITY_KIND_DRIVER,
+                         CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL};
+  if(!retire_activity(gpu_drained, state->stop.load(), kinds,
+      [](CUpti_ActivityKind kind) { return static_cast<int>(cuptiActivityDisable_v2(state->subscriber, kind, nullptr)); },
+      [] { return static_cast<int>(cuptiActivityFlushAll(1)); })) return false;
   std::lock_guard lock(state->mutex);
   return !state->closed && !state->errors && !state->dropped && !state->outstanding && !state->open_calls;
 }

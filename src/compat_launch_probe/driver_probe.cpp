@@ -1,9 +1,19 @@
 // Active diagnostic boundary, loaded by CUDA's documented InitializeInjection
 // mechanism ONLY in the pinned, controller-owned llama-completion process.
-// Public Driver launch entry points only. No kernel argument reads or VMM work.
+// Public Driver launch entry points only. The optional typed witness reads
+// reviewed host argument fields; no device-memory dereference or VMM work.
 #include "core.hpp"
 #include "census.hpp"
 #include "witness.hpp"
+#ifdef XVRAM_PROBE_TEARDOWN_WITNESS
+#include "teardown_witness.hpp"
+#endif
+#ifdef XVRAM_PROBE_MEMORY_WITNESS
+#include "memory_witness.hpp"
+#endif
+#ifdef XVRAM_PROBE_KERNEL_CAPTURE
+#include "kernel_capture.hpp"
+#endif
 #ifdef XVRAM_PROBE_PC_WITNESS
 #include "sampling.hpp"
 #include "execution_witness.hpp"
@@ -189,6 +199,22 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
 #endif
         return snapshot;
       }, [&](const auto& snapshot) {
+#ifdef XVRAM_PROBE_KERNEL_CAPTURE
+        if(xvram::launch_probe::kernel_capture::enabled()) {
+          CUcontext context=nullptr;
+          CUdevice device=-1;
+          checked(s->get<decltype(&cuCtxGetCurrent)>("cuCtxGetCurrent")(&context));
+          if(!context) throw std::runtime_error("kernel_capture_context_missing");
+          checked(s->get<decltype(&cuCtxGetDevice)>("cuCtxGetDevice")(&device));
+          if(stream) {
+            CUcontext stream_context=nullptr;
+            checked(s->get<decltype(&cuStreamGetCtx)>("cuStreamGetCtx")(stream,&stream_context));
+            if(stream_context!=context) throw std::runtime_error("kernel_capture_stream_context_mismatch");
+          }
+          xvram::launch_probe::kernel_capture::launch(id,snapshot,
+            {{gx,gy,gz},{bx,by,bz},shared},parameters,extra,device,context);
+        }
+#endif
         auto begin = s->line("begin", id);
         begin.string("api", route == 2 ? "cuLaunchKernel_resolved_legacy" : route == 1 ? "cuLaunchKernel_resolved_ptsz" : "cuLaunchKernel");
         begin.boolean("metadata", s->metadata); begin.boolean("module_resolved", s->metadata);
@@ -207,6 +233,9 @@ CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy,
         return static_cast<int>(native(
           function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra)); },
       [&](int code) {
+#ifdef XVRAM_PROBE_KERNEL_CAPTURE
+        xvram::launch_probe::kernel_capture::returned(id,code);
+#endif
 #ifdef XVRAM_PROBE_PC_WITNESS
         if(xvram::launch_probe::sampling::enabled()) {
           if(code!=CUDA_SUCCESS) throw std::runtime_error("sampling_launch_failed");
@@ -288,9 +317,15 @@ void WINAPI diagnostic_process_exit(unsigned long code) noexcept {
         xvram::launch_probe::execution_witness::terminal_tool=true;
         const auto result=s->get<decltype(&cuCtxSynchronize)>("cuCtxSynchronize")();
         xvram::launch_probe::sampling::finish(result);
-        const bool drained=xvram::launch_probe::census::drain();
+        const bool drained=xvram::launch_probe::census::drain(result==CUDA_SUCCESS);
         xvram::launch_probe::postmortem::drained(result==CUDA_SUCCESS,drained);
         xvram::launch_probe::execution_witness::finish(result==CUDA_SUCCESS,drained);
+#ifdef XVRAM_PROBE_TEARDOWN_WITNESS
+        xvram::launch_probe::teardown_witness::checkpoint();
+#endif
+#ifdef XVRAM_PROBE_KERNEL_CAPTURE
+        xvram::launch_probe::kernel_capture::finish();
+#endif
         if(result!=CUDA_SUCCESS || !drained) throw std::runtime_error("diagnostic_terminal_drain_failed");
         xvram::launch_probe::postmortem::finish();
       }
@@ -330,6 +365,17 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     xvram::launch_probe::postmortem::initialize();
 #endif
 #ifdef XVRAM_PROBE_CENSUS
+#ifdef XVRAM_PROBE_TEARDOWN_WITNESS
+    xvram::launch_probe::teardown_witness::initialize();
+#endif
+#ifdef XVRAM_PROBE_MEMORY_WITNESS
+    // Observe allocations from the first enabled Driver callback, including
+    // startup queries. This observer never submits CUDA work in callbacks.
+    xvram::launch_probe::memory_witness::initialize();
+#endif
+#ifdef XVRAM_PROBE_KERNEL_CAPTURE
+    xvram::launch_probe::kernel_capture::initialize();
+#endif
     xvram::launch_probe::census::initialize();
 #endif
 #ifdef XVRAM_PROBE_PC_WITNESS
