@@ -342,6 +342,20 @@ Remaining Runtime-origin paths, cubin identity, semantic ranges, device ordering
 live working-set admission are still unresolved. It is not GO for production memory
 interception, and unchanged 14B/32B generation through xVRAM remains unfinished.
 
+### Phase 6b.0e simultaneous census — public-entry bypass confirmed
+
+The [same-process census](cuda-launch-census.md) correlates the active probe with
+CUPTI in two new 14B/microbatch-128 CPU-offload runs. Each observed 8,776 GPU kernels:
+96 correlate with marked Driver boundaries and 8,680 with unmarked Runtime/Driver
+launch calls. All observed kernels have completed launch correlations; no reported
+records were dropped. Thirty-seven of 39 kernel-name groups remain unmarked.
+
+Distinct API IDs and parent IDs handle CUPTI correlation sharing; callback names
+are not treated as invocation of a patched public export. These data establish
+the active routing gap, not its solution. The actual unmarked entry path, cubin
+identity and typed memory/ordering/budget contracts remain unresolved. Terminal
+completeness stays false; no residency interception or oversubscription was added.
+
 ## Phase 6b.1 and later — evidence gates remain mandatory
 
 1. Resolve the audit's concrete evidence gaps and validate a bounded unchanged-backend

@@ -1,0 +1,172 @@
+{
+  "phase": "6b.0e",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "verdict": "OBSERVED_PUBLIC_ENTRY_BYPASS_NO_GO_FOR_RESIDENCY_INTERCEPTION",
+  "profile": {
+    "os": "Windows x64 WDDM",
+    "gpu": "RTX 3070",
+    "vram_bytes": 8589934592,
+    "driver_version": "616.56",
+    "driver_sha256": "dca7a0c465975a95786c8a42cf0cdcffbef5b7306c6baae71a3dec658cae9a3d",
+    "model": "Qwen2.5-14B-Instruct-GGUF Q4_K_M",
+    "microbatch": 128,
+    "gpu_layers": 8,
+    "context_size": 2048,
+    "generated_token_limit": 32,
+    "ordinary_cpu_offload": true,
+    "xvram_oversubscription": false
+  },
+  "build": {
+    "configuration": "Release",
+    "source_commit": "8cde3f055e1fdda10e6cbb25ea2a5fe3d5de293d",
+    "built_from_working_tree_before_source_commit": true,
+    "driver_census_dll_sha256": "0abbcaa8aec5b1bdea9192839b6ae5867b438da8cc8a3f6a7023cf9776edf626",
+    "source_hashes": {
+      ".github/workflows/ci.yml": "9a5a0a5ec7870bf354cf613bd129a48a061972b697f2ba0e790fae2ad52c3bee",
+      "python/xvram/compat_launch_census.py": "ed65361191236408bc98162b4199d4c7d5ff75db9bc33b3d0a0476e8ea50a3b6",
+      "python/xvram/compat_launch_probe.py": "014b5e47616dd38c9a87778d07dcbfef66be54ddd8a550ae3c9d96e14fe697b6",
+      "schemas/cuda-launch-census-report-v1.schema.json": "4f98c9d213b8c50b27bb6d7b74be0593532e699ac1c07dc7d941a79ceeef025b",
+      "schemas/cuda-launch-census-trace-v1.schema.json": "6857eacde169778cc1fa3958150c232940e1726ed3c6d2dd07b30a72aa209665",
+      "scripts/validate-launch-census.py": "e5cc42dca09285cd6539efa5e7ae2ade4447e33fb660312b59a9fbcccdde5cf3",
+      "src/compat_launch_probe/CMakeLists.txt": "fbb7aaa6ca7e092086a89d0f51429b9b5f065bce140253855631bd5a8c3a503f",
+      "src/compat_launch_probe/census.cpp": "5f7eac26e5ab321e8feb78ae70302d0d5cf60c25957aa16d59f919fd34c4c71e",
+      "src/compat_launch_probe/census.hpp": "610794768060495aa87ce1c109c3ec5774b3e7af51451eb65586a2d5a28b28c5",
+      "src/compat_launch_probe/core_tests.cpp": "51753209b67b6dcc9336677a961bb972ba0abda398b564298bf0d3442888f90c",
+      "src/compat_launch_probe/driver_probe.cpp": "614703218f0142b21575853349114ae0d0cc55883c3e66f45353188bfcd8b9b5",
+      "tests/CMakeLists.txt": "6c4b7f2e33955275856df4f5bf7039cc3c58777ea2eba3677addee3afb64987f",
+      "tests/python/test_compat_audit_launch_census.py": "26fe9948d2101ae393cf6021bbf0c2efc57e20c9e296de627ce759ef153debb0"
+    }
+  },
+  "dependencies": {
+    "cupti": {
+      "version": "13.3.75",
+      "manifest": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.3.1.json",
+      "archive_sha256": "298eb0dfbd7eb63b63aab0533b4ba1ab2542c2ea03842a744973c7f38d0982b3",
+      "dll": "cupti64_2026.2.1.dll",
+      "dll_sha256": "9b10d2fafaff1a4dc9e447c4a1355fccb04ee024fa7e7d28c9e4c5ab53347faf",
+      "system_install_changed": false
+    },
+    "detours": {
+      "commit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+      "archive_sha256": "fef0b17c5c3c9356fb8ba7366a3b196149daadd131fb6a92abeda1cb4d3b9b85"
+    }
+  },
+  "cases": [
+    {
+      "mode": "routing",
+      "artifact_directory": "artifacts/phase6b0e-census-20260908/accepted-routing-v2",
+      "artifact_hashes": {
+        "probe.json": "b00a68e101ed0462077c34ea04f1b0077b6ed0656b699c419e852144911c5af1",
+        "launches.jsonl": "1eb74797c63b16555054c20ff341b6fb85fb6a3f883e18340b3a12f688b92b41",
+        "census-report.json": "c744017b48f48f44f52001c660500610f2d3a9229fd7cda2978a1dc40ec93ec1",
+        "census.jsonl": "7bdffed838cbb4e6365f4e89ce2a086b7cd8cdfd8e6f9e26e80c7b5f757c0731"
+      },
+      "counts": {
+        "gpu_kernels_observed": 8776,
+        "marked_kernels": 96,
+        "unmarked_kernels": 8680,
+        "uncorrelated_kernels": 0,
+        "api_pairs": 95289,
+        "open_api_calls": 0,
+        "probe_calls_observed": 96,
+        "probe_calls_with_gpu_activity": 96,
+        "buffers_outstanding": 0
+      },
+      "records": 199356,
+      "kernel_name_groups": 39,
+      "marked_groups": 2,
+      "exit_code": 0,
+      "native_exit_code": 0,
+      "controller_reaped": true,
+      "process_tree_drained": true,
+      "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+      "elapsed_ms": 14569.772599992575,
+      "footer": {
+        "schema_version": 1,
+        "record_type": "xvram.cuda_launch_census",
+        "sequence": 199356,
+        "kind": "summary",
+        "errors": 0,
+        "dropped": 0,
+        "buffers_outstanding": 0,
+        "terminal_complete": false
+      }
+    },
+    {
+      "mode": "metadata",
+      "artifact_directory": "artifacts/phase6b0e-census-20260908/accepted-metadata",
+      "artifact_hashes": {
+        "probe.json": "d5e38c0d2f44f31a626aa72685842f07d048913ffadbd0174ba3af1b7315902a",
+        "launches.jsonl": "d404952cc0e8b8b164288f379882160d3d60224aa9a295942b1990f90730ae3b",
+        "census-report.json": "15588f753fb0dfbb9cf249725bba7410aa8651c6bd679db053a28a3e66275f1d",
+        "census.jsonl": "707f619250ef8334993b63494c6fafd0319e060376e836915339b45449cb60ae"
+      },
+      "counts": {
+        "gpu_kernels_observed": 8776,
+        "marked_kernels": 96,
+        "unmarked_kernels": 8680,
+        "uncorrelated_kernels": 0,
+        "api_pairs": 95673,
+        "open_api_calls": 0,
+        "probe_calls_observed": 96,
+        "probe_calls_with_gpu_activity": 96,
+        "buffers_outstanding": 0
+      },
+      "records": 200124,
+      "kernel_name_groups": 39,
+      "marked_groups": 2,
+      "exit_code": 0,
+      "native_exit_code": 0,
+      "controller_reaped": true,
+      "process_tree_drained": true,
+      "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+      "elapsed_ms": 14531.745499989484,
+      "footer": {
+        "schema_version": 1,
+        "record_type": "xvram.cuda_launch_census",
+        "sequence": 200124,
+        "kind": "summary",
+        "errors": 0,
+        "dropped": 0,
+        "buffers_outstanding": 0,
+        "terminal_complete": false
+      }
+    }
+  ],
+  "validation": {
+    "release_ctest_serial": {
+      "passed": 86,
+      "total": 86
+    },
+    "debug_ctest_serial": {
+      "passed": 82,
+      "total": 82
+    },
+    "python_audit_tests": {
+      "run": 311,
+      "skipped": 4,
+      "failed": 0
+    },
+    "new_census_python_tests": 16,
+    "strict_report_and_full_trace_validation": true,
+    "unpinned_host_rejected": true,
+    "installed_python_smoke": true,
+    "previous_frozen_contracts_passed": true,
+    "initial_parallel_release_failure": "One existing audit tool output-limit test hit Windows WinError 32 deleting its temporary cwd. Complete serial Release and Debug reruns passed without test/runtime/timeout changes."
+  },
+  "development_evidence_not_accepted": [
+    "pilot-routing",
+    "nested-routing",
+    "accepted-routing"
+  ],
+  "limitations": [
+    "Both final runs are ordinary CPU-offload diagnostics, not xVRAM oversubscription.",
+    "8776 observed kernels partition into 96 marked and 8680 unmarked; terminal completeness is still false.",
+    "CUPTI API labels do not prove invocation of a patched export or a resolver-returned entry point.",
+    "The unmarked Runtime execution entry path is not located or intercepted by this implementation.",
+    "No live cubin binding, typed memory/indirect bounds, device ordering or working-set admission proof was added.",
+    "Same visible stdout digest is not numerical/tensor-level reference equality.",
+    "No production residency, kernel argument, original backend, driver, TDR or registry changes."
+  ]
+}
