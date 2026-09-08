@@ -373,6 +373,15 @@ are unchanged; the original backend still executes with ordinary CPU offload.
 
 ## Phase 6b.1 and later — evidence gates remain mandatory
 
+The [native execution-witness increment](cuda-execution-witness.md) adds actual
+sampled cubin identities, typed order validation, source-range models and a
+post-reap observation ledger. The latter found 21 real teardown APIs after the
+previous final footer, so terminal completeness remains rejected rather than
+being inferred from native exit `0`. The full four-gate matrix is **not complete**.
+Windows Application Control currently also blocks the memory-observer callback
+test and installed PyTorch CUDA dependency; these executions are not counted as
+passed. No system-policy change or transparent residency interception was made.
+
 The [native identity follow-up](cuda-identity-witness.md) now observes 8,680
 CUkernel/library/module agreements plus 96 CUfunction-only launches in a fresh
 14B CPU-offload run. It does not authenticate cubin bytes or close any of the four
