@@ -51,10 +51,17 @@ def main() -> int:
                  "unsupported_launch": "cudaLaunchKernel",
                  "device_compilation": "XVRAM_CUDA_COMPAT_HOST_ONLY"}
         for case, expected in cases.items():
-            result = run(configure + [f"-DCASE={case}"])
+            # Each negative case must reach its own compiler/linker diagnostic.
+            # Do not overwrite the just-executed positive-control image: Windows
+            # image scanners can still hold that file after the child is reaped.
+            # Separate directories also prevent stale outputs from masking a case.
+            case_build = build / case
+            case_configure = configure.copy()
+            case_configure[case_configure.index("-B") + 1] = str(case_build)
+            result = run(case_configure + [f"-DCASE={case}"])
             if result.returncode:
                 raise AssertionError(f"{case} configure failed unexpectedly:\n{result.stdout}")
-            result = run([args.cmake, "--build", str(build), "--config", args.configuration])
+            result = run([args.cmake, "--build", str(case_build), "--config", args.configuration])
             if expected is not None:
                 if result.returncode == 0 or expected not in result.stdout:
                     raise AssertionError(f"{case} did not reject {expected}:\n{result.stdout}")
@@ -62,7 +69,7 @@ def main() -> int:
             if result.returncode:
                 raise AssertionError(f"supported facade failed to build:\n{result.stdout}")
             name = "consumer.exe" if os.name == "nt" else "consumer"
-            executable = next((path for path in (build / args.configuration / name, build / name)
+            executable = next((path for path in (case_build / args.configuration / name, case_build / name)
                                if path.is_file()), None)
             assert executable is not None, "consumer executable missing"
             environment = os.environ.copy()
