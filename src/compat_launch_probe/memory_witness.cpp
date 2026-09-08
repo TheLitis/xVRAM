@@ -1,6 +1,12 @@
 #include "memory_witness.hpp"
 #include "compat_audit_collector/trace_core.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -22,28 +28,44 @@ struct Parameters {
   std::string symbol;
 };
 struct State {
+#ifdef _WIN32
   HANDLE file=INVALID_HANDLE_VALUE;
+#else
+  int file=-1;
+#endif
   std::mutex mutex;
   MemoryRegistry registry;
   std::map<Word,Parameters> pending;
-  Word sequence=0, bytes=0, api_count=0, failures=0, last_api=0;
+  Word sequence=0, bytes=0, api_count=0, failures=0, null_free_noops=0, last_api=0;
   std::atomic_uint64_t errors{0};
   bool closed=false;
   audit::JsonLine line(const char* kind) {
     if (sequence>=record_cap) throw std::runtime_error("memory_record_capacity");
     audit::JsonLine line;
     line.number("schema_version",1); line.string("record_type","xvram.cuda_memory_witness");
-    line.number("sequence",++sequence); line.string("kind",kind);
+    // An abandoned record (for example, a rejected unknown mapping) must not
+    // manufacture a missing-record gap. Commit sequence only with its bytes.
+    line.number("sequence",sequence+1); line.string("kind",kind);
     return line;
   }
   void emit(const audit::JsonLine& line) {
     const auto value=line.finish();
     if (closed || bytes>trace_cap || value.size()>trace_cap-bytes)
       throw std::runtime_error("memory_trace_capacity");
+#ifdef _WIN32
     DWORD written=0;
     if (!WriteFile(file,value.data(),static_cast<DWORD>(value.size()),&written,nullptr)
         || written!=value.size()) throw std::runtime_error("memory_trace_write");
-    bytes+=value.size();
+#else
+    std::size_t offset=0;
+    while (offset<value.size()) {
+      const auto written=::write(file,value.data()+offset,value.size()-offset);
+      if (written<0 && errno==EINTR) continue;
+      if (written<=0) throw std::runtime_error("memory_trace_write");
+      offset+=static_cast<std::size_t>(written);
+    }
+#endif
+    bytes+=value.size(); ++sequence;
   }
 };
 State* state=nullptr;
@@ -168,7 +190,7 @@ void add_resolution(audit::JsonLine& line, const Resolution& value, std::string_
 void add_identity(audit::JsonLine& line, Identity value) {
   line.number("object_id",value.id); line.number("generation",value.generation); line.number("bytes",value.bytes);
 }
-void apply(const Parameters& p, audit::JsonLine& line) {
+void apply(const Parameters& p, audit::JsonLine& line, std::vector<MappingSpan>& unmapped) {
   auto& registry=state->registry;
   if (p.flags) throw std::runtime_error("memory_reserved_flags");
   switch (p.operation) {
@@ -177,6 +199,15 @@ void apply(const Parameters& p, audit::JsonLine& line) {
     add_identity(line,registry.allocate(*static_cast<const CUdeviceptr*>(p.output),p.bytes,
                                        p.operation==Operation::reserve,p.context)); break;
   case Operation::free: case Operation::free_reservation:
+    if (p.operation==Operation::free && !p.address) {
+      // The pinned CUDA Runtime's cudaFree(nullptr) was observed forwarding a
+      // successful cuMemFree_v2(nullptr). Its public contract is a no-op:
+      // https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html
+      // Record that fact without retiring an allocation or advancing revision.
+      // No non-null free, reservation free, or failed API receives this rule.
+      line.boolean("null_input",true); line.boolean("no_op",true);
+      ++state->null_free_noops; break;
+    }
     add_identity(line,registry.release(p.address,p.bytes,p.operation==Operation::free_reservation)); break;
   case Operation::create:
     if (!p.output) throw std::runtime_error("memory_handle_output_missing");
@@ -185,8 +216,19 @@ void apply(const Parameters& p, audit::JsonLine& line) {
   case Operation::release: add_identity(line,registry.release_handle(p.handle)); break;
   case Operation::map: case Operation::unmap: {
     const auto range=registry.resolve(p.address,p.bytes,0,p.context);
-    const auto mapping=p.operation==Operation::map ? registry.map(p.address,p.bytes,p.handle,p.offset)
-                                                 : registry.unmap(p.address,p.bytes);
+    if (p.operation==Operation::unmap) {
+      // Bound the follow-on records before mutating the diagnostic ledger.
+      if (range.mappings.size()>4096 || range.mappings.size()+1>record_cap-state->sequence)
+        throw std::runtime_error("memory_unmap_segment_capacity");
+      unmapped=registry.unmap_range(p.address,p.bytes);
+      if (unmapped.size()>1) {
+        line.number("allocation_id",range.allocation_id); line.number("generation",range.generation);
+        line.number("offset_bytes",range.offset_bytes); line.number("bytes",p.bytes);
+        line.number("mapping_count",unmapped.size());
+        break;
+      }
+    }
+    const auto mapping=p.operation==Operation::map ? registry.map(p.address,p.bytes,p.handle,p.offset) : unmapped.front();
     line.number("allocation_id",range.allocation_id); line.number("generation",range.generation);
     line.number("offset_bytes",mapping.offset_bytes); line.number("bytes",mapping.bytes);
     line.number("mapping_id",mapping.mapping_id); line.number("physical_id",mapping.physical_id);
@@ -223,6 +265,7 @@ void summary() {
   const auto counts=state->registry.counts();
   line.number("errors",state->errors); line.number("api_pairs",state->api_count);
   line.number("failed_apis",state->failures); line.number("open_calls",state->pending.size());
+  line.number("null_free_noops",state->null_free_noops);
   line.number("revision",state->registry.revision());
   line.number("live_allocations",counts.allocations); line.number("live_reservations",counts.reservations);
   line.number("live_handles",counts.handles); line.number("live_mappings",counts.mappings);
@@ -236,8 +279,57 @@ void footer() noexcept {
   try { if (!state->closed) summary(); } catch (...) { ++state->errors; }
   state->mutex.unlock();
 }
+const char* error_category(const std::exception& error) noexcept {
+  // Only static, reviewed categories can reach the trace, never arbitrary
+  // exception messages that might contain a native value or filesystem path.
+  constexpr std::string_view categories[]={"memory_unknown_or_partial_free",
+    "memory_mapped_reservation_free","memory_unknown_reservation","memory_unknown_map_handle",
+    "memory_unknown_handle_release","memory_partial_or_unknown_unmap","memory_transfer_unobserved_range",
+    "memory_transfer_unobserved_source","memory_api_reuse","memory_overlapping_api","memory_api_pair",
+    "memory_callback_site_or_result","memory_parameters_missing","memory_unsupported_api",
+    "memory_overflow","memory_empty_range","memory_mapping_overlap","memory_allocation_overlap",
+    "memory_map_physical_bounds","memory_access_reservation_bounds","memory_unmapped_range",
+    "memory_unmap_reservation_bounds","memory_unmap_segment_capacity","memory_unmap_physical_lifetime",
+    "memory_unmap_access_accounting","memory_unmap_range_accounting",
+    "memory_trace_write","memory_trace_capacity","memory_record_capacity","memory_object_capacity"};
+  for (const auto category:categories) if (category==error.what()) return category.data();
+  return "memory_observer_failure";
+}
+void failure(const CUpti_CallbackData& data, Word api_id, const Parameters* input,
+             const char* category) noexcept {
+  ++state->errors;
+  try {
+    std::lock_guard lock(state->mutex);
+    if (state->closed) return;
+    auto line=state->line("error"); line.number("api_id",api_id);
+    line.string("reason","observer_state_or_unsupported_api");
+    line.string("category",category);
+    line.string("symbol",data.functionName && audit::resolver_symbol(data.functionName) ? data.functionName : "unknown");
+    line.string("callback_stage",data.callbackSite==CUPTI_API_ENTER ? "enter" :
+                                data.callbackSite==CUPTI_API_EXIT ? "exit" : "unknown");
+    line.boolean("parameters_available",input!=nullptr);
+    const bool address=input && input->operation!=Operation::allocate && input->operation!=Operation::reserve
+                             && input->operation!=Operation::create && input->operation!=Operation::release;
+    const bool handle=input && input->operation==Operation::release;
+    line.string("input_kind",address ? "address" : handle ? "handle" : "none");
+    line.boolean("null_input",(address && !input->address) || (handle && !input->handle));
+    Resolution snapshot;
+    if (address && input->address) {
+      // One-byte containment distinguishes a foreign pointer from an interior
+      // pointer. It does not validate the failed API's complete access range.
+      try { snapshot=state->registry.resolve(input->address,1,0,input->context); }
+      catch (...) { /* Unresolvable input remains explicitly unknown. */ }
+    }
+    line.boolean("known_identity",snapshot.known);
+    line.number("allocation_id",snapshot.allocation_id); line.number("generation",snapshot.generation);
+    line.number("offset_bytes",snapshot.offset_bytes); line.number("allocation_bytes",snapshot.allocation_bytes);
+    line.number("revision",state->registry.revision());
+    state->emit(line);
+  } catch (...) { ++state->errors; }
+}
 }
 void initialize() {
+#ifdef _WIN32
   wchar_t path[32768]{};
   const auto n=GetEnvironmentVariableW(L"XVRAM_MEMORY_WITNESS_TRACE",path,32768);
   if (!n) return;
@@ -245,6 +337,14 @@ void initialize() {
   state=new State;
   state->file=CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
   if (state->file==INVALID_HANDLE_VALUE) throw std::runtime_error("memory_trace_create");
+#else
+  const char* path=std::getenv("XVRAM_MEMORY_WITNESS_TRACE");
+  if (!path || !*path) return;
+  if (std::string_view(path).size()>=32768 || state) throw std::runtime_error("memory_path_or_reinitialize");
+  state=new State;
+  state->file=::open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+  if (state->file<0) throw std::runtime_error("memory_trace_create");
+#endif
   auto line=state->line("session"); line.boolean("tensor_bounds_proven",false);
   line.string("scope","device_allocations_and_vmm_only"); line.boolean("host_pinned_observed",false);
   line.boolean("terminal_complete",false); state->emit(line);
@@ -254,6 +354,8 @@ bool enabled() noexcept { return state!=nullptr; }
 bool healthy() noexcept { return state && !state->errors; }
 void api(const CUpti_CallbackData& data, Word api_id) noexcept {
   if (!state || !data.functionName || !memory_mutation(data.functionName)) return;
+  Parameters error_input;
+  bool input_available=false;
   try {
     std::lock_guard lock(state->mutex);
     if (state->closed || state->errors) { ++state->errors; return; }
@@ -274,13 +376,28 @@ void api(const CUpti_CallbackData& data, Word api_id) noexcept {
     if (found==state->pending.end() || found->second.symbol!=data.functionName
         || found->second.context!=reinterpret_cast<std::uintptr_t>(data.context))
       throw std::runtime_error("memory_api_pair");
-    const auto params=found->second;
+    error_input=found->second; input_available=true;
+    const auto& params=error_input;
     state->pending.erase(found);
     const int result=*static_cast<const int*>(data.functionReturnValue);
     auto line=state->line("operation"); line.number("api_id",api_id);
     line.string("symbol",params.symbol); line.integer("result",result);
-    if (result==0) apply(params,line); else ++state->failures;
+    std::vector<MappingSpan> unmapped;
+    if (result==0) apply(params,line,unmapped); else ++state->failures;
     line.number("revision",state->registry.revision()); state->emit(line); ++state->api_count;
+    if (unmapped.size()>1) {
+      const auto range=state->registry.resolve(params.address,params.bytes,0,params.context);
+      for (std::size_t i=0;i<unmapped.size();++i) {
+        const auto& mapping=unmapped[i];
+        auto segment=state->line("unmap_segment"); segment.number("api_id",api_id); segment.number("index",i);
+        segment.number("allocation_id",range.allocation_id); segment.number("generation",range.generation);
+        segment.number("offset_bytes",mapping.offset_bytes); segment.number("bytes",mapping.bytes);
+        segment.number("mapping_id",mapping.mapping_id); segment.number("physical_id",mapping.physical_id);
+        segment.number("physical_generation",mapping.physical_generation);
+        segment.number("physical_offset_bytes",mapping.physical_offset_bytes);
+        segment.number("revision",state->registry.revision()); state->emit(segment);
+      }
+    }
     if (result==0 && params.operation==Operation::access) {
       const auto range=state->registry.resolve(params.address,params.bytes,0,params.context);
       for (std::size_t i=0;i<params.access_count;++i) {
@@ -292,16 +409,9 @@ void api(const CUpti_CallbackData& data, Word api_id) noexcept {
         desc.number("revision",state->registry.revision()); state->emit(desc);
       }
     }
-  } catch (...) {
-    ++state->errors;
-    try {
-      std::lock_guard lock(state->mutex);
-      if (!state->closed) {
-        auto line=state->line("error"); line.number("api_id",api_id);
-        line.string("reason","observer_state_or_unsupported_api"); state->emit(line);
-      }
-    } catch (...) { ++state->errors; }
-  }
+  } catch (const std::exception& error) {
+    failure(data,api_id,input_available ? &error_input : nullptr,error_category(error));
+  } catch (...) { failure(data,api_id,input_available ? &error_input : nullptr,"memory_observer_failure"); }
 }
 Resolution resolve(Word address, Word bytes, int device, CUcontext context, Word alignment) noexcept {
   if (!state) return {};
@@ -318,7 +428,11 @@ void finish() {
   std::lock_guard lock(state->mutex);
   if (state->closed) throw std::runtime_error("memory_double_finish");
   summary();
+#ifdef _WIN32
   if (!FlushFileBuffers(state->file)) throw std::runtime_error("memory_flush_failed");
+#else
+  if (::fsync(state->file)!=0) throw std::runtime_error("memory_flush_failed");
+#endif
   if (state->errors || !state->pending.empty()) throw std::runtime_error("memory_incomplete");
 }
 }

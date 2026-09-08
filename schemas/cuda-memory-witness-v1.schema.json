@@ -1,0 +1,1133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Normalized device allocation and VMM observation v1",
+  "description": "Strict per-record framing only. Offline semantic and independent census validation remain required. No tensor memory or terminal coverage proof is asserted.",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "record_type", "sequence", "kind", "api_id", "symbol", "result", "revision", "allocation_id", "generation", "offset_bytes", "bytes", "mapping_count"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "record_type": {"type": "string", "const": "xvram.cuda_memory_witness"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 4000000},
+        "kind": {"type": "string", "const": "operation"},
+        "api_id": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "symbol": {"type": "string", "const": "cuMemUnmap"},
+        "result": {"type": "integer", "const": 0},
+        "revision": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "allocation_id": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "generation": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "offset_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "mapping_count": {"type": "integer", "minimum": 2, "maximum": 4096}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "record_type", "sequence", "kind", "api_id", "index", "revision", "allocation_id", "generation", "offset_bytes", "bytes", "mapping_id", "physical_id", "physical_generation", "physical_offset_bytes"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "record_type": {"type": "string", "const": "xvram.cuda_memory_witness"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 4000000},
+        "kind": {"type": "string", "const": "unmap_segment"},
+        "api_id": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "index": {"type": "integer", "minimum": 0, "maximum": 4095},
+        "revision": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "allocation_id": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "generation": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "offset_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "mapping_id": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "physical_id": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "physical_generation": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "physical_offset_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "record_type", "sequence", "kind", "api_id", "symbol", "result", "revision", "null_input", "no_op"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "record_type": {"type": "string", "const": "xvram.cuda_memory_witness"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 4000000},
+        "kind": {"type": "string", "const": "operation"},
+        "api_id": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "symbol": {"type": "string", "const": "cuMemFree_v2"},
+        "result": {"type": "integer", "const": 0},
+        "revision": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "null_input": {"type": "boolean", "const": true},
+        "no_op": {"type": "boolean", "const": true}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "scope",
+        "host_pinned_observed",
+        "tensor_bounds_proven",
+        "terminal_complete"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "session"
+        },
+        "scope": {
+          "const": "device_allocations_and_vmm_only"
+        },
+        "host_pinned_observed": {
+          "type": "boolean",
+          "const": false
+        },
+        "tensor_bounds_proven": {
+          "type": "boolean",
+          "const": false
+        },
+        "terminal_complete": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "object_id",
+        "generation",
+        "bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemAlloc_v2",
+            "cuMemAddressReserve",
+            "cuMemFree_v2",
+            "cuMemAddressFree",
+            "cuMemRelease"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "object_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "object_id",
+        "generation",
+        "bytes",
+        "device"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemCreate"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "object_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "allocation_id",
+        "generation",
+        "offset_bytes",
+        "bytes",
+        "mapping_id",
+        "physical_id",
+        "physical_generation",
+        "physical_offset_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemMap",
+            "cuMemUnmap"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "mapping_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "physical_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "physical_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "physical_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "allocation_id",
+        "generation",
+        "offset_bytes",
+        "bytes",
+        "descriptor_count"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemSetAccess"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "descriptor_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "bytes",
+        "zero_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemcpyHtoD_v2",
+            "cuMemcpyHtoD_v2_ptds",
+            "cuMemcpyHtoDAsync_v2",
+            "cuMemcpyHtoDAsync_v2_ptsz",
+            "cuMemcpyDtoH_v2",
+            "cuMemcpyDtoH_v2_ptds",
+            "cuMemcpyDtoHAsync_v2",
+            "cuMemcpyDtoHAsync_v2_ptsz",
+            "cuMemcpyDtoD_v2",
+            "cuMemcpyDtoD_v2_ptds",
+            "cuMemcpyDtoDAsync_v2",
+            "cuMemcpyDtoDAsync_v2_ptsz",
+            "cuMemsetD8_v2",
+            "cuMemsetD8_v2_ptds",
+            "cuMemsetD8Async",
+            "cuMemsetD8Async_ptsz",
+            "cuMemsetD16_v2",
+            "cuMemsetD16_v2_ptds",
+            "cuMemsetD16Async",
+            "cuMemsetD16Async_ptsz",
+            "cuMemsetD32_v2",
+            "cuMemsetD32_v2_ptds",
+            "cuMemsetD32Async",
+            "cuMemsetD32Async_ptsz"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "const": 0
+        },
+        "zero_bytes": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "bytes",
+        "zero_bytes",
+        "allocation_id",
+        "generation",
+        "offset_bytes",
+        "allocation_bytes",
+        "known",
+        "mapped",
+        "readable",
+        "writable"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemcpyHtoD_v2",
+            "cuMemcpyHtoD_v2_ptds",
+            "cuMemcpyHtoDAsync_v2",
+            "cuMemcpyHtoDAsync_v2_ptsz",
+            "cuMemcpyDtoH_v2",
+            "cuMemcpyDtoH_v2_ptds",
+            "cuMemcpyDtoHAsync_v2",
+            "cuMemcpyDtoHAsync_v2_ptsz",
+            "cuMemsetD8_v2",
+            "cuMemsetD8_v2_ptds",
+            "cuMemsetD8Async",
+            "cuMemsetD8Async_ptsz",
+            "cuMemsetD16_v2",
+            "cuMemsetD16_v2_ptds",
+            "cuMemsetD16Async",
+            "cuMemsetD16Async_ptsz",
+            "cuMemsetD32_v2",
+            "cuMemsetD32_v2_ptds",
+            "cuMemsetD32Async",
+            "cuMemsetD32Async_ptsz"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "zero_bytes": {
+          "type": "boolean",
+          "const": false
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "known": {
+          "type": "boolean"
+        },
+        "mapped": {
+          "type": "boolean"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision",
+        "bytes",
+        "zero_bytes",
+        "allocation_id",
+        "generation",
+        "offset_bytes",
+        "allocation_bytes",
+        "known",
+        "mapped",
+        "readable",
+        "writable",
+        "source_allocation_id",
+        "source_generation",
+        "source_offset_bytes",
+        "source_allocation_bytes",
+        "source_known",
+        "source_mapped",
+        "source_readable",
+        "source_writable"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "enum": [
+            "cuMemcpyDtoD_v2",
+            "cuMemcpyDtoD_v2_ptds",
+            "cuMemcpyDtoDAsync_v2",
+            "cuMemcpyDtoDAsync_v2_ptsz"
+          ]
+        },
+        "result": {
+          "type": "integer",
+          "const": 0
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "zero_bytes": {
+          "type": "boolean",
+          "const": false
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "known": {
+          "type": "boolean"
+        },
+        "mapped": {
+          "type": "boolean"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "source_allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "source_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "source_offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "source_allocation_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "source_known": {
+          "type": "boolean"
+        },
+        "source_mapped": {
+          "type": "boolean"
+        },
+        "source_readable": {
+          "type": "boolean"
+        },
+        "source_writable": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "symbol",
+        "result",
+        "revision"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "operation"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "symbol": {
+          "type": "string",
+          "pattern": "^cu(?:MemAlloc|MemFree|MemAddress|MemCreate|MemRelease|MemMap|MemUnmap|MemSetAccess|MemImport|MemExport|MemRetain|Memcpy|Memset)[A-Za-z0-9_]*$"
+        },
+        "result": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "allocation_id",
+        "generation",
+        "offset_bytes",
+        "bytes",
+        "device",
+        "flags",
+        "revision"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "access_descriptor"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "allocation_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "flags": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            3
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "api_id",
+        "reason"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "error"
+        },
+        "api_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "reason": {
+          "type": "string",
+          "const": "observer_state_or_unsupported_api"
+        },
+        "category": {
+          "type": "string",
+          "pattern": "^memory_[a-z_]{1,96}$"
+        },
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
+        },
+        "callback_stage": {
+          "enum": ["enter", "exit", "unknown"]
+        },
+        "parameters_available": {"type": "boolean"},
+        "input_kind": {"enum": ["none", "address", "handle"]},
+        "null_input": {"type": "boolean"},
+        "known_identity": {"type": "boolean"},
+        "allocation_id": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "generation": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "offset_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "allocation_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "revision": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}
+      },
+      "dependentRequired": {
+        "category": ["symbol", "callback_stage", "parameters_available", "input_kind", "null_input", "known_identity", "allocation_id", "generation", "offset_bytes", "allocation_bytes", "revision"],
+        "symbol": ["category"],
+        "callback_stage": ["category"],
+        "parameters_available": ["category"],
+        "input_kind": ["category"],
+        "null_input": ["category"],
+        "known_identity": ["category"],
+        "allocation_id": ["category"],
+        "generation": ["category"],
+        "offset_bytes": ["category"],
+        "allocation_bytes": ["category"],
+        "revision": ["category"]
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "kind",
+        "errors",
+        "api_pairs",
+        "failed_apis",
+        "open_calls",
+        "revision",
+        "live_allocations",
+        "live_reservations",
+        "live_handles",
+        "live_mappings",
+        "allocation_bytes",
+        "reservation_bytes",
+        "physical_bytes",
+        "mapped_bytes",
+        "tensor_bounds_proven",
+        "terminal_complete"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "record_type": {
+          "type": "string",
+          "const": "xvram.cuda_memory_witness"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "kind": {
+          "type": "string",
+          "const": "summary"
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "api_pairs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "failed_apis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "null_free_noops": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "open_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "live_allocations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "live_reservations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "live_handles": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "live_mappings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "allocation_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "reservation_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "physical_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "mapped_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "tensor_bounds_proven": {
+          "type": "boolean",
+          "const": false
+        },
+        "terminal_complete": {
+          "type": "boolean",
+          "const": false
+        }
+      }
+    }
+  ]
+}

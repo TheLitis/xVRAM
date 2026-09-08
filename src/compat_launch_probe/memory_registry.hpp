@@ -189,6 +189,58 @@ public:
     counts_.mapped_bytes-=bytes; retire_physical(value.physical); ++revision_;
     return {value.id,value.physical,value.physical_generation,address-owner->first,bytes,value.physical_offset};
   }
+  std::vector<MappingSpan> unmap_range(Word address, Word bytes) {
+    // Observe a successful native unmap of a union of WHOLE original mappings.
+    // Never split a mapping, bridge a hole, or cross a reservation boundary.
+    // The exact single-mapping unmap() contract above is intentionally unchanged.
+    const auto finish=end(address,bytes);
+    const auto owner=allocation(address,bytes);
+    if (owner==allocations_.end() || !owner->second.reservation)
+      throw std::runtime_error("memory_unmap_reservation_bounds");
+    const auto keys=covering_maps(address,bytes);
+    if (keys.empty() || keys.size()>4096) throw std::runtime_error("memory_unmap_segment_capacity");
+    std::vector<MappingSpan> result;
+    result.reserve(keys.size()); // all retirement storage before any mutation
+    std::vector<std::pair<Word,Word>> physical_uses;
+    physical_uses.reserve(keys.size());
+    Word cursor=address;
+    std::size_t retired_access=0;
+    for (const auto key:keys) {
+      const auto& value=mappings_.at(key);
+      const auto physical=physical_.find(value.physical);
+      if (key!=cursor || value.allocation!=owner->second.id || value.bytes>finish-cursor)
+        throw std::runtime_error("memory_partial_or_unknown_unmap");
+      if (physical==physical_.end() || physical->second.generation!=value.physical_generation)
+        throw std::runtime_error("memory_unmap_physical_lifetime");
+      cursor=sum(cursor,value.bytes);
+      if (value.access.size()>access_count_-retired_access)
+        throw std::runtime_error("memory_unmap_access_accounting");
+      retired_access+=value.access.size();
+      auto uses=std::find_if(physical_uses.begin(),physical_uses.end(),[&](const auto& entry) { return entry.first==value.physical; });
+      if (uses==physical_uses.end()) physical_uses.emplace_back(value.physical,1);
+      else ++uses->second;
+      result.push_back({value.id,value.physical,value.physical_generation,key-owner->first,value.bytes,value.physical_offset});
+    }
+    if (cursor!=finish || counts_.mappings<keys.size() || counts_.mapped_bytes<bytes)
+      throw std::runtime_error("memory_unmap_range_accounting");
+    for (const auto& [key,uses]:physical_uses)
+      if (physical_.at(key).maps<uses) throw std::runtime_error("memory_unmap_physical_lifetime");
+    const auto next_revision=sum(revision_,static_cast<Word>(keys.size()));
+    // Everything below is non-allocating. Physical references are prevalidated,
+    // including a handle released while several mappings still retain it.
+    for (std::size_t i=0;i<keys.size();++i) {
+      mappings_.erase(keys[i]);
+      auto& physical=physical_.at(result[i].physical_id);
+      --physical.maps;
+      if (!physical.retained && !physical.maps) {
+        counts_.physical_bytes-=physical.bytes;
+        physical_.erase(result[i].physical_id);
+      }
+    }
+    access_count_-=retired_access;
+    counts_.mappings-=keys.size(); counts_.mapped_bytes-=bytes; revision_=next_revision;
+    return result;
+  }
   void set_access(Word address, Word bytes, int device, unsigned flags) {
     if (device<0 || (flags!=0 && flags!=1 && flags!=3)) throw std::runtime_error("memory_access_descriptor");
     const auto owner=allocation(address,bytes);

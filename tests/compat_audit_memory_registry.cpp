@@ -88,6 +88,37 @@ void aliases_and_handle_aba() {
   model.release_handle(7);
   check(model.counts().physical_bytes==0,"new generation independent");
 }
+void compound_unmap() {
+  MemoryRegistry model;
+  constexpr Word base=65536, chunk=4096;
+  model.allocate(base,4*chunk,true);
+  model.create(7,chunk);
+  const auto first=model.map(base,chunk,7);
+  const auto second=model.map(base+chunk,chunk,7); // two aliases retain one physical generation
+  const auto third=model.map(base+2*chunk,chunk,7);
+  model.set_access(base,3*chunk,0,3);
+  model.release_handle(7);
+  const auto revision=model.revision();
+  rejected([&]{ model.unmap_range(base+16,3*chunk-16); });
+  rejected([&]{ model.unmap_range(base,3*chunk-16); });
+  rejected([&]{ model.unmap_range(base,4*chunk); });
+  check(model.revision()==revision && model.counts().mappings==3 && model.resolve(base,3*chunk,0).writable,
+        "partial/gapped range rejects before mutation");
+  const auto retired=model.unmap_range(base,3*chunk);
+  check(retired.size()==3 && retired[0].mapping_id==first.mapping_id && retired[1].mapping_id==second.mapping_id
+        && retired[2].mapping_id==third.mapping_id && retired[2].offset_bytes==2*chunk,"ordered complete retirement ledger");
+  check(model.revision()==revision+3 && !model.counts().mappings && !model.counts().physical_bytes
+        && !model.resolve(base,3*chunk,0).mapped,"one range retires three mappings and last released physical authority");
+  model.release(base,4*chunk,true);
+  MemoryRegistry separate;
+  separate.allocate(base,chunk,true); separate.allocate(base+chunk,chunk,true);
+  separate.create(1,chunk); separate.map(base,chunk,1); separate.map(base+chunk,chunk,1);
+  const auto before=separate.revision();
+  rejected([&]{ separate.unmap_range(base,2*chunk); });
+  check(separate.revision()==before && separate.counts().mappings==2,"adjacent reservations cannot be joined");
+  const auto exact=separate.unmap_range(base,chunk);
+  check(exact.size()==1 && exact[0].bytes==chunk,"range API accepts exact single mapping");
+}
 void rejection_and_limits() {
   MemoryRegistry model;
   rejected([&]{ model.allocate(0,1,false); });
@@ -123,7 +154,7 @@ void rejection_and_limits() {
 }
 int main() {
   try {
-    ordinary(); mapping_and_access(); aliases_and_handle_aba(); rejection_and_limits();
+    ordinary(); mapping_and_access(); aliases_and_handle_aba(); compound_unmap(); rejection_and_limits();
     std::cout<<"memory registry: allocation, VMM, access, alias, ABA and limit checks passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
