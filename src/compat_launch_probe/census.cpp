@@ -13,7 +13,13 @@
 namespace xvram::launch_probe::census {
 namespace {
 using audit::JsonLine;
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+constexpr std::uint64_t cap = 256ULL * 1024 * 1024;
+constexpr unsigned trace_version = 2;
+#else
 constexpr std::uint64_t cap = 128ULL * 1024 * 1024;
+constexpr unsigned trace_version = 1;
+#endif
 constexpr std::size_t buffer_bytes = 1024 * 1024;
 struct State {
   HANDLE file = INVALID_HANDLE_VALUE;
@@ -24,7 +30,7 @@ struct State {
   bool closed = false;
   JsonLine line(const char* kind) {
     JsonLine line;
-    line.number("schema_version", 1); line.string("record_type", "xvram.cuda_launch_census");
+    line.number("schema_version", trace_version); line.string("record_type", "xvram.cuda_launch_census");
     line.number("sequence", ++sequence); line.string("kind", kind); return line;
   }
   void emit(const JsonLine& line) {

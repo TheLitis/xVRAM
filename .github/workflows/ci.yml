@@ -121,6 +121,12 @@ jobs:
           cmake --build build-launch-census --config ${{ matrix.build_type }} --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import ctypes,pathlib; p=pathlib.Path('build-launch-census/${{ matrix.build_type }}/xvram_driver_launch_census.dll').resolve(); lib=ctypes.WinDLL(str(p)); assert lib.InitializeInjection()==0"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S src/compat_launch_probe -B build-launch-census -DXVRAM_PROBE_LEGACY_RESOLVER=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-launch-census --config ${{ matrix.build_type }} --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import ctypes,pathlib; p=pathlib.Path('build-launch-census/${{ matrix.build_type }}/xvram_driver_launch_census.dll').resolve(); lib=ctypes.WinDLL(str(p)); assert lib.InitializeInjection()==0"
 
       - name: Build CUDA compatibility profile
         run: cmake --build build --config ${{ matrix.build_type }} --parallel

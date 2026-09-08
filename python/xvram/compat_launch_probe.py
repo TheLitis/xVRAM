@@ -177,6 +177,7 @@ def analyze_trace(path: Path):
     total = 0
     setup = False
     mode = None
+    version = None
     common = {"schema_version", "record_type", "sequence", "kind", "call_id"}
     def integer(record, key, low=0, high=2**64 - 1):
         value = record[key]
@@ -191,21 +192,30 @@ def analyze_trace(path: Path):
             digest.update(raw)
             record = json.loads(raw, object_pairs_hook=_object)
             counts["records"] += 1
-            if record["schema_version"] != 1 or type(record["schema_version"]) is not int or record["record_type"] != "xvram.cuda_launch_probe":
+            if record["schema_version"] not in (1, 2) or type(record["schema_version"]) is not int or record["record_type"] != "xvram.cuda_launch_probe":
                 raise ValueError("trace_version")
+            if version is not None and version != record["schema_version"]:
+                raise ValueError("trace_version_changed")
+            version = record["schema_version"]
             if integer(record, "sequence", 1) != counts["records"]:
                 raise ValueError("trace_sequence")
             kind = record["kind"]
             if kind == "setup":
-                if set(record) != common | {"hooks"} or counts["records"] != 1 or integer(record, "call_id") != 0 or integer(record, "hooks") != 2:
+                if set(record) != common | {"hooks"} or counts["records"] != 1 or integer(record, "call_id") != 0 or integer(record, "hooks") != version + 1:
                     raise ValueError("trace_setup")
                 setup = True
             elif kind == "begin":
-                if set(record) != common | {"api", "metadata", "kernel_name", "parameter_count", "module_resolved"}:
+                fields = common | {"api", "metadata", "kernel_name", "parameter_count", "module_resolved"}
+                if version == 2:
+                    fields |= {"handle_kind"}
+                    if record.get("handle_kind") != ("contextless_kernel" if record.get("api") == "cuLaunchKernel_resolved_legacy" else "function"):
+                        raise ValueError("trace_handle_kind")
+                if set(record) != fields:
                     raise ValueError("trace_fields")
                 if active is not None or integer(record, "call_id", 1) != counts["calls_begun"] + 1:
                     raise ValueError("trace_call_order")
-                if record["api"] not in OBSERVED_APIS or type(record["metadata"]) is not bool or type(record["module_resolved"]) is not bool:
+                allowed = OBSERVED_APIS if version == 1 else {"cuLaunchKernel", "cuLaunchKernel_resolved_ptsz", "cuLaunchKernel_resolved_legacy"}
+                if record["api"] not in allowed or type(record["metadata"]) is not bool or type(record["module_resolved"]) is not bool:
                     raise ValueError("trace_api")
                 if record["api"].startswith("cuLaunch") != setup:
                     raise ValueError("trace_route_setup")

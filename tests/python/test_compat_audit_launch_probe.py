@@ -54,6 +54,34 @@ class ProbeTests(unittest.TestCase):
     def test_pe_named_ordinals(self):
         self.assertEqual(probe.pe_exports(image()), [("cudaLaunchKernel", 1), ("cudaLaunchKernelExC", 2)])
 
+    def test_legacy_resolver_trace_is_separate_v2(self):
+        rows = trace(False)
+        rows.insert(0, dict(schema_version=2, record_type="xvram.cuda_launch_probe", sequence=1,
+                            kind="setup", call_id=0, hooks=3))
+        for index, row in enumerate(rows, 1):
+            row.update(schema_version=2, sequence=index)
+            if row["kind"] == "begin":
+                row["api"] = "cuLaunchKernel_resolved_legacy"
+                row["handle_kind"] = "contextless_kernel"
+        self.assertEqual(self.analyze(rows)["counts"]["calls_returned"], 1)
+        schema_dir = Path(__file__).resolve().parents[2] / "schemas"
+        schema = json.loads((schema_dir / "cuda-launch-probe-trace-v2.schema.json").read_text())
+        for row in rows:
+            jsonschema.validate(row, schema)
+        bad = copy.deepcopy(rows)
+        bad[0]["hooks"] = 2
+        with self.assertRaises(ValueError):
+            self.analyze(bad)
+        bad = copy.deepcopy(rows)
+        bad[1]["schema_version"] = 1
+        with self.assertRaises(ValueError):
+            self.analyze(bad)
+        for row in rows:
+            row["schema_version"] = 1
+        rows[0]["hooks"] = 2
+        with self.assertRaises(ValueError):
+            self.analyze(rows)
+
     def test_pe_corruptions(self):
         for offset, fmt, value in [(60, "<I", 2**32-1), (132, "<H", 0x14c), (148, "<H", 0),
                                    (152, "<H", 0x10b), (536, "<I", 4097), (568, "<H", 2),

@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "call_id",
+        "kind",
+        "hooks"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_probe"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "call_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "const": "setup"
+        },
+        "hooks": {
+          "const": 3
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "call_id",
+        "kind",
+        "api",
+        "handle_kind",
+        "metadata",
+        "kernel_name",
+        "parameter_count",
+        "module_resolved"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_probe"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "call_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "const": "begin"
+        },
+        "api": {
+          "enum": [
+            "cuLaunchKernel",
+            "cuLaunchKernel_resolved_ptsz",
+            "cuLaunchKernel_resolved_legacy"
+          ]
+        },
+        "handle_kind": {
+          "enum": ["function", "contextless_kernel"]
+        },
+        "metadata": {
+          "type": "boolean"
+        },
+        "kernel_name": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "parameter_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "module_resolved": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "call_id",
+        "kind",
+        "index",
+        "offset_bytes",
+        "size_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_probe"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "call_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "const": "parameter"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "offset_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "sequence",
+        "call_id",
+        "kind",
+        "result"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "record_type": {
+          "const": "xvram.cuda_launch_probe"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "call_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "const": "end"
+        },
+        "result": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    }
+  ]
+}

@@ -19,7 +19,9 @@ validate_report(report)
 if args.trace:
     if analyze_trace(args.trace) != report["trace"]:
         raise ValueError("trace_report_mismatch")
-    validator = jsonschema.Draft202012Validator(json.loads((schemas / "cuda-launch-probe-trace-v1.schema.json").read_text()))
+    with args.trace.open("rb") as stream:
+        version = json.loads(stream.readline(65537))["schema_version"]
+    validator = jsonschema.Draft202012Validator(json.loads((schemas / f"cuda-launch-probe-trace-v{version}.schema.json").read_text()))
     with args.trace.open("rb") as stream:
         while line := stream.readline(65537):
             if len(line) > 65536:

@@ -19,12 +19,17 @@ namespace {
 using Launch = decltype(&cuLaunchKernel);
 using xvram::audit::JsonLine;
 constexpr std::uint64_t trace_cap = 128ULL * 1024 * 1024;
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+constexpr unsigned trace_version = 2, hook_count = 3;
+#else
+constexpr unsigned trace_version = 1, hook_count = 2;
+#endif
 thread_local bool inside = false;
 struct State {
   xvram::platform::DynamicLibrary driver;
   std::recursive_mutex calls_mutex;
   HANDLE trace = INVALID_HANDLE_VALUE;
-  Launch legacy = nullptr, per_thread = nullptr;
+  Launch legacy = nullptr, per_thread = nullptr, resolved_legacy = nullptr;
   bool metadata = false;
   std::atomic_bool poisoned{false};
   std::uint64_t sequence = 0, call = 0, bytes = 0;
@@ -35,7 +40,7 @@ struct State {
   }
   JsonLine line(const char* kind, std::uint64_t id) {
     JsonLine value;
-    value.number("schema_version", 1); value.string("record_type", "xvram.cuda_launch_probe");
+    value.number("schema_version", trace_version); value.string("record_type", "xvram.cuda_launch_probe");
     value.number("sequence", ++sequence); value.string("kind", kind); value.number("call_id", id);
     return value;
   }
@@ -51,11 +56,44 @@ struct State {
 std::atomic<State*> current{nullptr}; // process lifetime; never CUDA teardown under loader lock
 std::mutex initialization;
 void checked(CUresult code) { if (code != CUDA_SUCCESS) throw std::runtime_error("driver_query_failed"); }
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+struct ContextlessQuery {
+  State& state;
+  CUkernel kernel;
+  CUstream stream;
+  CUcontext current() {
+    CUcontext result = nullptr;
+    checked(state.get<decltype(&cuCtxGetCurrent)>("cuCtxGetCurrent")(&result));
+    return result;
+  }
+  CUcontext stream_context(CUcontext context) {
+    if (!stream) return context;
+    CUcontext result = nullptr;
+    checked(state.get<decltype(&cuStreamGetCtx)>("cuStreamGetCtx")(stream, &result));
+    return result;
+  }
+  CUfunction function() {
+    CUfunction result = nullptr;
+    checked(state.get<decltype(&cuKernelGetFunction)>("cuKernelGetFunction")(&result, kernel));
+    return result;
+  }
+};
+#endif
 struct Query {
   State& state;
   CUfunction function;
+  bool contextless = false;
+  CUstream stream = nullptr;
   bool resolve() {
     if (!function) return false;
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+    if (contextless) {
+      // Explicit pinned-profile contract, never an INVALID_HANDLE retry or a
+      // guess at the handle's internal representation. Leave launch f unchanged.
+      ContextlessQuery query{state, reinterpret_cast<CUkernel>(function), stream};
+      function = xvram::launch_probe::resolve_contextless(query);
+    }
+#endif
     CUmodule module = nullptr;
     checked(state.get<decltype(&cuFuncGetModule)>("cuFuncGetModule")(&module, function));
     return module != nullptr;
@@ -82,15 +120,17 @@ struct Query {
   }
 };
 
-CUresult dispatch(bool per_thread, CUfunction function, unsigned gx, unsigned gy, unsigned gz,
+CUresult dispatch(unsigned route, CUfunction function, unsigned gx, unsigned gy, unsigned gz,
                   unsigned bx, unsigned by, unsigned bz, unsigned shared, CUstream stream,
                   void** parameters, void** extra) noexcept {
   auto* s = current.load();
   if (!s) return CUDA_ERROR_UNKNOWN;
+  const auto native = route == 2 ? s->resolved_legacy : route == 1 ? s->per_thread : s->legacy;
+  if (!native) return CUDA_ERROR_UNKNOWN;
   // Public entry points can delegate to one another. Preserve their original
   // forwarding chain without recursively running diagnostics. This is NOT a
   // residency interceptor and never claims complete per-GPU-launch accounting.
-  if (inside) return (per_thread ? s->per_thread : s->legacy)(
+  if (inside) return native(
     function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra);
   inside = true;
   struct Guard { ~Guard() { inside = false; } } guard;
@@ -101,12 +141,15 @@ CUresult dispatch(bool per_thread, CUfunction function, unsigned gx, unsigned gy
       const auto id = ++s->call;
       const auto result = xvram::launch_probe::invoke([&] {
         if (!s->metadata) return xvram::launch_probe::Snapshot{};
-        Query query{*s, function};
+        Query query{*s, function, route == 2, stream};
         return xvram::launch_probe::inspect(query);
       }, [&](const auto& snapshot) {
         auto begin = s->line("begin", id);
-        begin.string("api", per_thread ? "cuLaunchKernel_resolved_ptsz" : "cuLaunchKernel");
+        begin.string("api", route == 2 ? "cuLaunchKernel_resolved_legacy" : route == 1 ? "cuLaunchKernel_resolved_ptsz" : "cuLaunchKernel");
         begin.boolean("metadata", s->metadata); begin.boolean("module_resolved", s->metadata);
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+        begin.string("handle_kind", route == 2 ? "contextless_kernel" : "function");
+#endif
         begin.string("kernel_name", snapshot.name); begin.number("parameter_count", snapshot.parameters.size());
         s->emit(begin);
         for (std::size_t i = 0; i < snapshot.parameters.size(); ++i) {
@@ -116,7 +159,7 @@ CUresult dispatch(bool per_thread, CUfunction function, unsigned gx, unsigned gy
         }
       }, [&] {
         xvram::launch_probe::census::Scope marked_forward(id);
-        return static_cast<int>((per_thread ? s->per_thread : s->legacy)(
+        return static_cast<int>(native(
           function, gx, gy, gz, bx, by, bz, shared, stream, parameters, extra)); },
       [&](int code) { auto end = s->line("end", id); end.integer("result", code); s->emit(end); });
       return static_cast<CUresult>(result);
@@ -125,12 +168,18 @@ CUresult dispatch(bool per_thread, CUfunction function, unsigned gx, unsigned gy
 }
 CUresult CUDAAPI legacy(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by,
                       unsigned bz, unsigned shared, CUstream stream, void** params, void** extra) {
-  return dispatch(false, f, gx, gy, gz, bx, by, bz, shared, stream, params, extra);
+  return dispatch(0, f, gx, gy, gz, bx, by, bz, shared, stream, params, extra);
 }
 CUresult CUDAAPI per_thread(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by,
                           unsigned bz, unsigned shared, CUstream stream, void** params, void** extra) {
-  return dispatch(true, f, gx, gy, gz, bx, by, bz, shared, stream, params, extra);
+  return dispatch(1, f, gx, gy, gz, bx, by, bz, shared, stream, params, extra);
 }
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+CUresult CUDAAPI resolved_legacy(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by,
+                               unsigned bz, unsigned shared, CUstream stream, void** params, void** extra) {
+  return dispatch(2, f, gx, gy, gz, bx, by, bz, shared, stream, params, extra);
+}
+#endif
 
 struct Transaction {
   bool active = false;
@@ -209,6 +258,15 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     static_assert(sizeof(s->per_thread) == sizeof(resolved));
     std::memcpy(&s->per_thread, &resolved, sizeof(resolved));
     if (s->legacy == s->per_thread) throw std::runtime_error("unexpected_aliased_launch_exports");
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+    resolved = nullptr; status = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
+    checked(s->get<Resolve>("cuGetProcAddress_v2")("cuLaunchKernel", &resolved, 7000,
+      CU_GET_PROC_ADDRESS_LEGACY_STREAM, &status));
+    if (!resolved || status != CU_GET_PROC_ADDRESS_SUCCESS) throw std::runtime_error("legacy_launch_resolution_failed");
+    std::memcpy(&s->resolved_legacy, &resolved, sizeof(resolved));
+    if (s->resolved_legacy == s->legacy || s->resolved_legacy == s->per_thread)
+      throw std::runtime_error("unexpected_aliased_legacy_entry");
+#endif
     s->trace = CreateFileW(output, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (s->trace == INVALID_HANDLE_VALUE) throw std::runtime_error("trace_create_failed");
     std::lock_guard calls_lock(s->calls_mutex);
@@ -217,8 +275,12 @@ extern "C" __declspec(dllexport) int InitializeInjection() noexcept {
     if (DetourAttach(reinterpret_cast<PVOID*>(&s->legacy), reinterpret_cast<PVOID>(legacy)) != NO_ERROR ||
         DetourAttach(reinterpret_cast<PVOID*>(&s->per_thread), reinterpret_cast<PVOID>(per_thread)) != NO_ERROR)
       throw std::runtime_error("hook_attach_failed");
+#ifdef XVRAM_PROBE_LEGACY_RESOLVER
+    if (DetourAttach(reinterpret_cast<PVOID*>(&s->resolved_legacy), reinterpret_cast<PVOID>(resolved_legacy)) != NO_ERROR)
+      throw std::runtime_error("legacy_hook_attach_failed");
+#endif
     transaction.commit();
-    auto setup = s->line("setup", 0); setup.number("hooks", 2); s->emit(setup);
+    auto setup = s->line("setup", 0); setup.number("hooks", hook_count); s->emit(setup);
     return 1;
   } catch (...) { if (auto* failed = current.load()) failed->poisoned = true; return 0; }
 }

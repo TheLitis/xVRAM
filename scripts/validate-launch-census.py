@@ -24,7 +24,20 @@ jsonschema.validate(report, json.loads((schemas / "cuda-launch-census-report-v1.
 validate_report(report)
 if analyze_trace(args.probe_trace) != probe["trace"] or make_report(probe, args.census_trace) != report:
     raise ValueError("census_input_mismatch")
-trace_schema = json.loads((schemas / "cuda-launch-census-trace-v1.schema.json").read_text())
+with args.probe_trace.open("rb") as stream:
+    version = json.loads(stream.readline(65537))["schema_version"]
+probe_schema = json.loads((schemas / f"cuda-launch-probe-trace-v{version}.schema.json").read_text())
+probe_validators = {variant["properties"]["kind"]["const"]: jsonschema.Draft202012Validator(variant)
+                    for variant in probe_schema["oneOf"]}
+with args.probe_trace.open("rb") as stream:
+    while raw := stream.readline(65537):
+        if len(raw) > 65536:
+            raise ValueError("probe_record_limit")
+        row = json.loads(raw)
+        probe_validators[row["kind"]].validate(row)
+with args.census_trace.open("rb") as stream:
+    version = json.loads(stream.readline(65537))["schema_version"]
+trace_schema = json.loads((schemas / f"cuda-launch-census-trace-v{version}.schema.json").read_text())
 validators = {variant["properties"]["kind"]["const"]: jsonschema.Draft202012Validator(variant)
               for variant in trace_schema["oneOf"]}
 with args.census_trace.open("rb") as stream:

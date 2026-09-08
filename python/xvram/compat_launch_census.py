@@ -42,24 +42,33 @@ def _name(value):
 
 def analyze(path: Path, probe_calls: int):
     _integer(probe_calls)
-    if not probe_calls or path.stat().st_size > CAP:
+    size = path.stat().st_size
+    if not probe_calls or size > 2 * CAP:
         raise ValueError("census_limit")
     digest = hashlib.sha256()
     apis, active, children, kernels, depths, failed = {}, {}, Counter(), [], {}, set()
     summary = None
     sequence = 0
+    total = 0
+    version = None
     common = {"schema_version", "record_type", "sequence", "kind"}
     with path.open("rb") as stream:
         while raw := stream.readline(65537):
-            if len(raw) > 65536 or not raw.endswith(b"\n") or sequence >= 750000:
+            total += len(raw)
+            if len(raw) > 65536 or not raw.endswith(b"\n") or sequence >= (1500000 if version == 2 else 750000):
                 raise ValueError("census_framing_limit")
             digest.update(raw)
             record = json.loads(raw, object_pairs_hook=_unique)
             sequence += 1
             if (not isinstance(record, dict) or record.get("record_type") != "xvram.cuda_launch_census"
-                    or type(record.get("schema_version")) is not int or record["schema_version"] != 1
+                    or type(record.get("schema_version")) is not int or record["schema_version"] not in (1, 2)
                     or _integer(record.get("sequence")) != sequence or summary is not None):
                 raise ValueError("census_sequence")
+            if version is not None and record["schema_version"] != version:
+                raise ValueError("census_version_changed")
+            version = record["schema_version"]
+            if max(size, total) > CAP * version:
+                raise ValueError("census_version_capacity")
             kind = record.get("kind")
             if sequence == 1 and kind != "session":
                 raise ValueError("census_session_missing")
@@ -82,7 +91,7 @@ def analyze(path: Path, probe_calls: int):
                 if not correlation:
                     raise ValueError("census_zero_correlation")
                 if kind == "api_enter":
-                    if key != len(apis) + 1 or len(apis) >= 250000 or (parent and parent not in active):
+                    if key != len(apis) + 1 or len(apis) >= 250000 * version or (parent and parent not in active):
                         raise ValueError("census_api_identity")
                     apis[key] = value
                     active[key] = value

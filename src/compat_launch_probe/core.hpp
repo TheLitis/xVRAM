@@ -19,6 +19,17 @@ struct Snapshot {
   std::vector<Parameter> parameters;
 };
 
+// Context-less kernel resolution is explicit, not an invalid-handle fallback.
+// The resolved function is used only for metadata, never to replace launch f.
+template<class Q> auto resolve_contextless(Q& query) {
+  const auto context = query.current();
+  if (!context || query.stream_context(context) != context)
+    throw std::runtime_error("kernel_context_mismatch");
+  const auto function = query.function();
+  if (!function) throw std::runtime_error("kernel_function_missing");
+  return function;
+}
+
 // Metadata is a new snapshot on EVERY call, never a cache keyed by a reusable
 // native pointer. No borrowed parameter/name storage escapes this operation.
 // Q is injected by tests; the native implementation calls only documented APIs.

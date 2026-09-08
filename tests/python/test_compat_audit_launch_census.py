@@ -4,6 +4,8 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 import jsonschema
 from xvram import compat_launch_census as census
@@ -159,6 +161,32 @@ class CensusTests(unittest.TestCase):
                   "cuda-launch-probe-trace-v1.schema.json": "13d059cdb9a6fa577cfa4977eceba8d80608bce550046251a18890b0483abca7"}
         for name, expected in hashes.items():
             self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+
+    def test_previous_census_contracts_frozen(self):
+        root = Path(__file__).resolve().parents[2] / "schemas"
+        hashes = {"cuda-launch-census-report-v1.schema.json": "4f98c9d213b8c50b27bb6d7b74be0593532e699ac1c07dc7d941a79ceeef025b",
+                  "cuda-launch-census-trace-v1.schema.json": "6857eacde169778cc1fa3958150c232940e1726ed3c6d2dd07b30a72aa209665"}
+        for name, expected in hashes.items():
+            self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), expected)
+
+    def test_trace_v2_has_separate_capacity_and_cannot_mix_versions(self):
+        rows = fixture()
+        self.analyze(rows)
+        with mock.patch.object(Path, "stat", return_value=SimpleNamespace(st_size=census.CAP + 1)):
+            with self.assertRaises(ValueError):
+                census.analyze(self.path, 1)
+        for row in rows:
+            row["schema_version"] = 2
+        self.analyze(rows)
+        with mock.patch.object(Path, "stat", return_value=SimpleNamespace(st_size=census.CAP + 1)):
+            self.assertEqual(census.analyze(self.path, 1)["counts"]["marked_kernels"], 1)
+        root = Path(__file__).resolve().parents[2] / "schemas"
+        schema = json.loads((root / "cuda-launch-census-trace-v2.schema.json").read_text())
+        for row in rows:
+            jsonschema.validate(row, schema)
+        rows[-1]["schema_version"] = 1
+        with self.assertRaises(ValueError):
+            self.analyze(rows)
 
     def test_capture_failure_and_timeout_are_not_hidden(self):
         from xvram import compat_launch_probe as probe
