@@ -111,6 +111,22 @@ set_tests_properties(
 add_executable(xvram-compat-audit-core-tests
   "${PROJECT_SOURCE_DIR}/src/compat_audit_collector/core_tests.cpp"
   "${PROJECT_SOURCE_DIR}/src/platform/sha256.cpp")
+add_executable(xvram-launch-probe-core-tests
+  "${PROJECT_SOURCE_DIR}/src/compat_launch_probe/core_tests.cpp")
+target_compile_features(xvram-launch-probe-core-tests PRIVATE cxx_std_20)
+xvram_enable_warnings(xvram-launch-probe-core-tests)
+add_test(NAME xvram.compat-audit.launch-probe-core COMMAND xvram-launch-probe-core-tests)
+set_tests_properties(xvram.compat-audit.launch-probe-core PROPERTIES TIMEOUT 15 LABELS "no-driver;compat-audit")
+# Compile the opt-in Windows bridge with official headers without enabling or
+# installing its cudart-named DLL in the ordinary build/consumer environment.
+if(WIN32)
+  add_library(xvram-launch-probe-compile-check OBJECT "${PROJECT_SOURCE_DIR}/src/compat_launch_probe/proxy.cpp")
+  target_compile_features(xvram-launch-probe-compile-check PRIVATE cxx_std_20)
+  target_include_directories(xvram-launch-probe-compile-check PRIVATE "${PROJECT_SOURCE_DIR}/src")
+  target_include_directories(xvram-launch-probe-compile-check SYSTEM PRIVATE "${XVRAM_CUDA_INCLUDE_DIR}")
+  target_compile_definitions(xvram-launch-probe-compile-check PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  xvram_enable_warnings(xvram-launch-probe-compile-check)
+endif()
 target_include_directories(xvram-compat-audit-core-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(xvram-compat-audit-core-tests PRIVATE cxx_std_20)
 xvram_enable_warnings(xvram-compat-audit-core-tests)

@@ -41,6 +41,7 @@ jobs:
           python -m xvram.compat_audit_sources --help &&
           python -m xvram.compat_audit_binary --help &&
           python -m xvram.compat_audit_bindings --help &&
+          python -m xvram.compat_launch_probe --help &&
           python -c "from xvram.compat_audit_sources import load_profile; assert len(load_profile()[0]['files']) == 18"
 
       - name: Configure (Windows)
@@ -101,6 +102,18 @@ jobs:
           cmake -S . -B build
           -DXVRAM_BUILD_CUDA_COMPAT=ON
           -DXVRAM_FETCH_CUBLAS_REDIST=ON
+
+      - name: Build opt-in Driver launch diagnostic and reject an unpinned host
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $cudaInclude = (Select-String -Path build/CMakeCache.txt -Pattern '^XVRAM_CUDA_INCLUDE_DIR:PATH=(.*)$').Matches.Groups[1].Value
+          if (-not $cudaInclude) { throw 'CUDA header path missing from configured build' }
+          cmake -S src/compat_launch_probe -B build-launch-probe -A x64 "-DXVRAM_PROBE_CUDA_INCLUDE=$cudaInclude"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-launch-probe --config ${{ matrix.build_type }} --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import ctypes,pathlib; p=pathlib.Path('build-launch-probe/${{ matrix.build_type }}/xvram_driver_launch_probe.dll').resolve(); lib=ctypes.WinDLL(str(p)); assert lib.InitializeInjection()==0"
 
       - name: Build CUDA compatibility profile
         run: cmake --build build --config ${{ matrix.build_type }} --parallel

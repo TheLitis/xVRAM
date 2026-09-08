@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "version",
+    "mode",
+    "mechanism",
+    "configuration",
+    "binary_sha256",
+    "capture",
+    "trace",
+    "diagnostics",
+    "proof",
+    "exit_code"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_type": {
+      "const": "xvram.cuda_launch_probe"
+    },
+    "version": {
+      "const": "0.1.0-dev"
+    },
+    "mode": {
+      "enum": [
+        "routing",
+        "metadata"
+      ]
+    },
+    "mechanism": {
+      "enum": [
+        "runtime_proxy",
+        "driver_entry_probe"
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "microbatch",
+        "gpu_layers",
+        "context_size",
+        "generated_token_limit"
+      ],
+      "properties": {
+        "model": {
+          "const": "14b"
+        },
+        "microbatch": {
+          "enum": [
+            1,
+            128
+          ]
+        },
+        "gpu_layers": {
+          "const": 8
+        },
+        "context_size": {
+          "const": 2048
+        },
+        "generated_token_limit": {
+          "const": 32
+        }
+      }
+    },
+    "binary_sha256": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]+\\.(dll|exe)$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exit_code",
+        "timed_out",
+        "controller_reaped",
+        "process_tree_drained",
+        "elapsed_ms",
+        "stdout_sha256",
+        "output_truncated",
+        "errors"
+      ],
+      "properties": {
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timed_out": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "controller_reaped": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "process_tree_drained": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "elapsed_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "stdout_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_truncated": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^[A-Za-z_][A-Za-z_0-9]*$"
+          }
+        }
+      }
+    },
+    "trace": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sha256",
+            "driver_setup_observed",
+            "counts",
+            "layouts"
+          ],
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "driver_setup_observed": {
+              "type": "boolean"
+            },
+            "counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "records",
+                "calls_begun",
+                "calls_returned",
+                "metadata_calls",
+                "parameters",
+                "native_errors"
+              ],
+              "properties": {
+                "records": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "calls_begun": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "calls_returned": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "metadata_calls": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "parameters": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "native_errors": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "layouts": {
+              "type": "array",
+              "maxItems": 4096,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kernel_name",
+                  "parameters",
+                  "calls"
+                ],
+                "properties": {
+                  "kernel_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "parameters": {
+                    "type": "array",
+                    "maxItems": 256,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "offset_bytes",
+                        "size_bytes"
+                      ],
+                      "properties": {
+                        "offset_bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 65536
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65536
+                        }
+                      }
+                    }
+                  },
+                  "calls": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z_]+$"
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transparent_execution",
+        "oversubscription",
+        "all_launches_covered",
+        "cubin_binding",
+        "semantic_ranges",
+        "gpu_completion"
+      ],
+      "properties": {
+        "transparent_execution": {
+          "const": false
+        },
+        "oversubscription": {
+          "const": false
+        },
+        "all_launches_covered": {
+          "const": false
+        },
+        "cubin_binding": {
+          "const": false
+        },
+        "semantic_ranges": {
+          "const": false
+        },
+        "gpu_completion": {
+          "const": false
+        }
+      }
+    },
+    "exit_code": {
+      "enum": [
+        0,
+        23,
+        26,
+        27,
+        64,
+        70,
+        74
+      ]
+    }
+  }
+}
