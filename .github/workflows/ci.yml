@@ -336,6 +336,7 @@ jobs:
         run: >-
           cmake --build build --config Release --parallel
           --target xvram_torch_runtime xvram-torch-runtime-control-tests xvram-compat-audit-core-tests
+          xvram-launch-probe-core-tests
 
       - name: Verify Stable-ABI build, exports, registration, and control table
         run: >-

@@ -152,3 +152,9 @@ refused initialization in an unpinned Python host. The normal build retains all
 prior frozen-contract tests. Development negative-control and intermediate runs
 are kept separately from `accepted-routing` / `accepted-metadata` and are not
 promoted to the final strict report contract.
+
+CI build wiring was also checked locally against the split CUDA runtime/CRT
+header packages: the Runtime proxy compile-check includes both roots. The
+Stable-ABI job explicitly builds both audit test executables before running the
+five-test no-driver audit subset (5/5 passed locally). These build-only fixes do
+not change the source/DLL hashes of the recorded hardware snapshot.
