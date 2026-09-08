@@ -56,11 +56,19 @@ The target now includes hash-pinned `nvperf_host` and `nvperf_target`, both from
 same CUPTI 13.3.75 archive, verifies their actual loaded identities, and reports
 sampling/data/cleanup results independently.
 
-The fresh isolated hardware check saw device support and successful kernel launch,
+The initial isolated hardware check saw device support and successful kernel launch,
 sync, module unload and context destroy, but both data collection and sampler disable
 returned **35 (`CUPTI_ERROR_INSUFFICIENT_PRIVILEGES`)**. This is a real permissions
 barrier to this PC-sampling path, not a finding that transparent execution is impossible.
-The report is `permission_required`, exit `23`; no proof/cleanup success is invented.
+That report remains `permission_required`, exit `23`; no proof/cleanup success is invented.
+
+A subsequent authorized administrative run on 2026-09-08 passed the same pinned
+executable and dependencies: actual data collection, sampler disable and every
+CUDA cleanup stage returned success. Its schema-validated report is `ready`, exit
+`0`, with the controller reaped and its process tree drained. A same-day medium-token
+control run still returned `permission_required`. The permissions barrier is therefore
+resolved for the explicitly elevated diagnostic, not for the existing desktop process.
+See the [follow-up record](acceptance/phase6b0h-permissions-20260908.json).
 
 Use the controller rather than directly running the executable:
 
@@ -72,13 +80,14 @@ python -m xvram.compat_pc_preflight `
 ```
 
 It pins app-local dependencies, uses a fresh directory, imposes a 30-second deadline
-and owns/reaps only its child tree. It emits `xvram.cuda_pc_preflight` v1. A future
+and owns/reaps only its child tree. It emits `xvram.cuda_pc_preflight` v1. A
 `ready` result is permission/readiness evidence only, never execution proof.
 Do not run a longer model sampling attempt until this gate succeeds.
 
 NVIDIA's [documented remedy](https://developer.nvidia.com/ERR_NVGPUCTRPERM) includes
-running the diagnostic with administrative privileges. An elevated child requires
-an explicit UAC interaction; the current implementation never elevates itself or
+running the diagnostic with administrative privileges. Whether elevation shows a
+UAC prompt depends on Windows policy; suppressing prompts does not elevate an
+already-running process. The controller implementation never elevates itself or
 changes driver, TDR, registry, NVIDIA settings or system-wide counter permissions.
 
 ## Remaining proof work

@@ -1,0 +1,45 @@
+{
+  "phase": "6b.0h",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "source_commit": "75683bd5aceb583c7b2d6c8f9a06f8c046c565d2",
+  "increment": "authorized_administrative_pc_sampling_preflight",
+  "verdict": "NO-GO",
+  "pc_preflight": {
+    "report": "artifacts/phase6b0h-permissions-20260908/elevated-python-token/pc-preflight.json",
+    "report_sha256": "480ee5bf1ef18384448d5ae26edd8d7782aff191019932c0bc9eb3899756e56f",
+    "diagnostic_exe_sha256": "6f654cd3765ec68793e46d33bfdaeeb3a75fb9ab3ccd9d36d54ae9dbbc75887e",
+    "administrative_token_verified": true,
+    "schema_validated": true,
+    "status": "ready",
+    "exit_code": 0,
+    "pc_sampling_get_data": 0,
+    "pc_sampling_disable": 0,
+    "kernel_launch": 0,
+    "context_synchronize": 0,
+    "module_unload": 0,
+    "context_destroy": 0,
+    "controller_reaped": true,
+    "process_tree_drained": true,
+    "residual_diagnostic_processes": 0,
+    "settings_changed_by_diagnostic": false
+  },
+  "control": {
+    "report": "artifacts/phase6b0h-permissions-20260908/current-token/pc-preflight.json",
+    "token": "medium",
+    "status": "permission_required",
+    "exit_code": 23
+  },
+  "gates": {
+    "memory_bounds": false,
+    "cubin_binding": false,
+    "device_ordering": false,
+    "trace_completeness": false
+  },
+  "limitations": [
+    "Readiness of the empty-kernel diagnostic is not sampled coverage of model kernels.",
+    "No model sampling prototype is accepted by this run.",
+    "All four execution proof gates and the full model/microbatch matrix remain open.",
+    "Normal administrative child launch only; no system permissions were changed by the diagnostic."
+  ]
+}
