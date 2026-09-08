@@ -1,5 +1,10 @@
 # Phase 6b.0e — simultaneous launch census
 
+Historical result below. The [Phase 6b.0f follow-up](cuda-launch-legacy.md) subsequently
+identified a distinct documented legacy resolver entry and marked all observed
+kernels in three new 14B runs. Memory-contract and terminal-completeness gates
+remain open; the original acceptance evidence here is unchanged.
+
 ## Result: the public-entry interception gap is confirmed, not fixed
 
 The opt-in census observes CUPTI Runtime/Driver callbacks and GPU kernel activities

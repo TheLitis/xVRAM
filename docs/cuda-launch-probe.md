@@ -1,5 +1,9 @@
 # Phase 6b.0d — active launch diagnostics, not residency interception
 
+Historical pilot below. The [Phase 6b.0f follow-up](cuda-launch-legacy.md) adds a
+distinct legacy resolver route and closes the observed 14B routing gap; the earlier
+pilot evidence and its limits remain unchanged.
+
 ## Approved boundary and result
 
 The user approved active diagnostic interception after the passive audit reached

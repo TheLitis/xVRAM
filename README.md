@@ -255,6 +255,12 @@ parameter layouts for 35 of the 39 observed names and adds bounded source-only m
 arithmetic. Captured-module bindings and live tensor bounds remain unproven: this is
 offline evidence progress, not permission to begin interception or a GO verdict.
 
+The [active routing follow-up](docs/cuda-launch-legacy.md) now marks all observed
+GPU kernels in three unchanged-backend 14B CPU-offload runs: 8,776/8,776 at
+microbatch 128 and 26,860/26,860 at microbatch 1. Per-call metadata covers all 39
+kernel-name groups in the metadata run. This closes the demonstrated routing gap,
+not the memory-contract, terminal-capture or real oversubscription gates.
+
 ## Build
 
 Requirements:

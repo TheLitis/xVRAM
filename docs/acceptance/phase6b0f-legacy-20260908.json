@@ -1,0 +1,292 @@
+{
+  "phase": "6b.0f",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "verdict": "OBSERVED_14B_ROUTING_GAP_CLOSED_NO_GO_FOR_RESIDENCY_INTERCEPTION",
+  "profile": {
+    "os": "Windows x64 WDDM",
+    "gpu": "RTX 3070",
+    "vram_bytes": 8589934592,
+    "driver_version": "616.56",
+    "driver_sha256": "dca7a0c465975a95786c8a42cf0cdcffbef5b7306c6baae71a3dec658cae9a3d",
+    "model": "Qwen2.5-14B-Instruct-GGUF Q4_K_M",
+    "microbatch": [
+      128,
+      1
+    ],
+    "gpu_layers": 8,
+    "context_size": 2048,
+    "generated_token_limit": 32,
+    "ordinary_cpu_offload": true,
+    "xvram_oversubscription": false
+  },
+  "build": {
+    "configuration": "Release",
+    "source_commit": "e019210ff6fee4e1ed6bb895c6796bc8d669cbbb",
+    "built_from_working_tree_before_source_commit": true,
+    "driver_census_dll_sha256": "a2bb1dda33032d7d1cb4ba44139ea95fe7ecc7d81f650c3fd586fcfc979fd644",
+    "source_hashes": {
+      ".github/workflows/ci.yml": "72cab98331dc55590859a714ea23dea4e478465c1288d03e0aa602cabf1ef668",
+      "python/xvram/compat_launch_census.py": "ab66ee8c2fd3657abc58432656a508df78e142ce156d7cc809ddb1ba7b9c0d13",
+      "python/xvram/compat_launch_probe.py": "f2a89dcf0affdfb60fdd954202964a119706fcd1f1be987a118b42a226ce5503",
+      "schemas/cuda-launch-census-trace-v2.schema.json": "82da749fadfdce78c809f49c9faaa92f0d7a7d3279da56c170d95d75527909b5",
+      "schemas/cuda-launch-probe-trace-v2.schema.json": "74cbbef077e07aee1d26c0b0daa2ea6746f1ca9cfb2bf6aad0e5aaabc6ce2356",
+      "scripts/validate-launch-census.py": "529691a2e1598ba4ce51e67123e402ca81c299eb908e4cc59599f42073f45c1f",
+      "scripts/validate-launch-probe.py": "64bf6f3e539e218e803bd86181bb69cc67ca7b70c002538c900a2667e4ad254a",
+      "src/compat_launch_probe/CMakeLists.txt": "6c485621722848285c35942c33cd411fbd775510263168e69efc05609b0c0330",
+      "src/compat_launch_probe/census.cpp": "b450cb0aceb35667231d270288429ef4ac79e5fe5865a631f6c44a1ec4038cf3",
+      "src/compat_launch_probe/core.hpp": "99f2efbafae7c337c5ce11826b9559980b1124989360953c4ef1163c16ee7a31",
+      "src/compat_launch_probe/core_tests.cpp": "161c6bb79c9b8a70b1b7a6c003262672fc3c49447b85c79b00fa5133077ab69e",
+      "src/compat_launch_probe/driver_probe.cpp": "15680e7d2c5071377c0640638c23552ef62d22ac433d45aead8b826614e36491",
+      "tests/python/test_compat_audit_launch_census.py": "570c76308e1df8f2a0932f06a3d2cb1c3ccb5395098a5c30aff47052769c2cf7",
+      "tests/python/test_compat_audit_launch_probe.py": "8d018594304864d326f59d9c276a56f4bc760b29479366b0c422c647f31ba723"
+    },
+    "base_source_evidence": "phase6b0e-census-20260908.json"
+  },
+  "dependencies": {
+    "cupti": {
+      "version": "13.3.75",
+      "manifest": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.3.1.json",
+      "archive_sha256": "298eb0dfbd7eb63b63aab0533b4ba1ab2542c2ea03842a744973c7f38d0982b3",
+      "dll": "cupti64_2026.2.1.dll",
+      "dll_sha256": "9b10d2fafaff1a4dc9e447c4a1355fccb04ee024fa7e7d28c9e4c5ab53347faf",
+      "system_install_changed": false
+    },
+    "detours": {
+      "commit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+      "archive_sha256": "fef0b17c5c3c9356fb8ba7366a3b196149daadd131fb6a92abeda1cb4d3b9b85"
+    }
+  },
+  "cases": [
+    {
+      "mode": "routing",
+      "artifact_directory": "artifacts/phase6b0f-legacy-20260908/accepted-routing",
+      "configuration": {
+        "model": "14b",
+        "microbatch": 128,
+        "gpu_layers": 8,
+        "context_size": 2048,
+        "generated_token_limit": 32
+      },
+      "artifact_hashes": {
+        "probe.json": "1cb1a33f4415989cd92cfb23292752938eb9a334c040fd26a3846e6caa0bc169",
+        "launches.jsonl": "c1226f77bf8b3f8b3a507b3521fd7cf164d4a3c3c3e8f8c73730f28da4de9350",
+        "census-report.json": "7ba811f3a850ab3f913f3cde584d78506bcc9b5837db63f10cc4dfe056397b74",
+        "census.jsonl": "e7f8b7e1704c72596201194ccda298142433c7f953cb375bd2a08607f0afc66b"
+      },
+      "counts": {
+        "gpu_kernels_observed": 8776,
+        "marked_kernels": 8776,
+        "unmarked_kernels": 0,
+        "uncorrelated_kernels": 0,
+        "api_pairs": 95289,
+        "open_api_calls": 0,
+        "probe_calls_observed": 8776,
+        "probe_calls_with_gpu_activity": 8776,
+        "buffers_outstanding": 0
+      },
+      "records": 199356,
+      "kernel_name_groups": 39,
+      "metadata_layouts": 0,
+      "probe_counts": {
+        "records": 17553,
+        "calls_begun": 8776,
+        "calls_returned": 8776,
+        "metadata_calls": 0,
+        "parameters": 0,
+        "native_errors": 0
+      },
+      "exit_code": 0,
+      "capture": {
+        "elapsed_ms": 15347.092399984831,
+        "errors": [],
+        "exit_code": 0,
+        "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+        "process_tree_drained": true,
+        "output_truncated": false,
+        "timed_out": false,
+        "controller_reaped": true
+      },
+      "footer": {
+        "schema_version": 2,
+        "record_type": "xvram.cuda_launch_census",
+        "sequence": 199356,
+        "kind": "summary",
+        "errors": 0,
+        "dropped": 0,
+        "buffers_outstanding": 0,
+        "terminal_complete": false
+      }
+    },
+    {
+      "mode": "metadata",
+      "artifact_directory": "artifacts/phase6b0f-legacy-20260908/accepted-metadata",
+      "configuration": {
+        "model": "14b",
+        "microbatch": 128,
+        "gpu_layers": 8,
+        "context_size": 2048,
+        "generated_token_limit": 32
+      },
+      "artifact_hashes": {
+        "probe.json": "dd86a3916a050c596a1b27797e7ae6439e97ff8523507288b21eff4f01ca9dbf",
+        "launches.jsonl": "3fcde43c069e74a57fe5d65ce1efd1078b5c465795e5a5a5e0653bd8d992fbfe",
+        "census-report.json": "4887f9f209f26702867a63e140ad5c8c0dbb972966f2e4dc00e65725c0aaa358",
+        "census.jsonl": "a2fd6e5558ded26ab3b6796f47e43eff7d1084ed8aed900bcd928a3d42f71092"
+      },
+      "counts": {
+        "gpu_kernels_observed": 8776,
+        "marked_kernels": 8776,
+        "unmarked_kernels": 0,
+        "uncorrelated_kernels": 0,
+        "api_pairs": 290397,
+        "open_api_calls": 0,
+        "probe_calls_observed": 8776,
+        "probe_calls_with_gpu_activity": 8776,
+        "buffers_outstanding": 0
+      },
+      "records": 589572,
+      "kernel_name_groups": 39,
+      "metadata_layouts": 39,
+      "probe_counts": {
+        "records": 160293,
+        "calls_begun": 8776,
+        "calls_returned": 8776,
+        "metadata_calls": 8776,
+        "parameters": 142740,
+        "native_errors": 0
+      },
+      "exit_code": 0,
+      "capture": {
+        "elapsed_ms": 17412.7135000017,
+        "errors": [],
+        "output_truncated": false,
+        "exit_code": 0,
+        "controller_reaped": true,
+        "process_tree_drained": true,
+        "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+        "timed_out": false
+      },
+      "footer": {
+        "schema_version": 2,
+        "record_type": "xvram.cuda_launch_census",
+        "sequence": 589572,
+        "kind": "summary",
+        "errors": 0,
+        "dropped": 0,
+        "buffers_outstanding": 0,
+        "terminal_complete": false
+      }
+    },
+    {
+      "mode": "routing",
+      "artifact_directory": "artifacts/phase6b0f-legacy-20260908/accepted-routing-ub1",
+      "configuration": {
+        "model": "14b",
+        "microbatch": 1,
+        "gpu_layers": 8,
+        "context_size": 2048,
+        "generated_token_limit": 32
+      },
+      "artifact_hashes": {
+        "probe.json": "374ca9c36a98c36d5d15cf666452f89a9a7fe16968b5793456ada4a6e8a8b69b",
+        "launches.jsonl": "bdc44186abaf4fc41ff55f27367531d192d34888f89bcc43370f2103503dbcfb",
+        "census-report.json": "4e3104d9c6560329de79736a1e1cee9cee9c7d8f1a0b36a5246335f1ab342793",
+        "census.jsonl": "701e9cfaccb27c0f34fb13883c4b1efdcd33a804e974ca8d04bd64311b54c8c6"
+      },
+      "counts": {
+        "gpu_kernels_observed": 26860,
+        "marked_kernels": 26860,
+        "unmarked_kernels": 0,
+        "uncorrelated_kernels": 0,
+        "api_pairs": 262843,
+        "open_api_calls": 0,
+        "probe_calls_observed": 26860,
+        "probe_calls_with_gpu_activity": 26860,
+        "buffers_outstanding": 0
+      },
+      "records": 552548,
+      "kernel_name_groups": 15,
+      "metadata_layouts": 0,
+      "probe_counts": {
+        "records": 53721,
+        "calls_begun": 26860,
+        "calls_returned": 26860,
+        "metadata_calls": 0,
+        "parameters": 0,
+        "native_errors": 0
+      },
+      "exit_code": 0,
+      "capture": {
+        "process_tree_drained": true,
+        "elapsed_ms": 45338.92590002506,
+        "controller_reaped": true,
+        "output_truncated": false,
+        "exit_code": 0,
+        "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+        "timed_out": false,
+        "errors": []
+      },
+      "footer": {
+        "schema_version": 2,
+        "record_type": "xvram.cuda_launch_census",
+        "sequence": 552548,
+        "kind": "summary",
+        "errors": 0,
+        "dropped": 0,
+        "buffers_outstanding": 0,
+        "terminal_complete": false
+      }
+    }
+  ],
+  "validation": {
+    "release_ctest_serial": {
+      "passed": 86,
+      "total": 86
+    },
+    "debug_ctest_serial": {
+      "passed": 82,
+      "total": 82
+    },
+    "python_audit_tests": {
+      "run": 314,
+      "skipped": 4,
+      "failed": 0
+    },
+    "probe_python_tests": 13,
+    "census_python_tests": 18,
+    "strict_report_and_full_trace_validation": true,
+    "census_records_validated": 1341476,
+    "installed_python_smoke": true,
+    "previous_frozen_contracts_passed": true,
+    "no_residual_llama_process_observed": true
+  },
+  "development_evidence_not_accepted": [
+    {
+      "directory": "artifacts/phase6b0e-census-20260908/legacy-routing",
+      "reason": "Initial routing evidence predates final v2 handle-kind field."
+    },
+    {
+      "directory": "artifacts/phase6b0e-census-20260908/legacy-metadata",
+      "reason": "Contextless handle rejected by function metadata API; no fallback or launch replay."
+    },
+    {
+      "directory": "artifacts/phase6b0e-census-20260908/legacy-kernel-metadata",
+      "reason": "Successful per-call metadata exceeded old 128 MiB census capacity; report failed closed."
+    },
+    {
+      "directory": "artifacts/phase6b0f-legacy-20260908/metadata",
+      "reason": "Successful development run predates final context-resolution refactor."
+    }
+  ],
+  "limitations": [
+    "All three accepted runs use ordinary CPU offload, not xVRAM oversubscription.",
+    "Every observed GPU activity is marked; complete terminal GPU-tail capture remains unproven.",
+    "The legacy route declares a pinned contextless-kernel contract; it does not infer arbitrary handle types.",
+    "Metadata layouts do not prove typed tensor, alias, padding, indirect or opaque-structure bounds.",
+    "Live launch-to-cubin binding, device ordering and working-set/budget admission remain unresolved.",
+    "No 32B active-interception acceptance was run in this follow-up.",
+    "Identical visible stdout digests do not establish numerical/tensor-level reference equality.",
+    "Production residency, original backend, driver, TDR and registry are unchanged."
+  ]
+}

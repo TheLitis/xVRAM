@@ -356,6 +356,21 @@ the active routing gap, not its solution. The actual unmarked entry path, cubin
 identity and typed memory/ordering/budget contracts remain unresolved. Terminal
 completeness stays false; no residency interception or oversubscription was added.
 
+### Phase 6b.0f legacy resolver — observed routing gap closed for tested 14B runs
+
+The [legacy-resolved launch follow-up](cuda-launch-legacy.md) adds a third documented
+Driver resolver entry and explicit contextless-kernel metadata resolution. New
+14B CPU-offload runs mark 8,776/8,776 observed kernels at microbatch 128 in both
+routing and metadata modes, and 26,860/26,860 at microbatch 1 in routing mode.
+All 39 kernel-name groups in the metadata run have live parameter layouts.
+No observed kernels are unmarked or uncorrelated; reported losses/errors are zero.
+
+This resolves the demonstrated routing gap, not transparent memory management.
+All completeness and oversubscription proof flags remain false. Live cubin binding,
+typed/indirect memory bounds, device ordering, budget admission, terminal capture
+and the 32B active matrix remain outstanding. Production runtime and prior contracts
+are unchanged; the original backend still executes with ordinary CPU offload.
+
 ## Phase 6b.1 and later — evidence gates remain mandatory
 
 1. Resolve the audit's concrete evidence gaps and validate a bounded unchanged-backend
