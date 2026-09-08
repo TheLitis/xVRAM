@@ -261,6 +261,11 @@ microbatch 128 and 26,860/26,860 at microbatch 1. Per-call metadata covers all 3
 kernel-name groups in the metadata run. This closes the demonstrated routing gap,
 not the memory-contract, terminal-capture or real oversubscription gates.
 
+The [execution-proof stage](docs/cuda-execution-proof.md) adds conditional memory
+and event-order verifiers and cross-checks live ABI layouts against static cubin
+candidates. Native witness integration is still in progress; all four execution
+proof gates remain unproven.
+
 ## Build
 
 Requirements:

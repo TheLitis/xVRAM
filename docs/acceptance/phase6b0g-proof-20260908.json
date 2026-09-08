@@ -1,0 +1,109 @@
+{
+  "phase": "6b.0g",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "stage_status": "in_progress",
+  "increment": "conditional_checkers_and_cross_evidence_reconciliation",
+  "verdict": "NO-GO",
+  "source_commit": "3812725cd6a821075bacf7762377bb079515156f",
+  "source_hashes": {
+    "python/xvram/compat_audit_execution.py": "5c1778eb7c8f4911a66b969fe9b6e6c2517ccb590ac54a0ebdd98a7d51344b3f",
+    "python/xvram/compat_audit_proof.py": "b39ed48aaa191b0e1c35f875c11468e1235eab9a3c8a4b8f5b5133432d4a33ab",
+    "schemas/cuda-execution-evidence-v1.schema.json": "c0241c6fb205f14dbf906920f4e0166d461d6d28e969a21ea5a9a100ddd8005a",
+    "scripts/validate-execution-evidence.py": "fb9b8235007bf59653be7ee843cdf9c716e244ec432f9ad2c8bb1f7fea328d6d",
+    "tests/python/test_compat_audit_execution.py": "cd23d9c4833ad6397976b81f0fb1d8e6fb75afde50f0eca1e3ebfd681d9f6bd9",
+    "tests/python/test_compat_audit_proof.py": "28b385eef15e5b15a70d1d1d5e3709e2a809348f4057fdb719bc8227ee9eea24"
+  },
+  "artifact": {
+    "path": "artifacts/phase6b0g-proof-20260908/accepted-execution-evidence.json",
+    "sha256": "eed5de7453e99329cff64ab23849bc33391b25468c55c24fdf13ec3a9de8bb6c"
+  },
+  "inputs": {
+    "metadata_capture": "artifacts/phase6b0f-legacy-20260908/accepted-metadata",
+    "static_binary_evidence": "artifacts/phase6b0-binary-evidence-20260906/binary-evidence.json",
+    "hashes": {
+      "probe_report": "dd86a3916a050c596a1b27797e7ae6439e97ff8523507288b21eff4f01ca9dbf",
+      "probe_trace": "3fcde43c069e74a57fe5d65ce1efd1078b5c465795e5a5a5e0653bd8d992fbfe",
+      "census_report": "4887f9f209f26702867a63e140ad5c8c0dbb972966f2e4dc00e65725c0aaa358",
+      "census_trace": "a2fd6e5558ded26ab3b6796f47e43eff7d1084ed8aed900bcd928a3d42f71092",
+      "binary_evidence": "ded250d35bad4ec3c5b0375209f5328a4f17fba61c1052e1b78c3f2c30c0b8ed"
+    }
+  },
+  "coverage": {
+    "observed_launches": 8776,
+    "metadata_calls": 8776,
+    "live_layouts": 39,
+    "matching_candidate": 35,
+    "ambiguous_candidates": 0,
+    "abi_mismatch": 0,
+    "no_static_candidate": 4,
+    "observed_launches_reconciled": true
+  },
+  "library_calls_without_static_candidate": 192,
+  "gates": {
+    "memory_bounds": {
+      "proven": false,
+      "blockers": [
+        "typed_invocation_scalars_not_captured",
+        "tensor_subranges_and_aliases_not_bound",
+        "indirect_accesses_and_native_scratch_not_bounded"
+      ]
+    },
+    "cubin_binding": {
+      "proven": false,
+      "blockers": [
+        "native_module_to_cubin_identity_edge_missing",
+        "static_candidates_missing"
+      ]
+    },
+    "device_ordering": {
+      "proven": false,
+      "blockers": [
+        "generation_scoped_stream_event_edges_missing",
+        "host_api_return_is_not_gpu_retirement"
+      ]
+    },
+    "trace_completeness": {
+      "proven": false,
+      "blockers": [
+        "producer_quiescence_barrier_missing",
+        "terminal_gpu_drain_and_flush_unproven"
+      ]
+    }
+  },
+  "validation": {
+    "release_ctest": {
+      "passed": 86,
+      "total": 86
+    },
+    "debug_ctest": {
+      "passed": 82,
+      "total": 82
+    },
+    "audit_python_tests": {
+      "run": 350,
+      "skipped": 4,
+      "failed": 0
+    },
+    "new_conditional_proof_tests": 23,
+    "new_execution_evidence_tests": 13,
+    "report_schema_semantics_exact_inputs": true,
+    "installed_python_smoke": true,
+    "prior_frozen_contracts_passed": true
+  },
+  "scope": {
+    "new_gpu_runs": 0,
+    "native_collector_changed": false,
+    "production_runtime_changed": false,
+    "abi_or_existing_schema_changed": false,
+    "live_witness_integration_complete": false
+  },
+  "limitations": [
+    "Conditional-model inputs are declarations, not captured proof.",
+    "All 35 exact ABI matches remain static candidates, not live cubin bindings.",
+    "Native library/module/cubin lifetimes and typed invocation inputs are not yet bound.",
+    "Event model is single-context and explicit-stream; default-stream implicit ordering, PDL, graphs and cross-context waits are excluded.",
+    "Terminal closure requires a validated live producer barrier, GPU drain and final flush outside callbacks and loader lock.",
+    "The reused captures use ordinary CPU offload, not xVRAM oversubscription."
+  ]
+}

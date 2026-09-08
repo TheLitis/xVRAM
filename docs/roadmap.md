@@ -373,6 +373,14 @@ are unchanged; the original backend still executes with ordinary CPU offload.
 
 ## Phase 6b.1 and later — evidence gates remain mandatory
 
+The [execution-proof stage](cuda-execution-proof.md) is now **in progress**. Its
+first increment adds conditional tensor-range and generation-scoped event-order
+checkers plus strict cross-evidence analysis. Of 39 live layouts, 35 exactly match
+one pinned static ABI candidate and four library layouts are absent from that
+inventory; none is promoted to a cubin or memory binding. Native witness capture,
+ordering integration and terminal quiescence remain unfinished. Existing hardware
+traces were reanalyzed; this increment ran no new GPU workload.
+
 1. Resolve the audit's concrete evidence gaps and validate a bounded unchanged-backend
    interception design. Only then implement real 14B → 32B generation without CPU
    offload of the main computation. A GO audit alone is not that execution proof.
