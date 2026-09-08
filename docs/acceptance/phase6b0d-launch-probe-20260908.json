@@ -1,0 +1,134 @@
+{
+  "phase": "6b.0d",
+  "date": "2026-09-08",
+  "version": "0.1.0-dev",
+  "verdict": "PARTIAL_ACTIVE_ROUTING_NO_GO_FOR_RESIDENCY_INTERCEPTION",
+  "profile": {
+    "os": "Windows x64 WDDM",
+    "gpu": "RTX 3070",
+    "driver_version": "616.56",
+    "driver_sha256": "dca7a0c465975a95786c8a42cf0cdcffbef5b7306c6baae71a3dec658cae9a3d",
+    "model": "Qwen2.5-14B-Instruct-GGUF Q4_K_M",
+    "microbatch": 128,
+    "gpu_layers": 8,
+    "context_size": 2048,
+    "generated_token_limit": 32,
+    "ordinary_cpu_offload": true,
+    "xvram_oversubscription": false
+  },
+  "build": {
+    "configuration": "Release",
+    "parent_commit": "9f53e3aca641aeb85b390f65d277bbabe103ccb6",
+    "built_from_working_tree_before_source_commit": true,
+    "source_commit": "d495119e070c2d7cbe7c30b71bcf3dab9394ca86",
+    "driver_dll_sha256": "4a391194021bcae8d284b01fe0879b72c68cda7c15e14589dd430397a9ad5599",
+    "source_hashes": {
+      "src/compat_launch_probe/core.hpp": "375edaf47cc96cf61be5e5e3fc58315ff1eb981055e4b98d26c914e47376dbc7",
+      "src/compat_launch_probe/proxy.cpp": "b7f8f5d6b84147f450b969edb64de54ac65bf6db87bb25c74981014ebad75839",
+      "src/compat_launch_probe/driver_probe.cpp": "6cf6bd8647a649eb8cd771278dfcc92faf7011694614427a3dfc2ffc0283389d",
+      "src/compat_launch_probe/CMakeLists.txt": "06bd8aaa41ce37f295fe52cf0bb76b716c73cf71d542d2f5116c034c4094fbce",
+      "python/xvram/compat_launch_probe.py": "d4cf89e62ad63b31ba426076848818370c8211b90946776575658024a5728dde",
+      "schemas/cuda-launch-probe-report-v1.schema.json": "fe3ca62df95d715defe4328a3f40afe5a7143912da3fc48c1687c7e6b5183efe",
+      "schemas/cuda-launch-probe-trace-v1.schema.json": "13d059cdb9a6fa577cfa4977eceba8d80608bce550046251a18890b0483abca7",
+      "tests/python/test_compat_audit_launch_probe.py": "87b9401fb57bbae7ce16f7945f6468a23370f301820f71bed9e3c47c41970ceb",
+      "src/compat_launch_probe/core_tests.cpp": "72c341196289bec8ce10bb1d6d61eec40a808984ee384ead1480969a6fdd46a8",
+      "scripts/validate-launch-probe.py": "055dddaa3c6ea261e31c519a6689662d36f39a12e24ddbbbc945a149a88943d8"
+    }
+  },
+  "dependency": {
+    "name": "Microsoft Detours",
+    "version": "4.0.1",
+    "commit": "e4bfd6b03e50de46b47abfbd1e46b384f0c5f833",
+    "archive_sha256": "fef0b17c5c3c9356fb8ba7366a3b196149daadd131fb6a92abeda1cb4d3b9b85",
+    "license": "MIT"
+  },
+  "cases": [
+    {
+      "mode": "routing",
+      "artifact_directory": "artifacts/phase6b0d-launch-probe-20260908/accepted-routing",
+      "report_sha256": "93df593e6fb3246a23552da441033bac7e7bc40ea4f690b94603a07b6e1b9586",
+      "trace_sha256": "1eb74797c63b16555054c20ff341b6fb85fb6a3f883e18340b3a12f688b92b41",
+      "counts": {
+        "records": 193,
+        "calls_begun": 96,
+        "calls_returned": 96,
+        "metadata_calls": 0,
+        "parameters": 0,
+        "native_errors": 0
+      },
+      "layouts": [],
+      "exit_code": 0,
+      "controller_reaped": true,
+      "process_tree_drained": true,
+      "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+      "elapsed_ms": 18068.838699982734
+    },
+    {
+      "mode": "metadata",
+      "artifact_directory": "artifacts/phase6b0d-launch-probe-20260908/accepted-metadata",
+      "report_sha256": "25c267ed2ce14ba13f28b9eb14e2e531fea8dbf282d86db0c528e9a4b3dda8e2",
+      "trace_sha256": "d404952cc0e8b8b164288f379882160d3d60224aa9a295942b1990f90730ae3b",
+      "counts": {
+        "records": 289,
+        "calls_begun": 96,
+        "calls_returned": 96,
+        "metadata_calls": 96,
+        "parameters": 96,
+        "native_errors": 0
+      },
+      "layouts": [
+        {
+          "kernel_name": "_ZN7cutlass7Kernel2I50cutlass_80_tensorop_s1688gemm_64x64_16x6_tn_align4EEvNT_6ParamsE",
+          "parameters": [
+            {
+              "offset_bytes": 0,
+              "size_bytes": 360
+            }
+          ],
+          "calls": 48
+        },
+        {
+          "kernel_name": "_ZN7cutlass7Kernel2I51cutlass_80_tensorop_s1688gemm_256x64_16x4_tn_align4EEvNT_6ParamsE",
+          "parameters": [
+            {
+              "offset_bytes": 0,
+              "size_bytes": 360
+            }
+          ],
+          "calls": 48
+        }
+      ],
+      "exit_code": 0,
+      "controller_reaped": true,
+      "process_tree_drained": true,
+      "stdout_sha256": "17f49de04907436d46c26e6e9d4ade49c04a4fe89788835c1614e86e08814408",
+      "elapsed_ms": 14096.006800013129
+    }
+  ],
+  "validation": {
+    "release_ctest": {
+      "passed": 86,
+      "total": 86
+    },
+    "debug_ctest_serial": {
+      "passed": 82,
+      "total": 82
+    },
+    "python_audit_tests": {
+      "run": 295,
+      "skipped": 4,
+      "failed": 0
+    },
+    "strict_report_and_trace_validation": true,
+    "unpinned_host_rejected": true,
+    "previous_frozen_contracts_passed": true
+  },
+  "limitations": [
+    "The Runtime proxy negative control completed native generation but observed no launch; ggml-cuda.dll has no cudart DLL import.",
+    "96 host call pairs are not a GPU census or a whole-application coverage proof.",
+    "Two by-value 360-byte CUTLASS parameter layouts were queried; their contents/members were never decoded.",
+    "Same visible stdout digest is not tensor-level or numerical reference equality.",
+    "Missing Runtime-origin routing, cubin binding, semantic ranges, device ordering and working-set admission remain unresolved.",
+    "No production residency, kernel argument, backend, driver-file, TDR or registry changes."
+  ]
+}

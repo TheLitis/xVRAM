@@ -327,9 +327,24 @@ skips), installed Python smoke and full pilot schema/semantic checks passed.
 The core runtime and all previous contracts remain unchanged; version is
 `0.1.0-dev`. This closes the bounded follow-up, not the transparent-execution gate.
 
-## Phase 6b.1 and later — require separate approval
+### Phase 6b.0d active diagnostic prototype — partial routing only
 
-1. Resolve the audit's concrete evidence gaps and approve a bounded unchanged-backend
+The user approved active diagnostic interception. The [launch probe](cuda-launch-probe.md)
+adds an isolated, opt-in Windows Driver-entry diagnostic and a separate Runtime
+forwarder negative control. The original executable/backend and production runtime
+remain unchanged. The Runtime forwarder captured no launches from the pinned backend;
+the active Driver probe observed 96 calls and queried live metadata for all 96 in
+its metadata pilot, covering two opaque CUTLASS layouts. Public resolver targeting
+did not expand that coverage. No private parameter structures were decoded.
+
+The experiment establishes partial active routing, not transparent memory management.
+Remaining Runtime-origin paths, cubin identity, semantic ranges, device ordering and
+live working-set admission are still unresolved. It is not GO for production memory
+interception, and unchanged 14B/32B generation through xVRAM remains unfinished.
+
+## Phase 6b.1 and later — evidence gates remain mandatory
+
+1. Resolve the audit's concrete evidence gaps and validate a bounded unchanged-backend
    interception design. Only then implement real 14B → 32B generation without CPU
    offload of the main computation. A GO audit alone is not that execution proof.
 2. Establish and optimize performance against a tuned ordinary llama.cpp baseline,
