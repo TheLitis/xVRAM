@@ -487,6 +487,9 @@ CUDA allocation. The opportunity is to:
 
 The ABI v1 function table and report schemas are pre-release and may change before
 `0.1.0`.
-A project license has not yet been selected; until one is added, no rights are granted
-beyond those provided by applicable law. Keep the GitHub repository private until that
-choice is made.
+Copyright 2026 TheLitis and xVRAM contributors.
+
+xVRAM is licensed under the [Apache License, Version 2.0](LICENSE).
+See [NOTICE](NOTICE) for the project-specific copyright and attribution notice.
+Third-party components remain subject to their respective licenses; this license
+does not replace the terms for NVIDIA libraries or other dependencies.
