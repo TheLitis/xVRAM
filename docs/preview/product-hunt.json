@@ -1,0 +1,10 @@
+{
+  "name": "xVRAM Developer Preview",
+  "tagline": "Run supported CUDA workloads beyond physical VRAM",
+  "description": "xVRAM is an experimental open-source SDK using RAM backing and a bounded VRAM execution cache. Try a reproducible FP32 CUDA/cuBLAS demo, inspect numerical checks and build against the C API. Explicit integration required.",
+  "url": "https://github.com/TheLitis/xVRAM",
+  "download_url": "https://github.com/TheLitis/xVRAM/releases",
+  "planned_launch_date": "2026-09-18",
+  "submission_status": "not_submitted",
+  "organizer_eligibility_confirmation": "not_obtained"
+}

@@ -1,0 +1,8 @@
+{
+  "tag": "preview-2026.09.11.1",
+  "title": "xVRAM Developer Preview 1 — explicit CUDA workloads beyond VRAM",
+  "prerelease": true,
+  "notes": "docs/preview/RELEASE_NOTES.md",
+  "astra_first_commit": "98e41accdf8b45b019354584fa49472dd40763f1",
+  "astra_attribution": "Maintainer-reported development boundary; Git does not identify model authorship."
+}

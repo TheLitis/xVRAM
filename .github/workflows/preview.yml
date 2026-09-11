@@ -1,0 +1,141 @@
+name: Developer Preview
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: xvram-preview-publication
+  cancel-in-progress: false
+
+jobs:
+  package:
+    # Never execute PR/fork code with a privileged workflow_run context.
+    if: >-
+      github.repository == 'TheLitis/xVRAM' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      source: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Check out exactly the source that passed CI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Record source revision
+        id: source
+        shell: pwsh
+        run: |
+          $sha = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies and frontends
+        run: python -m pip install -r tests/requirements.txt ./python
+      - name: Test preview tools (synthetic, no GPU)
+        run: python -m unittest discover -s tests/preview -p "test_*.py" -v
+      - name: Configure explicit compatibility distribution
+        run: >-
+          cmake -S . -B build/preview -A x64
+          -DXVRAM_BUILD_TESTS=ON -DXVRAM_WARNINGS_AS_ERRORS=ON
+          -DXVRAM_BUILD_CUDA_COMPAT=ON -DXVRAM_FETCH_CUBLAS_REDIST=ON
+          -DXVRAM_BUILD_TORCH_RUNTIME=OFF
+      - name: Build Release
+        run: cmake --build build/preview --config Release --parallel
+      - name: Test complete no-GPU configuration
+        run: ctest --test-dir build/preview -C Release --output-on-failure --no-tests=error
+      - name: Install SDK
+        run: cmake --install build/preview --config Release --prefix build/install
+      - name: Configure installed public-API example
+        run: >-
+          cmake -S examples/preview-gemm -B build/example -A x64
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+      - name: Build and install example
+        shell: pwsh
+        run: |
+          cmake --build build/example --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install build/example --config Release --prefix build/install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package the tested installation
+        run: >-
+          python scripts/package_preview.py --install build/install --output build/preview-dist
+          --source-commit ${{ steps.source.outputs.sha }}
+          --ci-url https://github.com/TheLitis/xVRAM/actions/runs/${{ github.run_id }}
+      - name: Test installed example and relocated package without GPU
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem build/preview-dist -Directory | Select-Object -First 1
+          if ($null -eq $package) { throw 'preview package missing' }
+          python tests/preview/check_installed.py --install build/install `
+            --package $package.FullName --output build/preview-no-gpu-result
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain archive and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: xvram-preview-windows-x64
+          path: |
+            build/preview-dist/*.zip
+            build/preview-dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out the exact packaged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package.outputs.source }}
+          persist-credentials: false
+      - name: Download this workflow's tested package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: xvram-preview-windows-x64
+          path: preview-dist
+      - name: Verify and create an immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.package.outputs.source }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd preview-dist && sha256sum --check SHA256SUMS.txt)
+          tag="$(python3 -c 'import json; print(json.load(open("release/preview.json"))["tag"])')"
+          title="$(python3 -c 'import json; print(json.load(open("release/preview.json"))["title"])')"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Existing preview $tag left unchanged." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists without a release; refusing to reuse it." >&2
+            exit 1
+          fi
+          cp docs/preview/RELEASE_NOTES.md preview-dist/RELEASE_NOTES.md
+          printf '\nSource: `%s`\n\nCI: https://github.com/%s/actions/runs/%s\n\nPackage checks: https://github.com/%s/actions/runs/%s\n' \
+            "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$CI_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> preview-dist/RELEASE_NOTES.md
+          gh release create "$tag" preview-dist/*.zip preview-dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --prerelease \
+            --title "$title" --notes-file preview-dist/RELEASE_NOTES.md
+          echo "Published $tag. GPU validation remains separate from these no-GPU checks." >> "$GITHUB_STEP_SUMMARY"

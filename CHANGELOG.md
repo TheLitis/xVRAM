@@ -5,6 +5,16 @@ All notable changes will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project intends to use semantic versioning once its public API is established.
 
+## Developer Preview 1 (SDK remains 0.1.0-dev)
+
+- Added an installed-C-API GEMM example, bounded demo runner, strict reuse of the
+  Phase 6a report/trace contract, package integrity checks and offline HTML reports.
+- Added Windows preview packaging and CI-gated prerelease publication; GPU checks
+  remain separate from no-GPU CI.
+- Added quick start, evidence boundaries, maintainer-reported Astra attribution
+  beginning at 98e41acc, and a Product Hunt submission kit.
+- No production residency/ABI/schema changes or new transparent-execution claims.
+
 ## [Unreleased]
 
 ### Added

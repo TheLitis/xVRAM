@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1270" height="760" viewBox="0 0 1270 760" role="img" aria-labelledby="title desc">
+<title id="title">xVRAM developer preview: RAM-backed CUDA workloads</title>
+<desc id="desc">Conceptual architecture, not a benchmark screenshot. An integrated CUDA application declares work to xVRAM. System RAM backs the data; a bounded VRAM cache holds the current working set for GPU execution. Explicit integration is required; arbitrary unchanged applications are unsupported.</desc>
+<rect width="1270" height="760" fill="#101b24"/>
+<g font-family="DejaVu Sans, sans-serif">
+<text x="64" y="66" font-size="18" letter-spacing="3" fill="#98b0be">OPEN-SOURCE / DEVELOPER PREVIEW</text>
+<text x="64" y="145" font-size="72" font-weight="bold" fill="#f3f7fa">xVRAM</text>
+<text x="64" y="205" font-size="36" fill="#f3f7fa">Supported CUDA workloads, beyond physical VRAM.</text>
+<text x="64" y="250" font-size="22" fill="#adc1cc">RAM for capacity. A bounded VRAM cache for GPU execution.</text>
+<line x1="64" y1="285" x2="1206" y2="285" stroke="#3c5361"/>
+<rect x="64" y="327" width="338" height="234" rx="14" fill="#1b303e" stroke="#537486"/>
+<text x="90" y="373" font-size="17" fill="#8de0c1">01 / INTEGRATE</text>
+<text x="90" y="416" font-size="26" fill="#f3f7fa">Your CUDA application</text>
+<text x="90" y="462" font-size="20" fill="#adc1cc">Explicit API + supported</text>
+<text x="90" y="493" font-size="20" fill="#adc1cc">synchronous FP32 GEMM</text>
+<text x="90" y="534" font-size="16" fill="#adc1cc">Rebuild / SDK integration required</text>
+<path d="M410 442H447m-10-9 10 9-10 9" fill="none" stroke="#8de0c1" stroke-width="3"/>
+<rect x="460" y="327" width="338" height="234" rx="14" fill="#1b303e" stroke="#537486"/>
+<text x="486" y="373" font-size="17" fill="#8de0c1">02 / MANAGE</text>
+<text x="486" y="416" font-size="26" fill="#f3f7fa">xVRAM runtime</text>
+<text x="486" y="462" font-size="20" fill="#adc1cc">System RAM backing</text>
+<text x="486" y="493" font-size="20" fill="#adc1cc">Tiling + residency + transfers</text>
+<text x="486" y="534" font-size="16" fill="#adc1cc">Existing event-safe memory boundary</text>
+<path d="M806 442H843m-10-9 10 9-10 9" fill="none" stroke="#8de0c1" stroke-width="3"/>
+<rect x="856" y="327" width="350" height="234" rx="14" fill="#153b35" stroke="#8de0c1"/>
+<text x="882" y="373" font-size="17" fill="#8de0c1">03 / EXECUTE + VERIFY</text>
+<text x="882" y="416" font-size="26" fill="#f3f7fa">Bounded VRAM cache</text>
+<text x="882" y="462" font-size="20" fill="#adc1cc">Current working set only</text>
+<text x="882" y="493" font-size="20" fill="#adc1cc">Demo GPU results checked</text>
+<text x="882" y="534" font-size="16" fill="#adc1cc">RAM is not extra GDDR-speed memory</text>
+<text x="64" y="616" font-size="22" fill="#f3f7fa">Local demo. Raw reports. Numerical and resource checks.</text>
+<text x="64" y="665" font-size="18" fill="#adc1cc">Conceptual architecture — not a measured run. No transparent arbitrary-app support.</text>
+<text x="64" y="701" font-size="18" fill="#adc1cc">github.com/TheLitis/xVRAM  /  Apache-2.0  /  experimental SDK</text>
+</g></svg>
